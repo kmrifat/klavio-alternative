@@ -57,12 +57,20 @@ export function useLayout(slug: string) {
   return useQuery({ queryKey: ["layout", slug], queryFn: () => apiFetch<LayoutResponse>(`${brandPath(slug)}/layout`) });
 }
 
+export type LayoutApprovalPending = { approval: { id: string; status: string; expires_at: string } };
+
 export function useSaveLayout(slug: string) {
   const qc = useQueryClient();
   return useMutation({
+    // A second admin approves layout changes: the answer is then the
+    // pending approval (202), and the layout stays as it was until then.
     mutationFn: (l: { mjml: string; version: number }) =>
-      withStepUp(() => apiFetch<LayoutResponse>(`${brandPath(slug)}/layout`, { method: "PUT", body: l })),
+      withStepUp(() => apiFetch<LayoutResponse | LayoutApprovalPending>(`${brandPath(slug)}/layout`, { method: "PUT", body: l })),
     onSuccess: (d) => {
+      if ("approval" in d) {
+        void qc.invalidateQueries({ queryKey: ["approvals"] });
+        return;
+      }
       qc.setQueryData(["layout", slug], d);
       void qc.invalidateQueries({ queryKey: ["templates", slug] });
     },

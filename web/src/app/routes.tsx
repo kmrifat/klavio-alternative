@@ -14,6 +14,9 @@ import { BrandSettings } from "../routes/settings/BrandSettings";
 import { TemplatesPage } from "../routes/templates/TemplatesPage";
 import { TemplateEditor } from "../routes/templates/TemplateEditor";
 import { LayoutEditor } from "../routes/templates/LayoutEditor";
+import { CampaignsPage } from "../routes/campaigns/CampaignsPage";
+import { CampaignPage } from "../routes/campaigns/CampaignPage";
+import { CampaignReview } from "../routes/campaigns/CampaignReview";
 import { Spinner } from "../components/ui";
 import { ContactsPage } from "../routes/contacts/ContactsPage";
 import { ApprovalsPage } from "../routes/approvals/ApprovalsPage";
@@ -37,6 +40,15 @@ const builtCompanyScreens: Record<string, RouteObject> = {
 };
 
 const builtBrandScreens: Record<string, RouteObject> = {
+  campaigns: {
+    path: "campaigns",
+    children: [
+      { index: true, element: <CampaignsPage /> },
+      { path: "new", element: <CampaignPage /> },
+      { path: ":id", element: <CampaignPage /> },
+      { path: ":id/review", element: <CampaignReview /> },
+    ],
+  },
   templates: {
     path: "templates",
     children: [
