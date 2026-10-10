@@ -15,7 +15,9 @@ import (
 	"github.com/kmrifat/klavio-alternative/api/internal/brands"
 	"github.com/kmrifat/klavio-alternative/api/internal/cache"
 	"github.com/kmrifat/klavio-alternative/api/internal/config"
+	"github.com/kmrifat/klavio-alternative/api/internal/contacts"
 	"github.com/kmrifat/klavio-alternative/api/internal/dnscheck"
+	"github.com/kmrifat/klavio-alternative/api/internal/imports"
 	"github.com/kmrifat/klavio-alternative/api/internal/jobs"
 	"github.com/kmrifat/klavio-alternative/api/internal/server"
 	"github.com/kmrifat/klavio-alternative/api/internal/ses"
@@ -32,8 +34,16 @@ type Deps struct {
 	Ceremonies auth.CeremonyStore
 	Access     *auth.AccessVerifier // nil = Cloudflare Access off
 	SES        ses.Provisioner
-	DNS        dnscheck.Resolver
-	Version    string
+	DNS        Resolver
+	// ImportRunner overrides the river job runner (tests run imports inline).
+	ImportRunner imports.Runner
+	Version      string
+}
+
+// Resolver answers the DNS questions for brand checks and import MX checks.
+type Resolver interface {
+	dnscheck.Resolver
+	imports.MXResolver
 }
 
 type App struct {
@@ -41,6 +51,7 @@ type App struct {
 	Store     *store.Store
 	Auth      *auth.Service
 	Brands    *brands.Service
+	Imports   *imports.Service
 	Templates *templates.Service
 }
 
@@ -56,13 +67,24 @@ func New(d Deps) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &App{
+	a := &App{
 		deps:      d,
 		Store:     st,
 		Auth:      authSvc,
 		Brands:    brands.NewService(st, d.SES, dnscheck.Checker{R: d.DNS}, d.Log),
+		Imports:   imports.NewService(st, d.DNS, d.Log),
 		Templates: templates.NewService(st, d.Log),
-	}, nil
+	}
+	runner := d.ImportRunner
+	if runner == nil {
+		client, err := jobs.NewInserter(d.Pool, d.Log)
+		if err != nil {
+			return nil, err
+		}
+		runner = jobs.Runner{Client: client}
+	}
+	a.Imports.SetRunner(runner)
+	return a, nil
 }
 
 // FromConfig builds the production dependencies: Redis-backed passkey
@@ -89,6 +111,7 @@ func FromConfig(ctx context.Context, cfg config.Config, log *slog.Logger, pool *
 
 func (a *App) Handler() http.Handler {
 	teamH := &team.Handlers{Store: a.Store, Auth: a.Auth, Log: a.deps.Log}
+	contactsH := &contacts.Handlers{Store: a.Store, Log: a.deps.Log}
 	return server.New(server.Options{
 		Log:             a.deps.Log,
 		DB:              a.deps.Pool,
@@ -102,6 +125,8 @@ func (a *App) Handler() http.Handler {
 			a.Brands.Routes(mux, a.Auth)
 			a.Templates.Routes(mux, a.Auth)
 			teamH.Routes(mux)
+			contactsH.Routes(mux)
+			a.Imports.Routes(mux, a.Auth)
 		},
 	})
 }
@@ -145,7 +170,7 @@ func (a *App) ServeHTTP(ctx context.Context) error {
 // RunWorker works background jobs until ctx is cancelled.
 func (a *App) RunWorker(ctx context.Context) error {
 	log := a.deps.Log
-	client, err := jobs.NewWorker(a.deps.Pool, log, jobs.Deps{Brands: a.Brands, Sessions: a.Store})
+	client, err := jobs.NewWorker(a.deps.Pool, log, jobs.Deps{Brands: a.Brands, Sessions: a.Store, Imports: a.Imports, ImportFiles: a.Store})
 	if err != nil {
 		return err
 	}

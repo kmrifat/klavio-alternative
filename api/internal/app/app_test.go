@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/kmrifat/klavio-alternative/api/internal/app"
 	"github.com/kmrifat/klavio-alternative/api/internal/auth"
 	"github.com/kmrifat/klavio-alternative/api/internal/config"
@@ -35,6 +37,8 @@ type fakeDNS struct {
 	cname map[string]string
 	mx    map[string][]*net.MX
 	txt   map[string][]string
+	hosts map[string]bool // domains with an A record but no MX
+	hang  bool            // MX lookups wait until the context ends (a stuck DNS server)
 }
 
 func nx(name string) error { return &net.DNSError{Err: "no such host", Name: name, IsNotFound: true} }
@@ -48,8 +52,13 @@ func (f *fakeDNS) LookupCNAME(_ context.Context, h string) (string, error) {
 	return "", nx(h)
 }
 
-func (f *fakeDNS) LookupMX(_ context.Context, n string) ([]*net.MX, error) {
+func (f *fakeDNS) LookupMX(ctx context.Context, n string) ([]*net.MX, error) {
 	f.mu.Lock()
+	if f.hang {
+		f.mu.Unlock()
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	defer f.mu.Unlock()
 	if v, ok := f.mx[n]; ok {
 		return v, nil
@@ -67,6 +76,18 @@ func (f *fakeDNS) LookupTXT(_ context.Context, n string) ([]string, error) {
 }
 
 // publish puts a brand's required records into DNS, as the brand's admin would.
+func (f *fakeDNS) LookupHost(_ context.Context, h string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.mx[h]; ok {
+		return []string{"192.0.2.1"}, nil
+	}
+	if f.hosts[h] {
+		return []string{"192.0.2.1"}, nil
+	}
+	return nil, nx(h)
+}
+
 func (f *fakeDNS) publish(records []map[string]any) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -183,25 +204,39 @@ func (b *browser) stepUp() resp {
 
 // --- the test ---
 
+// inlineRunner runs import jobs inside the request, so tests needn't wait for a worker.
+type inlineRunner struct{ a **app.App }
+
+func (r inlineRunner) StartCheck(ctx context.Context, brandID, id uuid.UUID) error {
+	return (*r.a).Imports.RunCheck(context.WithoutCancel(ctx), brandID, id)
+}
+
+func (r inlineRunner) StartCommit(ctx context.Context, brandID, id uuid.UUID) error {
+	return (*r.a).Imports.RunCommit(context.WithoutCancel(ctx), brandID, id)
+}
+
 func setup(t *testing.T) (*app.App, *httptest.Server, *fakeDNS) {
 	pool := testdb.New(t)
-	dns := &fakeDNS{cname: map[string]string{}, mx: map[string][]*net.MX{}, txt: map[string][]string{}}
+	var appRef *app.App
+	dns := &fakeDNS{cname: map[string]string{}, mx: map[string][]*net.MX{}, txt: map[string][]string{}, hosts: map[string]bool{}}
 	a, err := app.New(app.Deps{
 		Config: config.Config{
 			Env: config.EnvDevelopment, AllowedOrigins: []string{origin}, AppURL: origin,
 			WebAuthnRPID: "localhost", WebAuthnRPName: "Test",
 		},
-		Log:        slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Pool:       pool,
-		Redis:      upPinger{},
-		Ceremonies: &auth.MemoryCeremonies{},
-		SES:        &ses.Fake{},
-		DNS:        dns,
-		Version:    "test",
+		Log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Pool:         pool,
+		Redis:        upPinger{},
+		Ceremonies:   &auth.MemoryCeremonies{},
+		SES:          &ses.Fake{},
+		DNS:          dns,
+		Version:      "test",
+		ImportRunner: inlineRunner{a: &appRef},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	appRef = a
 	srv := httptest.NewServer(a.Handler())
 	t.Cleanup(srv.Close)
 	return a, srv, dns

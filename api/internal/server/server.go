@@ -108,11 +108,18 @@ func csrf(allowed []string, next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if origin := r.Header.Get("Origin"); origin != "" && !slices.Contains(allowed, origin) {
+		origin := r.Header.Get("Origin")
+		if origin != "" && !slices.Contains(allowed, origin) {
 			writeJSON(w, http.StatusForbidden, map[string]any{"error": map[string]string{"code": "bad_origin", "message": "request from an unknown origin"}})
 			return
 		}
-		if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		ct := r.Header.Get("Content-Type")
+		// File uploads can't be JSON; a browser always sends Origin with them.
+		if strings.HasPrefix(ct, "multipart/form-data") && origin != "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !strings.HasPrefix(ct, "application/json") {
 			writeJSON(w, http.StatusUnsupportedMediaType, map[string]any{"error": map[string]string{"code": "json_required", "message": "send Content-Type: application/json"}})
 			return
 		}

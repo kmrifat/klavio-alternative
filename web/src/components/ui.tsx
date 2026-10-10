@@ -97,8 +97,10 @@ export function Field({ label, hint, error, children }: {
   );
 }
 
-export const inputClass =
-  "w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm shadow-xs outline-none focus:border-accent focus:ring-2 focus:ring-accent/20";
+// inputBase has no width, for inline controls; inputClass fills its container.
+export const inputBase =
+  "rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm shadow-xs outline-none focus:border-accent focus:ring-2 focus:ring-accent/20";
+export const inputClass = `w-full ${inputBase}`;
 
 export function ErrorNote({ error }: { error: unknown }) {
   if (!error) return null;

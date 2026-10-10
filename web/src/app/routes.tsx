@@ -15,6 +15,8 @@ import { TemplatesPage } from "../routes/templates/TemplatesPage";
 import { TemplateEditor } from "../routes/templates/TemplateEditor";
 import { LayoutEditor } from "../routes/templates/LayoutEditor";
 import { Spinner } from "../components/ui";
+import { ContactsPage } from "../routes/contacts/ContactsPage";
+import { ImportWizard } from "../routes/contacts/ImportWizard";
 import { brandScreens, companyScreens } from "../lib/screens";
 
 // KnownBrand renders brand pages only for brands the user can see.
@@ -73,9 +75,12 @@ export const routes: RouteObject[] = [
             element: <KnownBrand />,
             children: [
               { index: true, element: <Navigate to="campaigns" replace /> },
-              ...brandScreens.map(
-                (s) => builtBrandScreens[s.path] ?? { path: s.path, element: <ScreenPlaceholder screen={s} /> },
-              ),
+              { path: "contacts", element: <ContactsPage /> },
+              { path: "contacts/import", element: <ImportWizard /> },
+              { path: "contacts/import/:id", element: <ImportWizard /> },
+              ...brandScreens
+                .filter((s) => s.path !== "contacts")
+                .map((s) => builtBrandScreens[s.path] ?? { path: s.path, element: <ScreenPlaceholder screen={s} /> }),
             ],
           },
           { path: "*", element: <NotFound /> },

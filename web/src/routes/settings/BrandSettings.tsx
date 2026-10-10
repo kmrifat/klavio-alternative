@@ -8,6 +8,7 @@ import { BrandMark } from "../../layout/BrandSwitcher";
 import { brandStatus, dnsPurpose, timeAgo } from "../../lib/format";
 import { NotFound } from "../NotFound";
 import { ApiError } from "../../api/client";
+import { useAddTopic, useTopics } from "../../api/contacts";
 
 export function BrandSettings() {
   const slug = useParams().slug!;
@@ -70,7 +71,43 @@ export function BrandSettings() {
       </Card>
 
       <DetailsCard brand={brand} />
+      <TopicsCard brand={brand} />
     </div>
+  );
+}
+
+function TopicsCard({ brand }: { brand: Brand }) {
+  const me = useMe().data!;
+  const canEdit = me.user.company_role === "owner" || me.brand_roles[brand.id] === "brand_admin";
+  const topics = useTopics(brand.slug);
+  const add = useAddTopic(brand.slug);
+  const [name, setName] = useState("");
+  return (
+    <Card title="Topics" description="What people can subscribe to. Unsubscribing applies per topic; a campaign is sent to one topic.">
+      <ul className="border-t border-zinc-100">
+        {(topics.data ?? []).map((t) => (
+          <li key={t.id} className="flex items-center justify-between border-b border-zinc-100 px-5 py-2.5 text-sm last:border-0">
+            <span className="font-medium">{t.name}</span>
+            <span className="text-zinc-500">{t.subscribers.toLocaleString()} subscribed</span>
+          </li>
+        ))}
+      </ul>
+      {canEdit && (
+        <form
+          className="flex items-start gap-2 border-t border-zinc-100 px-5 py-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            add.mutate(name, { onSuccess: () => setName("") });
+          }}
+        >
+          <input aria-label="New topic name" placeholder="e.g. Product updates" className={inputClass} value={name} onChange={(e) => setName(e.target.value)} />
+          <Button type="submit" disabled={!name.trim() || add.isPending}>
+            Add topic
+          </Button>
+          <ErrorNote error={add.error} />
+        </form>
+      )}
+    </Card>
   );
 }
 

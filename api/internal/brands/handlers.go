@@ -87,18 +87,35 @@ func (s *Service) list(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// visibleBrand loads the {slug} brand, answering 404 (not 403) for brands the
-// user can't see so their existence isn't leaked.
-func (s *Service) visibleBrand(r *http.Request) (store.Brand, *auth.Principal, error) {
+// Visible loads the {slug} brand, answering 404 (not 403) for brands the
+// user can't see so their existence isn't leaked. Other packages use it for
+// their /brands/{slug}/… routes.
+func Visible(r *http.Request, st *store.Store) (store.Brand, *auth.Principal, error) {
 	p, err := auth.Require(r)
 	if err != nil {
 		return store.Brand{}, nil, err
 	}
-	b, err := s.store.BrandBySlug(r.Context(), r.PathValue("slug"))
+	b, err := st.BrandBySlug(r.Context(), r.PathValue("slug"))
 	if errors.Is(err, store.ErrNotFound) || (err == nil && !p.CanViewBrand(b.ID)) {
 		return store.Brand{}, nil, httpx.ErrNotFound
 	}
 	return b, p, err
+}
+
+// WithRole is Visible plus a minimum brand role (approvers count as viewers).
+func WithRole(r *http.Request, st *store.Store, min store.BrandRole) (store.Brand, *auth.Principal, error) {
+	b, p, err := Visible(r, st)
+	if err != nil {
+		return b, p, err
+	}
+	if !p.HasBrandRole(b.ID, min) && !(min == store.RoleViewer && p.SeesAllBrands()) {
+		return b, p, httpx.ErrForbidden
+	}
+	return b, p, nil
+}
+
+func (s *Service) visibleBrand(r *http.Request) (store.Brand, *auth.Principal, error) {
+	return Visible(r, s.store)
 }
 
 type detail struct {

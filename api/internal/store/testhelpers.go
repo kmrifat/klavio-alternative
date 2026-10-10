@@ -1,6 +1,11 @@
 package store
 
-import "context"
+import (
+	"context"
+	"time"
+
+	"github.com/google/uuid"
+)
 
 // Helpers used only by tests in other packages. They live in a regular file
 // (not _test.go) so those packages can call them.
@@ -18,4 +23,10 @@ func (s *Store) MarkSteppedUpForTest(ctx context.Context, email string) (int64, 
 func (s *Store) TryEditAuditForTest(ctx context.Context) (int64, error) {
 	tag, err := s.db.Exec(ctx, `UPDATE audit_log SET action = 'tampered'`)
 	return tag.RowsAffected(), err
+}
+
+// BackdateImportForTest makes an import look untouched for the given time.
+func (s *Store) BackdateImportForTest(ctx context.Context, id uuid.UUID, by time.Duration) error {
+	_, err := s.db.Exec(ctx, `UPDATE imports SET updated_at = now() - make_interval(secs => $2) WHERE id = $1`, id, by.Seconds())
+	return err
 }
