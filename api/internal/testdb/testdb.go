@@ -32,8 +32,7 @@ func New(t testing.TB) *pgxpool.Pool {
 	b := make([]byte, 6)
 	_, _ = rand.Read(b)
 	schema := "test_" + hex.EncodeToString(b)
-	// Extensions are database-wide; keep them in public so every schema sees them.
-	if _, err := admin.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS citext SCHEMA public`); err != nil {
+	if err := ensureExtensions(ctx, admin); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := admin.Exec(ctx, `CREATE SCHEMA `+pgx.Identifier{schema}.Sanitize()); err != nil {
@@ -59,4 +58,22 @@ func New(t testing.TB) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	return pool
+}
+
+// extensionLockKey is an arbitrary constant shared by every test process.
+const extensionLockKey = 0x6b6c6176696f // "klavio"
+
+// ensureExtensions creates the database-wide extensions the migrations need,
+// in public so every test schema sees them. `go test ./...` runs packages in
+// parallel processes, and CREATE EXTENSION IF NOT EXISTS is not safe against
+// concurrent sessions on a fresh database (duplicate key on
+// pg_extension_name_index), so creation is serialized with an advisory lock.
+func ensureExtensions(ctx context.Context, pool *pgxpool.Pool) error {
+	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, int64(extensionLockKey)); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS citext SCHEMA public`)
+		return err
+	})
 }
