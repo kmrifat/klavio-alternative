@@ -1,0 +1,503 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// --- brand sender ---
+
+// BrandSender is who a brand's email comes from.
+type BrandSender struct {
+	FromName  string `db:"from_name" json:"from_name"` // "" = the brand name
+	FromLocal string `db:"from_local" json:"from_local"`
+	ReplyTo   string `db:"reply_to" json:"reply_to"`
+}
+
+func (s *Store) BrandSender(ctx context.Context, brandID uuid.UUID) (BrandSender, error) {
+	rows, err := s.db.Query(ctx, `SELECT from_name, from_local, reply_to FROM brands WHERE id = $1`, brandID)
+	return one[BrandSender](rows, err)
+}
+
+func (s *Store) SetBrandSender(ctx context.Context, brandID uuid.UUID, b BrandSender) error {
+	_, err := s.db.Exec(ctx, `UPDATE brands SET from_name = $2, from_local = $3, reply_to = $4, updated_at = now() WHERE id = $1`,
+		brandID, b.FromName, b.FromLocal, b.ReplyTo)
+	return translate(err)
+}
+
+// --- seed addresses ---
+
+type SeedAddress struct {
+	Email     string    `db:"email" json:"email"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
+}
+
+func (s *Store) SeedAddresses(ctx context.Context, brandID uuid.UUID) ([]SeedAddress, error) {
+	rows, err := s.db.Query(ctx, `SELECT email, created_at FROM seed_addresses WHERE brand_id = $1 ORDER BY email`, brandID)
+	return all[SeedAddress](rows, err)
+}
+
+func (s *Store) AddSeedAddress(ctx context.Context, brandID uuid.UUID, email string, by uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `INSERT INTO seed_addresses (brand_id, email, added_by) VALUES ($1, $2, $3)`, brandID, email, by)
+	return translate(err)
+}
+
+func (s *Store) RemoveSeedAddress(ctx context.Context, brandID uuid.UUID, email string) error {
+	tag, err := s.db.Exec(ctx, `DELETE FROM seed_addresses WHERE brand_id = $1 AND email = $2`, brandID, email)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// --- campaigns ---
+
+type CampaignState string
+
+const (
+	CampaignDraft         CampaignState = "draft"
+	CampaignNeedsApproval CampaignState = "needs_approval"
+	CampaignScheduled     CampaignState = "scheduled"
+	CampaignTestSlice     CampaignState = "test_slice"
+	CampaignHolding       CampaignState = "holding"
+	CampaignSending       CampaignState = "sending"
+	CampaignPaused        CampaignState = "paused"
+	CampaignDone          CampaignState = "done"
+	CampaignCancelled     CampaignState = "cancelled"
+)
+
+// Editable reports whether a campaign's content and audience may change.
+func (s CampaignState) Editable() bool { return s == CampaignDraft || s == CampaignNeedsApproval }
+
+// Running: past scheduling and not finished.
+func (s CampaignState) Running() bool {
+	return s == CampaignTestSlice || s == CampaignHolding || s == CampaignSending || s == CampaignPaused
+}
+
+type Campaign struct {
+	ID              uuid.UUID      `db:"id" json:"id"`
+	BrandID         uuid.UUID      `db:"brand_id" json:"-"`
+	Name            string         `db:"name" json:"name"`
+	TopicID         uuid.UUID      `db:"topic_id" json:"topic_id"`
+	TemplateID      *uuid.UUID     `db:"template_id" json:"template_id"`
+	Subject         string         `db:"subject" json:"subject"`
+	Preheader       string         `db:"preheader" json:"preheader"`
+	IncludeAtRisk   bool           `db:"include_at_risk" json:"include_at_risk"`
+	State           CampaignState  `db:"state" json:"state"`
+	PausedFrom      *CampaignState `db:"paused_from" json:"paused_from"`
+	PauseReason     string         `db:"pause_reason" json:"pause_reason"`
+	Version         int            `db:"version" json:"version"`
+	HTML            string         `db:"html" json:"-"`
+	TextBody        string         `db:"text_body" json:"-"`
+	FromHeader      string         `db:"from_header" json:"from_header"`
+	ReplyTo         string         `db:"reply_to" json:"reply_to"`
+	TestSlicePct    *float64       `db:"test_slice_pct" json:"test_slice_pct"`
+	HoldMinutes     *int           `db:"hold_minutes" json:"hold_minutes"`
+	ScheduledAt     *time.Time     `db:"scheduled_at" json:"scheduled_at"`
+	StartAt         *time.Time     `db:"start_at" json:"start_at"`
+	ConfirmedBy     *uuid.UUID     `db:"confirmed_by" json:"confirmed_by"`
+	ConfirmedAt     *time.Time     `db:"confirmed_at" json:"confirmed_at"`
+	ApprovalID      *uuid.UUID     `db:"approval_id" json:"approval_id"`
+	ApprovalReasons []string       `db:"approval_reasons" json:"approval_reasons"`
+	HoldUntil       *time.Time     `db:"hold_until" json:"hold_until"`
+	AudienceCount   int            `db:"audience_count" json:"audience_count"`
+	ExcludedCount   int            `db:"excluded_count" json:"excluded_count"`
+	CreatedBy       *uuid.UUID     `db:"created_by" json:"created_by"`
+	UpdatedBy       *uuid.UUID     `db:"updated_by" json:"updated_by"`
+	CreatedAt       time.Time      `db:"created_at" json:"created_at"`
+	UpdatedAt       time.Time      `db:"updated_at" json:"updated_at"`
+	FinishedAt      *time.Time     `db:"finished_at" json:"finished_at"`
+}
+
+const campaignCols = `id, brand_id, name, topic_id, template_id, subject, preheader, include_at_risk, state, paused_from,
+	pause_reason, version, html, text_body, from_header, reply_to, test_slice_pct::float8 AS test_slice_pct, hold_minutes,
+	scheduled_at, start_at, confirmed_by, confirmed_at, approval_id, approval_reasons, hold_until, audience_count,
+	excluded_count, created_by, updated_by, created_at, updated_at, finished_at`
+
+// CampaignDraftInput is what an editor sets on a draft.
+type CampaignDraftInput struct {
+	Name          string
+	TopicID       uuid.UUID
+	TemplateID    *uuid.UUID
+	Subject       string
+	Preheader     string
+	IncludeAtRisk bool
+}
+
+func (s *Store) CreateCampaign(ctx context.Context, brandID uuid.UUID, in CampaignDraftInput, by uuid.UUID) (Campaign, error) {
+	rows, err := s.db.Query(ctx, `
+		INSERT INTO campaigns (brand_id, name, topic_id, template_id, subject, preheader, include_at_risk, created_by, updated_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
+		RETURNING `+campaignCols,
+		brandID, in.Name, in.TopicID, in.TemplateID, in.Subject, in.Preheader, in.IncludeAtRisk, by)
+	return one[Campaign](rows, err)
+}
+
+func (s *Store) CampaignByID(ctx context.Context, brandID, id uuid.UUID) (Campaign, error) {
+	rows, err := s.db.Query(ctx, `SELECT `+campaignCols+` FROM campaigns WHERE brand_id = $1 AND id = $2`, brandID, id)
+	return one[Campaign](rows, err)
+}
+
+// LockCampaign reads a campaign and holds it until the transaction ends.
+func (s *Store) LockCampaign(ctx context.Context, id uuid.UUID) (Campaign, error) {
+	rows, err := s.db.Query(ctx, `SELECT `+campaignCols+` FROM campaigns WHERE id = $1 FOR UPDATE`, id)
+	return one[Campaign](rows, err)
+}
+
+func (s *Store) ListCampaigns(ctx context.Context, brandID uuid.UUID) ([]Campaign, error) {
+	rows, err := s.db.Query(ctx, `SELECT `+campaignCols+` FROM campaigns WHERE brand_id = $1 ORDER BY updated_at DESC LIMIT 200`, brandID)
+	return all[Campaign](rows, err)
+}
+
+// UpdateCampaignDraft saves an edit. Any edit sends the campaign back to
+// draft (an approval no longer applies). ErrStale if the version moved or
+// the campaign is no longer editable.
+func (s *Store) UpdateCampaignDraft(ctx context.Context, brandID, id uuid.UUID, in CampaignDraftInput, fromVersion int, by uuid.UUID) (Campaign, error) {
+	rows, err := s.db.Query(ctx, `
+		UPDATE campaigns SET name = $3, topic_id = $4, template_id = $5, subject = $6, preheader = $7, include_at_risk = $8,
+			state = 'draft', approval_id = NULL, approval_reasons = '{}', version = version + 1, updated_by = $10, updated_at = now()
+		WHERE brand_id = $1 AND id = $2 AND version = $9 AND state IN ('draft', 'needs_approval')
+		RETURNING `+campaignCols,
+		brandID, id, in.Name, in.TopicID, in.TemplateID, in.Subject, in.Preheader, in.IncludeAtRisk, fromVersion, by)
+	c, err := one[Campaign](rows, err)
+	if errors.Is(err, ErrNotFound) {
+		if _, gerr := s.CampaignByID(ctx, brandID, id); gerr == nil {
+			return Campaign{}, ErrStale
+		}
+	}
+	return c, err
+}
+
+// CampaignSchedule is what gets frozen when a campaign is confirmed.
+type CampaignSchedule struct {
+	HTML, Text, FromHeader, ReplyTo string
+	TestSlicePct                    float64
+	HoldMinutes                     int
+	ScheduledAt, StartAt            time.Time
+	ConfirmedBy                     uuid.UUID
+	ApprovalReasons                 []string
+	AudienceCount, ExcludedCount    int
+	State                           CampaignState // scheduled, or needs_approval
+	ApprovalID                      *uuid.UUID
+}
+
+func (s *Store) ScheduleCampaign(ctx context.Context, id uuid.UUID, sc CampaignSchedule) (Campaign, error) {
+	if sc.ApprovalReasons == nil {
+		sc.ApprovalReasons = []string{}
+	}
+	rows, err := s.db.Query(ctx, `
+		UPDATE campaigns SET state = $2, html = $3, text_body = $4, from_header = $5, reply_to = $6, test_slice_pct = $7,
+			hold_minutes = $8, scheduled_at = $9, start_at = $10, confirmed_by = $11, confirmed_at = now(),
+			approval_reasons = $12, audience_count = $13, excluded_count = $14, approval_id = $15, updated_at = now()
+		WHERE id = $1
+		RETURNING `+campaignCols,
+		id, sc.State, sc.HTML, sc.Text, sc.FromHeader, sc.ReplyTo, sc.TestSlicePct, sc.HoldMinutes, sc.ScheduledAt,
+		sc.StartAt, sc.ConfirmedBy, sc.ApprovalReasons, sc.AudienceCount, sc.ExcludedCount, sc.ApprovalID)
+	return one[Campaign](rows, err)
+}
+
+// SetCampaignState moves a campaign from one of the given states to `to`.
+// It reports false (and changes nothing) if the campaign wasn't in any of them.
+func (s *Store) SetCampaignState(ctx context.Context, id uuid.UUID, from []CampaignState, to CampaignState) (bool, error) {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE campaigns SET state = $3, updated_at = now(),
+			finished_at = CASE WHEN $3 IN ('done', 'cancelled') THEN now() ELSE finished_at END
+		WHERE id = $1 AND state = ANY($2)`, id, from, to)
+	return err == nil && tag.RowsAffected() == 1, err
+}
+
+// PauseCampaign pauses a running campaign, remembering where to resume.
+func (s *Store) PauseCampaign(ctx context.Context, id uuid.UUID, reason string) (bool, error) {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE campaigns SET paused_from = state, state = 'paused', pause_reason = $2, updated_at = now()
+		WHERE id = $1 AND state IN ('test_slice', 'holding', 'sending')`, id, reason)
+	return err == nil && tag.RowsAffected() == 1, err
+}
+
+// ResumeCampaign puts a paused campaign back where it was.
+func (s *Store) ResumeCampaign(ctx context.Context, id uuid.UUID) (CampaignState, bool, error) {
+	var st CampaignState
+	err := s.db.QueryRow(ctx, `
+		UPDATE campaigns SET state = paused_from, paused_from = NULL, pause_reason = '', updated_at = now()
+		WHERE id = $1 AND state = 'paused'
+		RETURNING state`, id).Scan(&st)
+	if errors.Is(translate(err), ErrNotFound) {
+		return "", false, nil
+	}
+	return st, err == nil, err
+}
+
+func (s *Store) SetCampaignHold(ctx context.Context, id uuid.UUID, until time.Time) error {
+	_, err := s.db.Exec(ctx, `UPDATE campaigns SET hold_until = $2, updated_at = now() WHERE id = $1`, id, until)
+	return err
+}
+
+// UsualAudienceSize is the median audience of the brand's last five
+// finished campaigns, or 0 if it has none.
+func (s *Store) UsualAudienceSize(ctx context.Context, brandID uuid.UUID) (int, error) {
+	var n *float64
+	err := s.db.QueryRow(ctx, `
+		SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY audience_count) FROM (
+			SELECT audience_count FROM campaigns WHERE brand_id = $1 AND state = 'done' ORDER BY finished_at DESC LIMIT 5
+		) recent`, brandID).Scan(&n)
+	if err != nil || n == nil {
+		return 0, err
+	}
+	return int(*n), nil
+}
+
+// --- audience ---
+
+// ExclusionReason says why a topic member won't get a campaign.
+type ExclusionReason string
+
+const (
+	ExcludedSuppressed   ExclusionReason = "suppressed"
+	ExcludedUnsubscribed ExclusionReason = "unsubscribed"
+	ExcludedQuarantined  ExclusionReason = "quarantined"
+	ExcludedPending      ExclusionReason = "pending_confirmation"
+	ExcludedSunset       ExclusionReason = "sunset"
+	ExcludedAtRisk       ExclusionReason = "at_risk"
+)
+
+// audienceQuery classifies every member of a topic: reason NULL = included.
+// $1 brand, $2 topic, $3 include at-risk. Order of precedence: suppressed,
+// then contact status, then engagement tier.
+const audienceQuery = `
+	SELECT c.id AS contact_id, c.import_id, CASE
+		WHEN s.email_hash IS NOT NULL THEN 'suppressed'
+		WHEN c.status = 'unsubscribed' THEN 'unsubscribed'
+		WHEN c.status = 'quarantined' THEN 'quarantined'
+		WHEN c.status = 'pending_confirmation' THEN 'pending_confirmation'
+		WHEN ` + tierExpr + ` = 'sunset' THEN 'sunset'
+		WHEN ` + tierExpr + ` = 'at_risk' AND NOT $3 THEN 'at_risk'
+	END AS reason
+	FROM contact_topics ct
+	JOIN contacts c ON c.id = ct.contact_id
+	LEFT JOIN suppressions s ON s.email_hash = c.email_hash
+	WHERE ct.brand_id = $1 AND ct.topic_id = $2`
+
+// AudienceSummary counts a would-be audience: included, and excluded by reason.
+type AudienceSummary struct {
+	Included int                     `json:"included"`
+	Excluded map[ExclusionReason]int `json:"excluded"`
+	// FirstTimeImported: included people from an import who never got a campaign.
+	FirstTimeImported int `json:"first_time_imported"`
+	// AtRisk: included people in the at-risk tier (only when allowed).
+	AtRisk int `json:"at_risk"`
+}
+
+func (s *Store) AudienceSummary(ctx context.Context, brandID, topicID uuid.UUID, includeAtRisk bool) (AudienceSummary, error) {
+	sum := AudienceSummary{Excluded: map[ExclusionReason]int{}}
+	rows, err := s.db.Query(ctx, `
+		WITH a AS (`+audienceQuery+`)
+		SELECT coalesce(reason, ''), count(*),
+			count(*) FILTER (WHERE reason IS NULL AND import_id IS NOT NULL
+				AND NOT EXISTS (SELECT 1 FROM sends sd WHERE sd.contact_id = a.contact_id AND sd.status = 'sent'))
+		FROM a GROUP BY 1`, brandID, topicID, includeAtRisk)
+	if err != nil {
+		return sum, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var reason string
+		var n, firstImport int
+		if err := rows.Scan(&reason, &n, &firstImport); err != nil {
+			return sum, err
+		}
+		if reason == "" {
+			sum.Included, sum.FirstTimeImported = n, firstImport
+		} else {
+			sum.Excluded[ExclusionReason(reason)] = n
+		}
+	}
+	if err := rows.Err(); err != nil || !includeAtRisk {
+		return sum, err
+	}
+	err = s.db.QueryRow(ctx, `
+		SELECT count(*) FROM contact_topics ct JOIN contacts c ON c.id = ct.contact_id
+		LEFT JOIN suppressions s ON s.email_hash = c.email_hash
+		WHERE ct.brand_id = $1 AND ct.topic_id = $2 AND s.email_hash IS NULL AND c.status = 'subscribed'
+		  AND `+tierExpr+` = 'at_risk'`, brandID, topicID).Scan(&sum.AtRisk)
+	return sum, err
+}
+
+// SnapshotAudience writes the audience of a campaign being scheduled, with
+// a random test slice of testPct percent (at least one person). Returns
+// included and excluded counts.
+func (s *Store) SnapshotAudience(ctx context.Context, c Campaign, testPct float64) (included, excluded int, err error) {
+	if _, err := s.db.Exec(ctx, `DELETE FROM campaign_audience WHERE campaign_id = $1`, c.ID); err != nil {
+		return 0, 0, err
+	}
+	_, err = s.db.Exec(ctx, `
+		INSERT INTO campaign_audience (campaign_id, contact_id, excluded_reason, stage)
+		SELECT $4, contact_id, reason,
+			CASE WHEN reason IS NULL THEN CASE WHEN rn <= greatest(1, ceil(n * $5 / 100.0)) THEN 'test' ELSE 'rest' END END
+		FROM (
+			SELECT a.contact_id, a.reason,
+				count(*) FILTER (WHERE a.reason IS NULL) OVER () AS n,
+				CASE WHEN a.reason IS NULL THEN row_number() OVER (PARTITION BY a.reason IS NULL ORDER BY random()) END AS rn
+			FROM (`+audienceQuery+`) a
+		) x`, c.BrandID, c.TopicID, c.IncludeAtRisk, c.ID, testPct)
+	if err != nil {
+		return 0, 0, err
+	}
+	err = s.db.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE stage IS NOT NULL), count(*) FILTER (WHERE excluded_reason IS NOT NULL)
+		FROM campaign_audience WHERE campaign_id = $1`, c.ID).Scan(&included, &excluded)
+	return included, excluded, err
+}
+
+// AudienceBreakdown counts a campaign's stored snapshot by reason and stage (S5).
+func (s *Store) AudienceBreakdown(ctx context.Context, campaignID uuid.UUID) (map[string]int, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT coalesce(excluded_reason, 'included_' || stage), count(*) FROM campaign_audience
+		WHERE campaign_id = $1 GROUP BY 1`, campaignID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var k string
+		var n int
+		if err := rows.Scan(&k, &n); err != nil {
+			return nil, err
+		}
+		out[k] = n
+	}
+	return out, rows.Err()
+}
+
+// --- sends ---
+
+// Recipient is an included audience member about to get a send row.
+type Recipient struct {
+	ContactID uuid.UUID `db:"contact_id"`
+	Timezone  string    `db:"timezone"`
+}
+
+// StageRecipients lists a stage's audience that has no send row yet.
+func (s *Store) StageRecipients(ctx context.Context, campaignID uuid.UUID, stage string) ([]Recipient, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT ca.contact_id, coalesce(c.timezone, '') AS timezone
+		FROM campaign_audience ca LEFT JOIN contacts c ON c.id = ca.contact_id
+		WHERE ca.campaign_id = $1 AND ca.stage = $2
+		  AND NOT EXISTS (SELECT 1 FROM sends sd WHERE sd.campaign_id = ca.campaign_id AND sd.contact_id = ca.contact_id)`,
+		campaignID, stage)
+	return all[Recipient](rows, err)
+}
+
+// QueueSends creates send rows. Existing ones are left alone (never twice).
+func (s *Store) QueueSends(ctx context.Context, c Campaign, stage string, contactIDs []uuid.UUID, sendAfter []time.Time) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO sends (campaign_id, brand_id, contact_id, stage, send_after)
+		SELECT $1, $2, id, $3, after FROM unnest($4::uuid[], $5::timestamptz[]) AS t(id, after)
+		ON CONFLICT (campaign_id, contact_id) DO NOTHING`, c.ID, c.BrandID, stage, contactIDs, sendAfter)
+	return err
+}
+
+// ClaimedSend is a send taken by the worker, with what's needed to send it
+// and to re-check, right before sending, that the person still wants it.
+type ClaimedSend struct {
+	ID         int64     `db:"id"`
+	ContactID  uuid.UUID `db:"contact_id"`
+	Attempts   int       `db:"attempts"`
+	Email      *string   `db:"email"` // nil: the contact was erased
+	FirstName  string    `db:"first_name"`
+	LastName   string    `db:"last_name"`
+	Status     *string   `db:"status"`
+	InTopic    bool      `db:"in_topic"`
+	Suppressed bool      `db:"suppressed"`
+}
+
+// ClaimSends marks up to n due, queued sends of a stage as 'sending'.
+func (s *Store) ClaimSends(ctx context.Context, c Campaign, stage string, n int) ([]ClaimedSend, error) {
+	rows, err := s.db.Query(ctx, `
+		WITH claimed AS (
+			UPDATE sends SET status = 'sending', claimed_at = now(), attempts = attempts + 1
+			WHERE id IN (
+				SELECT id FROM sends WHERE campaign_id = $1 AND stage = $2 AND status = 'queued' AND send_after <= now()
+				ORDER BY send_after, id LIMIT $3 FOR UPDATE SKIP LOCKED)
+			RETURNING id, contact_id, attempts)
+		SELECT cl.id, cl.contact_id, cl.attempts, c.email::text AS email, coalesce(c.first_name, '') AS first_name,
+			coalesce(c.last_name, '') AS last_name, c.status,
+			EXISTS (SELECT 1 FROM contact_topics ct WHERE ct.contact_id = cl.contact_id AND ct.topic_id = $4) AS in_topic,
+			EXISTS (SELECT 1 FROM suppressions sp WHERE sp.email_hash = c.email_hash) AS suppressed
+		FROM claimed cl LEFT JOIN contacts c ON c.id = cl.contact_id
+		ORDER BY cl.id`, c.ID, stage, n, c.TopicID)
+	return all[ClaimedSend](rows, err)
+}
+
+func (s *Store) MarkSent(ctx context.Context, id int64, messageID string) error {
+	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'sent', ses_message_id = $2, sent_at = now(), error = '' WHERE id = $1 AND status = 'sending'`, id, messageID)
+	return err
+}
+
+func (s *Store) MarkSendFailed(ctx context.Context, id int64, msg string) error {
+	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'failed', error = $2 WHERE id = $1 AND status = 'sending'`, id, msg)
+	return err
+}
+
+func (s *Store) MarkSendSkipped(ctx context.Context, id int64, reason string) error {
+	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'skipped', skip_reason = $2 WHERE id = $1 AND status = 'sending'`, id, reason)
+	return err
+}
+
+// RequeueSend puts a send back in the queue for a later try.
+func (s *Store) RequeueSend(ctx context.Context, id int64, after time.Time, msg string) error {
+	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'queued', send_after = $2, error = $3 WHERE id = $1 AND status = 'sending'`, id, after, msg)
+	return err
+}
+
+// ReleaseSends puts claimed sends back untouched (the campaign was paused
+// between claiming and sending). The attempt isn't counted.
+func (s *Store) ReleaseSends(ctx context.Context, ids []int64) error {
+	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'queued', attempts = attempts - 1 WHERE id = ANY($1) AND status = 'sending'`, ids)
+	return err
+}
+
+// MarkStuckSends turns sends left in 'sending' longer than d into
+// 'unknown': the worker died mid-send, the email may have gone out, and
+// sending it again could mean sending twice.
+func (s *Store) MarkStuckSends(ctx context.Context, campaignID uuid.UUID, d time.Duration) (int64, error) {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE sends SET status = 'unknown', error = 'worker stopped while sending; not retried to avoid a duplicate'
+		WHERE campaign_id = $1 AND status = 'sending' AND claimed_at < now() - $2::interval`, campaignID, d.String())
+	return tag.RowsAffected(), err
+}
+
+// NextSendAt is when the next queued send of a stage becomes due (nil: none left).
+func (s *Store) NextSendAt(ctx context.Context, campaignID uuid.UUID, stage string) (*time.Time, error) {
+	var t *time.Time
+	err := s.db.QueryRow(ctx, `SELECT min(send_after) FROM sends WHERE campaign_id = $1 AND stage = $2 AND status IN ('queued', 'sending')`,
+		campaignID, stage).Scan(&t)
+	return t, err
+}
+
+// SendProgress counts a campaign's sends by stage and status.
+type SendProgress map[string]map[string]int
+
+func (s *Store) SendProgress(ctx context.Context, campaignID uuid.UUID) (SendProgress, error) {
+	rows, err := s.db.Query(ctx, `SELECT stage, status, count(*) FROM sends WHERE campaign_id = $1 GROUP BY 1, 2`, campaignID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := SendProgress{"test": {}, "rest": {}}
+	for rows.Next() {
+		var stage, status string
+		var n int
+		if err := rows.Scan(&stage, &status, &n); err != nil {
+			return nil, err
+		}
+		out[stage][status] = n
+	}
+	return out, rows.Err()
+}
