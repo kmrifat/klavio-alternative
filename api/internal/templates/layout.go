@@ -175,5 +175,9 @@ func Build(ctx context.Context, layout, content string, cc CheckContext) (Compil
 		return Compiled{}, []Issue{errorf("template_breaks_layout",
 			"the template changes the brand layout around it, usually through a tag it opens and never closes; close every tag you open")}, nil
 	}
+	// And the template's own compiled HTML, as clients will parse it.
+	if issues := compiledSlotIssues(c.HTML); len(issues) > 0 {
+		return Compiled{}, issues, nil
+	}
 	return c, Check(c.HTML, cc), nil
 }

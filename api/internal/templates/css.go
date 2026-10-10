@@ -1,7 +1,6 @@
 package templates
 
 import (
-	"html"
 	"regexp"
 	"strconv"
 	"strings"
@@ -158,58 +157,12 @@ func boxHeight(c ruleCtx, v string) bool {
 }
 
 var (
-	// A tag and its attributes; quoted values may contain ">".
-	tagRe = regexp.MustCompile(`(?s)<([a-zA-Z][a-zA-Z0-9:-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>`)
-	// One attribute: name="v", name='v', name=v or a bare name.
-	attrRe = regexp.MustCompile(`(?s)([^\s=/"'<>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+)))?`)
 	// Any MJML attribute with a negative value (padding="-40px").
 	negativeLenRe = regexp.MustCompile(`(^|[\s,(])-\s*[0-9.]`)
 	numberRe      = regexp.MustCompile(`^[+]?([0-9]*\.?[0-9]+)([a-z%]*)$`)
 )
 
 type htmlAttr struct{ name, val string }
-
-func parseAttrs(s string) []htmlAttr {
-	var out []htmlAttr
-	for _, m := range attrRe.FindAllStringSubmatch(s, -1) {
-		out = append(out, htmlAttr{strings.ToLower(m[1]), html.UnescapeString(m[2] + m[3] + m[4])})
-	}
-	return out
-}
-
-// styleIssues checks every element, attribute and style in a template.
-func styleIssues(content string) []Issue {
-	var issues []Issue
-	seen := map[string]bool{}
-	add := func(code, format string, args ...any) {
-		is := errorf(code, format, args...)
-		if !seen[is.Message] {
-			seen[is.Message] = true
-			issues = append(issues, is)
-		}
-	}
-	for _, t := range tagRe.FindAllStringSubmatch(content, -1) {
-		tag := strings.ToLower(t[1])
-		as := parseAttrs(t[2])
-		switch {
-		case strings.HasPrefix(tag, "mj-") || tag == "mjml":
-			mjAttrIssues(tag, as, add)
-		case refusedOutright[tag]:
-			continue // already reported
-		case !allowedElements[tag]:
-			add("template_element", "templates can't contain <%s>; use p, div, span, a, img, tables, lists, headings and text formatting", tag)
-			continue
-		default:
-			htmlAttrIssues(tag, as, add)
-		}
-		for _, a := range as {
-			if a.name == "style" {
-				cssIssues(tag, a.val, add)
-			}
-		}
-	}
-	return issues
-}
 
 // MJML attribute rules by name. Every value is also checked for negatives.
 func mjAttrIssues(tag string, as []htmlAttr, add func(string, string, ...any)) {
