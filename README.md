@@ -78,7 +78,21 @@ binary, builds the Docker image and validates the OpenTofu config.
 | `POST …/imports` (multipart), `GET/PUT …/imports/{id}` | Upload CSV; save column mapping + consent answers + attestation |
 | `POST …/imports/{id}/check`, `…/commit`, `…/cancel` | Background safety check; import (passkey confirmation); cancel |
 
+| `GET /admin/v1/approvals?view=decide\|mine\|recent` | Two-person rule (S15) |
+| `POST /admin/v1/approvals/{id}/approve` (passkey) · `/reject` (note) · `/cancel` (requester) | Decide; the approved action runs in the same transaction |
+| `GET/PUT /admin/v1/safety-limits` | S17 limits: tighten now, loosen via approval, never past the hard limit |
+| `POST /admin/v1/brands/{slug}/exports`, `GET /admin/v1/exports`, `GET /admin/v1/exports/{id}/download` | Approved, watermarked exports; requester-only download for 24 h |
+| `GET /admin/v1/alerts`, `POST …/alerts/{id}/acknowledge`, `POST /admin/v1/team/members/{id}/unfreeze` | Anomaly alerts and frozen accounts |
+| `GET /admin/v1/audit?brand=&actor=&action=&since=&until=&before=` | Audit log with filters and paging (S16) |
+
 Every write needs `Content-Type: application/json` from an allowed origin (CSRF guard).
+
+**Governance (M5).** Admin changes go through `internal/approvals`: a feature `Register`s a kind with an
+`Execute` function and calls `Request` inside its own transaction; another eligible admin approves (with a
+passkey) and the action runs atomically with the decision. Nobody approves their own request (checked in code
+and by a database constraint). In a company with only one admin, admin changes apply directly and are audited
+as `no_second_admin`. Anomalies (new sign-in country → frozen unless owner; new passkey → alert; 3rd export or
+5,000+ rows in a day → frozen; huge import → alert) show in the bell for owners and approvers.
 
 **Public pages** (no login; served on each brand's link domain, e.g. `go.brand.com`; signed links from `internal/unsubscribe`):
 

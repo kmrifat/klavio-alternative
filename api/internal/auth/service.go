@@ -37,7 +37,14 @@ type Config struct {
 	AppURL        string   // base URL of the web app, for invite links
 }
 
+// SignInGuard checks each passkey sign-in for anomalies (new country or
+// device). It returns true when the account was frozen as a result.
+type SignInGuard interface {
+	CheckSignIn(ctx context.Context, tx *store.Store, u store.User, ip, country, device string) (bool, error)
+}
+
 type Service struct {
+	guard      SignInGuard
 	store      *store.Store
 	wa         *webauthn.WebAuthn
 	ceremonies CeremonyStore
@@ -58,6 +65,9 @@ func NewService(st *store.Store, ceremonies CeremonyStore, access *AccessVerifie
 	}
 	return &Service{store: st, wa: wa, ceremonies: ceremonies, access: access, cfg: cfg, log: log, now: time.Now}, nil
 }
+
+// SetSignInGuard installs the anomaly check (optional).
+func (s *Service) SetSignInGuard(g SignInGuard) { s.guard = g }
 
 func (s *Service) cookieName() string {
 	if s.cfg.SecureCookies {
@@ -106,6 +116,9 @@ func (s *Service) principalForToken(ctx context.Context, token string) (*Princip
 	user, err := s.store.UserByID(ctx, sess.UserID)
 	if err != nil {
 		return nil, err
+	}
+	if user.FrozenAt != nil {
+		return nil, store.ErrNotFound // frozen accounts have no working sessions
 	}
 	// With Access on, the Google account must match the app account.
 	if ae := accessEmail(ctx); ae != "" && !strings.EqualFold(ae, user.Email) {
@@ -166,7 +179,11 @@ type InviteInput struct {
 	Name        string
 	CompanyRole store.CompanyRole
 	BrandRoles  store.BrandRoles
+	ApprovalID  *uuid.UUID // set when a second admin must approve first
 }
+
+// Normalize validates and cleans the input (also used before an approval is filed).
+func (in *InviteInput) Normalize() error { return in.normalize() }
 
 func (in *InviteInput) normalize() error {
 	in.Email = strings.ToLower(strings.TrimSpace(in.Email))
@@ -211,7 +228,7 @@ func (s *Service) CreateInvite(ctx context.Context, tx *store.Store, by *uuid.UU
 	inv, err := tx.CreateInvite(ctx, store.Invite{
 		TokenHash: hashToken(token), Email: in.Email, Name: in.Name,
 		CompanyRole: in.CompanyRole, BrandRoles: in.BrandRoles, WebAuthnID: waID,
-		InvitedBy: by, ExpiresAt: s.now().Add(inviteTTL),
+		InvitedBy: by, ExpiresAt: s.now().Add(inviteTTL), ApprovalID: in.ApprovalID,
 	})
 	if errors.Is(err, store.ErrConflict) {
 		return store.Invite{}, "", httpx.Errorf(http.StatusConflict, "already_invited", "%s already has an account or an open invite", in.Email)

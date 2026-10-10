@@ -16,6 +16,9 @@ import { TemplateEditor } from "../routes/templates/TemplateEditor";
 import { LayoutEditor } from "../routes/templates/LayoutEditor";
 import { Spinner } from "../components/ui";
 import { ContactsPage } from "../routes/contacts/ContactsPage";
+import { ApprovalsPage } from "../routes/approvals/ApprovalsPage";
+import { AuditPage } from "../routes/audit/AuditPage";
+import { SafetyLimits } from "../routes/settings/SafetyLimits";
 import { ImportWizard } from "../routes/contacts/ImportWizard";
 import { brandScreens, companyScreens } from "../lib/screens";
 
@@ -29,6 +32,8 @@ function KnownBrand() {
 
 const builtCompanyScreens: Record<string, RouteObject> = {
   team: { path: "team", element: <TeamPage /> },
+  approvals: { path: "approvals", element: <ApprovalsPage /> },
+  audit: { path: "audit", element: <AuditPage /> },
 };
 
 const builtBrandScreens: Record<string, RouteObject> = {
@@ -65,8 +70,9 @@ export const routes: RouteObject[] = [
               { path: "brands", element: <BrandsList /> },
               { path: "brands/new", element: <NewBrand /> },
               { path: "brands/:slug", element: <BrandSettings /> },
+              { path: "limits", element: <SafetyLimits /> },
               ...settingsTabs
-                .filter((t) => t.path !== "brands")
+                .filter((t) => t.path !== "brands" && t.path !== "limits")
                 .map((t) => ({ path: t.path, element: <SettingsPlaceholder tab={t} /> })),
             ],
           },

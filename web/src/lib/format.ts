@@ -67,6 +67,22 @@ export const auditLabel: Record<string, string> = {
   "user.roles_changed": "Changed roles of",
   "brand.created": "Created brand",
   "brand.updated": "Updated brand",
+  "user.frozen": "Froze account of",
+  "user.unfrozen": "Unfroze account of",
+  "approval.requested": "Requested approval",
+  "approval.approved": "Approved",
+  "approval.rejected": "Rejected",
+  "approval.cancelled": "Cancelled request",
+  "safety_limit.tightened": "Tightened safety limit",
+  "export.downloaded": "Downloaded export",
+  "alert.acknowledged": "Acknowledged alert",
+  "contact.added": "Added contact",
+  "contact.unsubscribed": "Unsubscribed",
+  "contact.suppressed": "Suppressed",
+  "topic.created": "Created topic",
+  "import.attested": "Signed import attestation for",
+  "import.started": "Started import",
+  "import.finished": "Finished import",
 };
 
 export const tierInfo: Record<Tier, { label: string; range: string; tone: "green" | "amber" | "red" | "blue"; help: string }> = {

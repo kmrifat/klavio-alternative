@@ -5,6 +5,7 @@ import type { BrandListItem, BrandRole, Member } from "../../api/types";
 import { Badge, Button, Card, ErrorNote, PageHeader, Spinner } from "../../components/ui";
 import { auditLabel, brandRoleLabel, companyRoleLabel, initials, timeAgo } from "../../lib/format";
 import { EditRolesDialog, InviteDialog } from "./TeamDialogs";
+import { useUnfreeze } from "../../api/governance";
 
 export function TeamPage() {
   const me = useMe().data!;
@@ -57,7 +58,10 @@ export function TeamPage() {
                   <span>
                     {i.name} <span className="text-zinc-500">· {i.email}</span>
                   </span>
-                  <span className="text-xs text-zinc-500">expires {new Date(i.expires_at).toLocaleDateString()}</span>
+                  <span className="flex items-center gap-2 text-xs text-zinc-500">
+                    {i.awaiting_approval && <Badge tone="amber">Waiting for approval</Badge>}
+                    expires {new Date(i.expires_at).toLocaleDateString()}
+                  </span>
                 </li>
               ))}
             </ul>
@@ -146,6 +150,15 @@ function MembersTable({ members, brands, meId, onEdit }: {
                     <p className="text-xs text-zinc-500">
                       {m.email} · {m.passkeys} {m.passkeys === 1 ? "passkey" : "passkeys"}
                     </p>
+                    {m.frozen_at && (
+                      <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-red-700">
+                        <Badge tone="red" dot>
+                          Frozen
+                        </Badge>
+                        {m.frozen_reason}
+                        {onEdit && <UnfreezeButton id={m.id} name={m.name} />}
+                      </p>
+                    )}
                   </div>
                 </div>
               </td>
@@ -233,5 +246,17 @@ function AuditCard() {
         )}
       </div>
     </Card>
+  );
+}
+
+function UnfreezeButton({ id, name }: { id: string; name: string }) {
+  const unfreeze = useUnfreeze();
+  return (
+    <>
+      <Button size="sm" variant="ghost" disabled={unfreeze.isPending} onClick={() => unfreeze.mutate(id)} aria-label={`Unfreeze ${name}`}>
+        Unfreeze
+      </Button>
+      <ErrorNote error={unfreeze.error} />
+    </>
   );
 }

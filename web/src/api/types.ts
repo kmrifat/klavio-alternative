@@ -53,6 +53,8 @@ export type Member = {
   brand_roles: BrandRoles;
   passkeys: number;
   last_active_at: string | null;
+  frozen_at: string | null;
+  frozen_reason: string;
 };
 
 export type PendingInvite = {
@@ -62,6 +64,7 @@ export type PendingInvite = {
   company_role: CompanyRole;
   brand_roles: BrandRoles;
   expires_at: string;
+  awaiting_approval: boolean;
 };
 
 export type Team = { members: Member[]; invites: PendingInvite[] };
@@ -77,6 +80,7 @@ export type AuditEntry = {
   before?: unknown;
   after?: unknown;
   ip: string;
+  user_agent?: string;
 };
 
 export type Meta = { version: string; env: string };
@@ -223,4 +227,73 @@ export type ImportView = {
   preview: string[][];
   attestation_text: string;
   sources: Record<string, string>;
+};
+
+// --- M5: governance ---
+
+export type ApprovalStatus = "pending" | "approved" | "rejected" | "cancelled" | "expired";
+
+export type ApprovalItem = {
+  id: string;
+  kind: string;
+  label: string;
+  brand_id: string | null;
+  brand_name: string;
+  brand_slug: string;
+  requested_by: string;
+  requester_name: string;
+  requester_email: string;
+  requested_at: string;
+  summary: string;
+  reason: string;
+  status: ApprovalStatus;
+  decided_by: string | null;
+  decider_name: string;
+  decided_at: string | null;
+  decision_note: string;
+  expires_at: string;
+  can_decide: boolean;
+  mine: boolean;
+  detail: string; // live context for the approver, e.g. how many contacts match now
+};
+
+export type SafetyLimit = {
+  key: string;
+  group: "brakes" | "audience" | "imports";
+  label: string;
+  unit: string;
+  default: number;
+  hard_limit: number;
+  looser_is_higher: boolean;
+  locked: boolean;
+  help: string;
+  value: number;
+  changed_by: string;
+  changed_at: string | null;
+};
+
+export type LimitChangeResult = { applied: string[]; requested: { id: string; summary: string }[] };
+
+export type ExportItem = {
+  id: string;
+  brand_id: string;
+  brand_name: string;
+  approval_id: string;
+  row_count: number;
+  status: "waiting" | "ready" | "expired" | "rejected" | "cancelled";
+  ready_at: string | null;
+  expires_at: string | null;
+  download_count: number;
+  created_at: string;
+};
+
+export type Alert = {
+  id: string;
+  kind: string;
+  severity: "info" | "warning" | "critical";
+  user_id: string | null;
+  brand_id: string | null;
+  message: string;
+  created_at: string;
+  acknowledged_at: string | null;
 };

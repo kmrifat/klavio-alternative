@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/kmrifat/klavio-alternative/api/internal/httpx"
+	"github.com/kmrifat/klavio-alternative/api/internal/limits"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
 )
 
@@ -29,6 +30,26 @@ type Service struct {
 	runner   Runner
 	log      *slog.Logger
 	now      func() time.Time
+	// limit reads a safety limit (S17); nil = built-in defaults.
+	limit func(ctx context.Context, key string) float64
+	// spike reports unusually large uploads (anomaly alerts); optional.
+	spike func(ctx context.Context, by store.User, b store.Brand, rows, existing int) error
+}
+
+// SetLimits makes the gate and quarantine follow the company's safety limits.
+func (s *Service) SetLimits(get func(ctx context.Context, key string) float64) { s.limit = get }
+
+// SetSpikeCheck reports uploads far larger than the brand's list.
+func (s *Service) SetSpikeCheck(f func(ctx context.Context, by store.User, b store.Brand, rows, existing int) error) {
+	s.spike = f
+}
+
+func (s *Service) gate(ctx context.Context) (GateLimits, time.Duration) {
+	if s.limit == nil {
+		return DefaultGate, QuarantineAfter
+	}
+	return GateLimits{Invalid: s.limit(ctx, limits.ImportInvalidPct) / 100, RoleDisposable: s.limit(ctx, limits.ImportRoleDisposablePct) / 100},
+		time.Duration(s.limit(ctx, limits.ImportQuarantineMonths)*30.4375*24) * time.Hour
 }
 
 func NewService(st *store.Store, resolver MXResolver, log *slog.Logger) *Service {
@@ -167,7 +188,8 @@ func (s *Service) load(ctx context.Context, brandID, id uuid.UUID) (loaded, erro
 
 // facts looks up suppressions and existing contacts for the file's addresses.
 func (s *Service) facts(ctx context.Context, brandID uuid.UUID, rows []Row) (Facts, error) {
-	f := Facts{Suppressed: map[string]bool{}, Existing: map[string]store.Contact{}, NoMailbox: map[string]bool{}, Now: s.now()}
+	_, quarantine := s.gate(ctx)
+	f := Facts{Suppressed: map[string]bool{}, Existing: map[string]store.Contact{}, NoMailbox: map[string]bool{}, Now: s.now(), QuarantineAfter: quarantine}
 	var emails []string
 	seen := map[string]bool{}
 	for _, r := range rows {
@@ -261,7 +283,8 @@ func (s *Service) runCheck(ctx context.Context, brandID, id uuid.UUID) error {
 	}
 	Classify(l.rows, f)
 
-	res := Summarize(l.rows, l.consent, l.mapping, noMailbox, s.now())
+	gl, _ := s.gate(ctx)
+	res := Summarize(l.rows, l.consent, l.mapping, noMailbox, s.now(), gl)
 	return s.store.SetImportCheckResult(ctx, id, res)
 }
 
