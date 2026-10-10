@@ -269,7 +269,7 @@ func TestPublicPagesHeadersAndRateLimit(t *testing.T) {
 		t.Errorf("CSP = %q", csp)
 	}
 
-	limited := false
+	limited := false // 10 per minute per contact
 	for range 15 {
 		if code, _ := f.pub.form(p, url.Values{"List-Unsubscribe": {"One-Click"}}); code == http.StatusTooManyRequests {
 			limited = true
@@ -277,6 +277,85 @@ func TestPublicPagesHeadersAndRateLimit(t *testing.T) {
 		}
 	}
 	if !limited {
-		t.Fatal("15 POSTs for one token in a minute were never rate-limited")
+		t.Fatal("15 POSTs for one contact in a minute were never rate-limited")
+	}
+}
+
+// newContact inserts a contact with any status, subscribed to the given topics.
+func (f unsubFixture) newContact(t *testing.T, email string, status store.ContactStatus, topics ...uuid.UUID) uuid.UUID {
+	t.Helper()
+	ctx := context.Background()
+	id, err := f.a.Store.InsertContact(ctx, store.NewContact{
+		BrandID: f.brandID, Email: email, Status: status, ConsentBasis: "double_opt_in", TrackingAllowed: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(topics) > 0 {
+		if err := f.a.Store.AddContactTopics(ctx, id, topics); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return id
+}
+
+// Review 1: Gmail sends one-click POSTs for many people from one IP.
+func TestOneClickFromSharedMailServer(t *testing.T) {
+	f := newUnsubFixture(t)
+	for i := range 40 {
+		id := f.newContact(t, "person"+uuid.NewString()[:8]+"@example.com", store.ContactSubscribed, f.newsletter)
+		tok := f.a.Unsubscribe.Token(unsubscribe.Claims{BrandID: f.brandID, ContactID: id, TopicID: f.newsletter})
+		req, _ := http.NewRequest("POST", f.pub.base+"/u/"+tok, strings.NewReader("List-Unsubscribe=One-Click"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("CF-Connecting-IP", "209.85.220.41") // a Google mail server
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != 200 {
+			t.Fatalf("one-click #%d from a shared mail server: %d", i+1, res.StatusCode)
+		}
+	}
+}
+
+// Review 2: the preference center must not skip double opt-in or quarantine.
+func TestPreferencesCantBypassConfirmation(t *testing.T) {
+	f := newUnsubFixture(t)
+	ctx := context.Background()
+	for _, status := range []store.ContactStatus{store.ContactPending, store.ContactQuarantined} {
+		t.Run(string(status), func(t *testing.T) {
+			id := f.newContact(t, string(status)+"@example.com", status, f.newsletter)
+			c := unsubscribe.Claims{BrandID: f.brandID, ContactID: id}
+			path := "/p/" + f.a.Unsubscribe.Token(c)
+
+			// Adding a topic directly is refused.
+			if code, _ := f.pub.form(path, url.Values{"action": {"save"}, "topic": {f.newsletter.String(), f.promo.String()}}); code != 409 {
+				t.Fatalf("direct add: %d", code)
+			}
+			// Unsubscribe from all, then try to come back: still refused, still unsubscribed.
+			if code, _ := f.pub.form(path, url.Values{"action": {"unsubscribe_all"}}); code != 200 {
+				t.Fatalf("unsubscribe all: %d", code)
+			}
+			code, page := f.pub.form(path, url.Values{"action": {"save"}, "topic": {f.newsletter.String()}})
+			got, _ := f.a.Store.ContactByID(ctx, f.brandID, id)
+			topics, _ := f.a.Store.ContactTopicIDs(ctx, id)
+			if code != 409 || got.Status != store.ContactUnsubscribed || len(topics) != 0 {
+				t.Fatalf("re-add after unsubscribe: %d, status %s, topics %v", code, got.Status, topics)
+			}
+			if !strings.Contains(page, "confirm your subscription") || !strings.Contains(page, "disabled") {
+				t.Fatal("page should explain and disable adding")
+			}
+		})
+	}
+
+	// A properly subscribed contact who unsubscribed can come back (the main flow).
+	c := f.claims(uuid.Nil, uuid.Nil)
+	f.pub.form(f.path("/p/", c), url.Values{"action": {"unsubscribe_all"}})
+	if code, _ := f.pub.form(f.path("/p/", c), url.Values{"action": {"save"}, "topic": {f.newsletter.String()}}); code != 200 {
+		t.Fatalf("subscribed contact coming back: %d", code)
+	}
+	if status, _, _ := f.state(t); status != store.ContactSubscribed {
+		t.Fatalf("status %s", status)
 	}
 }

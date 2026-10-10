@@ -54,7 +54,9 @@ func TestTamperingIsRejected(t *testing.T) {
 		t.Error("token with the topic removed was accepted")
 	}
 
-	for _, bad := range []string{"", "abc", "!!!!", tok + "x", tok[:len(tok)-2]} {
+	// The decoder would skip newlines; non-canonical spellings are rejected.
+	nonCanonical := tok[:10] + "\n" + tok[10:]
+	for _, bad := range []string{"", "abc", "!!!!", tok + "x", tok[:len(tok)-2], nonCanonical, tok + "\r\n"} {
 		if _, err := s.Verify(bad); err == nil {
 			t.Errorf("Verify(%q) succeeded", bad)
 		}

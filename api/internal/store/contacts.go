@@ -69,11 +69,13 @@ type Contact struct {
 	CreatedAt         time.Time     `db:"created_at" json:"created_at"`
 	Tier              Tier          `db:"tier" json:"tier"`
 	SuppressionReason *string       `db:"suppression_reason" json:"suppression_reason"`
+	// StatusBeforeUnsubscribe is set when someone unsubscribes; nil otherwise.
+	StatusBeforeUnsubscribe *ContactStatus `db:"status_before_unsubscribe" json:"-"`
 }
 
 const contactCols = `c.id, c.brand_id, c.email, c.first_name, c.last_name, c.status, c.consent_basis,
 	c.consent_source, c.consented_at, c.last_click_at, c.last_engaged_at, c.tags, c.tracking_allowed, c.timezone, c.country,
-	c.created_at, ` + tierExpr + ` AS tier, s.reason AS suppression_reason`
+	c.created_at, ` + tierExpr + ` AS tier, s.reason AS suppression_reason, c.status_before_unsubscribe`
 
 const contactFrom = ` FROM contacts c LEFT JOIN suppressions s ON s.email_hash = c.email_hash `
 
@@ -283,13 +285,13 @@ func (s *Store) LockContact(ctx context.Context, brandID, id uuid.UUID) (Contact
 }
 
 // Resubscribe: the person opted back in themselves (preference center).
-// Their new consent counts as fresh engagement.
+// Their new consent counts as fresh engagement. Only someone who was properly
+// subscribed before unsubscribing qualifies (ErrNotFound otherwise).
 func (s *Store) Resubscribe(ctx context.Context, id uuid.UUID, at time.Time) error {
-	_, err := s.db.Exec(ctx, `
-		UPDATE contacts SET status = 'subscribed', consented_at = $2,
+	return expectOne(s.db.Exec(ctx, `
+		UPDATE contacts SET status = 'subscribed', status_before_unsubscribe = NULL, consented_at = $2,
 			last_engaged_at = GREATEST(last_engaged_at, $2), updated_at = now()
-		WHERE id = $1`, id, at)
-	return err
+		WHERE id = $1 AND status = 'unsubscribed' AND status_before_unsubscribe = 'subscribed'`, id, at))
 }
 
 // CampaignUnsubscribes counts unsubscribes that came from a campaign (M4 brake input).
@@ -299,8 +301,16 @@ func (s *Store) CampaignUnsubscribes(ctx context.Context, campaignID uuid.UUID) 
 	return n, err
 }
 
+// SetContactStatus also remembers the status someone had when they unsubscribe.
 func (s *Store) SetContactStatus(ctx context.Context, id uuid.UUID, status ContactStatus) error {
-	_, err := s.db.Exec(ctx, `UPDATE contacts SET status = $2, updated_at = now() WHERE id = $1`, id, status)
+	_, err := s.db.Exec(ctx, `
+		UPDATE contacts SET
+			status_before_unsubscribe = CASE
+				WHEN $2 = 'unsubscribed' AND status <> 'unsubscribed' THEN status
+				WHEN $2 <> 'unsubscribed' THEN NULL
+				ELSE status_before_unsubscribe END,
+			status = $2, updated_at = now()
+		WHERE id = $1`, id, status)
 	return err
 }
 

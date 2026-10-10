@@ -1,9 +1,7 @@
 package unsubscribe
 
 import (
-	"crypto/sha256"
 	"embed"
-	"encoding/hex"
 	"errors"
 	"html/template"
 	"log/slog"
@@ -31,11 +29,13 @@ var pages = template.Must(template.New("pages.html").Funcs(template.FuncMap{
 	},
 }).ParseFS(pagesFS, "pages.html"))
 
-// Rate limits for the public POSTs (no login, no CSRF by design).
+// Rate limits for the public POSTs (no login, no CSRF by design), per minute.
+// One-click POSTs come from mail providers' shared servers (one IP for many
+// people), so they're limited per contact only; dropping one loses an unsubscribe.
 const (
-	perIPLimit    = 30 // per minute
-	perTokenLimit = 10 // per minute
-	maxFormBytes  = 64 << 10
+	perContactLimit = 10
+	perIPPageLimit  = 120 // human page POSTs only
+	maxFormBytes    = 64 << 10
 )
 
 type Handlers struct {
@@ -105,16 +105,18 @@ func (h *Handlers) claims(w http.ResponseWriter, r *http.Request) (Claims, strin
 	return c, tok, true
 }
 
-// limited applies the per-IP and per-token limits to a POST.
-func (h *Handlers) limited(r *http.Request, token string) bool {
-	sum := sha256.Sum256([]byte(token))
-	for _, l := range []struct {
+// limited applies the rate limits to a POST. The contact key comes from the
+// verified token, so re-encoding a token can't dodge it.
+func (h *Handlers) limited(r *http.Request, c Claims, oneClick bool) bool {
+	type rule struct {
 		key   string
 		limit int
-	}{
-		{"unsub:ip:" + httpx.ClientIP(r), perIPLimit},
-		{"unsub:tok:" + hex.EncodeToString(sum[:8]), perTokenLimit},
-	} {
+	}
+	rules := []rule{{"unsub:contact:" + c.BrandID.String() + ":" + c.ContactID.String(), perContactLimit}}
+	if !oneClick {
+		rules = append(rules, rule{"unsub:ip:" + httpx.ClientIP(r), perIPPageLimit})
+	}
+	for _, l := range rules {
 		ok, err := h.Limiter.Allow(r.Context(), l.key, l.limit, time.Minute)
 		if err != nil {
 			h.Log.WarnContext(r.Context(), "rate limiter unavailable; allowing", "err", err)
@@ -164,18 +166,24 @@ func (h *Handlers) unsubscribePost(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if h.limited(r, tok) {
-		h.render(w, r, http.StatusTooManyRequests, pageData{Page: "busy"})
-		return
-	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxFormBytes)
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 		_ = r.ParseMultipartForm(maxFormBytes)
 	} else {
 		_ = r.ParseForm()
 	}
+	oneClick := r.PostFormValue("List-Unsubscribe") == "One-Click"
+	if h.limited(r, c, oneClick) {
+		if oneClick {
+			securityHeaders(w)
+			http.Error(w, "too many requests", http.StatusTooManyRequests)
+		} else {
+			h.render(w, r, http.StatusTooManyRequests, pageData{Page: "busy"})
+		}
+		return
+	}
 
-	if r.PostFormValue("List-Unsubscribe") == "One-Click" {
+	if oneClick {
 		_, err := h.Service.Unsubscribe(r.Context(), c, false, Request{Method: "header", IP: httpx.ClientIP(r)})
 		securityHeaders(w)
 		switch {
@@ -226,7 +234,7 @@ func (h *Handlers) preferencesPost(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if h.limited(r, tok) {
+	if h.limited(r, c, false) {
 		h.render(w, r, http.StatusTooManyRequests, pageData{Page: "busy"})
 		return
 	}

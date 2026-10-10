@@ -33,6 +33,22 @@ type View struct {
 
 func (v View) IsSubscribed(topicID uuid.UUID) bool { return slices.Contains(v.Subscribed, topicID) }
 
+// CanAdd: may this person pick topics here? Only if they're properly
+// subscribed, or were before they unsubscribed. People awaiting double opt-in
+// or quarantined must confirm first; suppressed addresses never can.
+func (v View) CanAdd() bool {
+	if v.Contact == nil || v.Suppressed {
+		return false
+	}
+	switch v.Contact.Status {
+	case store.ContactSubscribed:
+		return true
+	case store.ContactUnsubscribed:
+		return v.Contact.StatusBeforeUnsubscribe != nil && *v.Contact.StatusBeforeUnsubscribe == store.ContactSubscribed
+	}
+	return false
+}
+
 // Unsubscribed: nothing left that we'd send them from this brand.
 func (v View) Unsubscribed() bool {
 	return v.Contact == nil || v.Suppressed || v.Contact.Status == store.ContactUnsubscribed || len(v.Subscribed) == 0
@@ -144,8 +160,7 @@ func (s *Service) Unsubscribe(ctx context.Context, c Claims, all bool, req Reque
 	return v, err
 }
 
-// ErrCantSubscribe: the address is blocked company-wide (or still awaiting
-// double opt-in confirmation), so it can only unsubscribe.
+// ErrCantSubscribe: this person may only remove topics here (see View.CanAdd).
 var ErrCantSubscribe = errors.New("this address can't be subscribed")
 
 // SavePreferences makes the contact's topics exactly `want`. Adding a topic
@@ -174,7 +189,7 @@ func (s *Service) SavePreferences(ctx context.Context, c Claims, want []uuid.UUI
 				remove = append(remove, id)
 			}
 		}
-		if len(add) > 0 && (v.Suppressed || v.Contact.Status == store.ContactPending) {
+		if len(add) > 0 && !v.CanAdd() {
 			return ErrCantSubscribe
 		}
 		now := s.now()
@@ -210,7 +225,9 @@ func (s *Service) SavePreferences(ctx context.Context, c Claims, want []uuid.UUI
 			kind := "opt_in"
 			if v.Contact.Status == store.ContactUnsubscribed {
 				kind = "resubscribed"
-				if err := tx.Resubscribe(ctx, v.Contact.ID, now); err != nil {
+				if err := tx.Resubscribe(ctx, v.Contact.ID, now); errors.Is(err, store.ErrNotFound) {
+					return ErrCantSubscribe
+				} else if err != nil {
 					return err
 				}
 				v.Contact.Status = store.ContactSubscribed

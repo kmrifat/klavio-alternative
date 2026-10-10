@@ -149,6 +149,9 @@ func Load(getenv func(string) string) (Config, error) {
 		if cfg.UnsubscribeSecret == "" || cfg.UnsubscribeSecret == devUnsubscribeSecret {
 			errs = append(errs, errors.New("UNSUBSCRIBE_SECRET is required in production (32+ random characters)"))
 		}
+		if cfg.UnsubscribeSecretOld == devUnsubscribeSecret {
+			errs = append(errs, errors.New("UNSUBSCRIBE_SECRET_OLD can't be the public development secret"))
+		}
 		if cfg.PublicBaseURLOverride != "" {
 			errs = append(errs, errors.New("PUBLIC_BASE_URL_OVERRIDE is for development only"))
 		}

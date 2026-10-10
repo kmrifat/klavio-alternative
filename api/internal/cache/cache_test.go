@@ -62,6 +62,17 @@ func TestRedisLimiter(t *testing.T) {
 	if ttl := c.TTL(ctx, "ratelimit:"+key).Val(); ttl <= 0 || ttl > time.Minute {
 		t.Fatalf("window not set: %v", ttl)
 	}
+
+	// A key that lost its expiry (crash, manual edit) gets one back on the next hit.
+	stuck := key + ":stuck"
+	defer c.Del(ctx, "ratelimit:"+stuck)
+	c.Set(ctx, "ratelimit:"+stuck, 99, 0)
+	if ok, _ := c.Allow(ctx, stuck, 3, time.Minute); ok {
+		t.Fatal("over-limit key allowed")
+	}
+	if ttl := c.TTL(ctx, "ratelimit:"+stuck).Val(); ttl <= 0 {
+		t.Fatalf("stuck key wasn't given an expiry: %v", ttl)
+	}
 }
 
 func TestMemoryLimiter(t *testing.T) {

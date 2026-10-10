@@ -101,7 +101,9 @@ func (s *Signer) Token(c Claims) string {
 // Verify checks the signature and returns the claims.
 func (s *Signer) Verify(token string) (Claims, error) {
 	raw, err := b64.DecodeString(token)
-	if err != nil || len(raw) < 3+32+macLen || raw[0] != version {
+	// Only the canonical encoding is accepted (the decoder skips \r and \n),
+	// so one link has exactly one spelling.
+	if err != nil || len(raw) < 3+32+macLen || raw[0] != version || b64.EncodeToString(raw) != token {
 		return Claims{}, ErrMalformed
 	}
 	payload, sig := raw[:len(raw)-macLen], raw[len(raw)-macLen:]

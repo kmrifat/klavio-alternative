@@ -76,11 +76,11 @@
     {{if .Contact}}
       <p>Choose what {{.Brand.Name}} sends to <strong>{{mask .Contact.Email}}</strong>.</p>
       {{if .Saved}}<div class="note ok" role="status">Saved. {{if .Unsubscribed}}You're unsubscribed from all {{.Brand.Name}} email.{{else}}Your choices take effect right away.{{end}}</div>{{end}}
-      {{if or .Suppressed .CantChange}}<div class="note warn" role="alert">{{if .Suppressed}}This address can't receive email from us, because earlier messages bounced or were reported as unwanted. You can still remove topics.{{else}}Confirm your subscription from the email we sent you before choosing topics.{{end}}</div>{{end}}
+      {{if or .CantChange (not .CanAdd)}}<div class="note warn" role="alert">{{if .Suppressed}}This address can't receive email from us, because earlier messages bounced or were reported as unwanted. You can still remove topics.{{else}}You can remove topics here. To get {{.Brand.Name}} email again, confirm your subscription from the email we sent you.{{end}}</div>{{end}}
       <form method="post">
         {{$v := .View}}
         {{range .Topics}}
-        <label class="topic"><input type="checkbox" name="topic" value="{{.ID}}" {{if $v.IsSubscribed .ID}}checked{{end}} {{if and $v.Suppressed (not ($v.IsSubscribed .ID))}}disabled{{end}}><span>{{.Name}}</span></label>
+        <label class="topic"><input type="checkbox" name="topic" value="{{.ID}}" {{if $v.IsSubscribed .ID}}checked{{end}} {{if and (not $v.CanAdd) (not ($v.IsSubscribed .ID))}}disabled{{end}}><span>{{.Name}}</span></label>
         {{end}}
         <div class="stack" style="margin-top:16px">
           <button class="btn primary" name="action" value="save">Save preferences</button>

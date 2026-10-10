@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // Limiter answers "may this key do one more thing in this window?".
@@ -11,16 +13,21 @@ type Limiter interface {
 	Allow(ctx context.Context, key string, limit int, window time.Duration) (bool, error)
 }
 
-// Allow is a fixed-window counter in Redis: INCR, and set the expiry on the
-// first hit. Cheap and good enough for abuse protection.
+// allowScript counts a hit and makes sure the key expires, in one atomic step.
+// The TTL check also repairs a key that somehow lost its expiry, so nobody can
+// end up blocked forever.
+var allowScript = redis.NewScript(`
+local n = redis.call('INCR', KEYS[1])
+if n == 1 or redis.call('PTTL', KEYS[1]) < 0 then
+  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+end
+return n`)
+
+// Allow is a fixed-window counter in Redis. Cheap and good enough for abuse protection.
 func (c *Client) Allow(ctx context.Context, key string, limit int, window time.Duration) (bool, error) {
-	k := "ratelimit:" + key
-	n, err := c.Incr(ctx, k).Result()
+	n, err := allowScript.Run(ctx, c.Client, []string{"ratelimit:" + key}, window.Milliseconds()).Int64()
 	if err != nil {
 		return true, err // fail open: never block an unsubscribe because Redis hiccuped
-	}
-	if n == 1 {
-		c.Expire(ctx, k, window)
 	}
 	return n <= int64(limit), nil
 }

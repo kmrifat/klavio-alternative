@@ -115,3 +115,15 @@ func TestUnsubscribeSecret(t *testing.T) {
 		t.Fatalf("short secret: %v", err)
 	}
 }
+
+func TestProductionRejectsDevSecretAsOld(t *testing.T) {
+	_, err := Load(envFrom(map[string]string{
+		"APP_ENV": "production", "DATABASE_URL": "postgres://x", "REDIS_URL": "redis://x",
+		"CF_ACCESS_TEAM_DOMAIN": "a.cloudflareaccess.com", "CF_ACCESS_AUD": "x", "WEBAUTHN_RP_ID": "example.com",
+		"SES_EVENT_BUS_ARN": "arn:x", "UNSUBSCRIBE_SECRET": "prod-secret-0123456789abcdef0123456789",
+		"UNSUBSCRIBE_SECRET_OLD": devUnsubscribeSecret,
+	}))
+	if err == nil || !strings.Contains(err.Error(), "UNSUBSCRIBE_SECRET_OLD") {
+		t.Fatalf("got %v", err)
+	}
+}

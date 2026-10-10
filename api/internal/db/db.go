@@ -40,10 +40,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	// Milestones land in parallel PRs, so a lower-numbered migration can merge
-	// after a higher one (e.g. 00004 after 00005). Apply such gaps instead of
-	// refusing to start.
-	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, files, goose.WithAllowOutofOrder(true))
+	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, files)
 	if err != nil {
 		return fmt.Errorf("goose provider: %w", err)
 	}
