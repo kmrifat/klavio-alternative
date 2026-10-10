@@ -52,3 +52,9 @@ func (s *Store) BulkInsertContactsForTest(ctx context.Context, brandID uuid.UUID
 		FROM generate_series(1, $2) g`, brandID, n)
 	return err
 }
+
+// ExecForTest runs a statement, for tests that need to age or reset rows.
+func (s *Store) ExecForTest(ctx context.Context, sql string, args ...any) error {
+	_, err := s.db.Exec(ctx, sql, args...)
+	return err
+}

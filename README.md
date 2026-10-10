@@ -123,6 +123,10 @@ per IP and per token; logs show `/u/[token]`.
 | `DNS_RESOLVER` | `1.1.1.1:53` | DNS server for brand checks |
 | `UNSUBSCRIBE_SECRET` | dev-only default | required in production, 32+ random characters; signs unsubscribe links |
 | `UNSUBSCRIBE_SECRET_OLD` | — | previous secret during rotation (old links keep working) |
+| `BLOCKLIST_RESOLVER` | system resolver | `host:port` of your own recursive DNS resolver for blocklist lookups (public resolvers are refused); `off` disables them |
+| `BLOCKLIST_CHECK_INTERVAL` | `6h` | how often blocklists are re-checked (at least `1h`) |
+| `SPAMHAUS_DQS_KEY` | — | optional Spamhaus Data Query Service key |
+| `POSTMASTER_CREDENTIALS_FILE` | — | Google service-account JSON for Postmaster Tools (Gmail spam rate). Mount as a secret; never commit |
 | `PUBLIC_BASE_URL_OVERRIDE` | — | development only, e.g. `http://localhost:8080` instead of `https://<link domain>` |
 | `TRUST_CLOUDFLARE_HEADERS` | `false` (dev), `true` (prod) | believe `CF-Connecting-IP` / `CF-IPCountry` from `TRUSTED_PROXY_CIDRS` |
 | `TRUSTED_PROXY_CIDRS` | `127.0.0.1/32,::1/128` | comma-separated IPs/CIDRs of the `cloudflared` sidecar (docker-compose: `10.210.250.10/32`) |

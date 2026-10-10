@@ -20,6 +20,9 @@ import { ApprovalsPage } from "../routes/approvals/ApprovalsPage";
 import { AuditPage } from "../routes/audit/AuditPage";
 import { SafetyLimits } from "../routes/settings/SafetyLimits";
 import { ImportWizard } from "../routes/contacts/ImportWizard";
+import { SafetyCenter } from "../routes/safety/SafetyCenter";
+import { Home } from "../routes/Home";
+import { BrandHealthPage } from "../routes/health/BrandHealthPage";
 import { brandScreens, companyScreens } from "../lib/screens";
 
 // KnownBrand renders brand pages only for brands the user can see.
@@ -34,9 +37,11 @@ const builtCompanyScreens: Record<string, RouteObject> = {
   team: { path: "team", element: <TeamPage /> },
   approvals: { path: "approvals", element: <ApprovalsPage /> },
   audit: { path: "audit", element: <AuditPage /> },
+  safety: { path: "safety", element: <SafetyCenter /> },
 };
 
 const builtBrandScreens: Record<string, RouteObject> = {
+  health: { path: "health", element: <BrandHealthPage /> },
   templates: {
     path: "templates",
     children: [
@@ -58,7 +63,7 @@ export const routes: RouteObject[] = [
       {
         element: <AppLayout />,
         children: [
-          { index: true, element: <Navigate to="/safety" replace /> },
+          { index: true, element: <Home /> },
           ...companyScreens.map(
             (s) => builtCompanyScreens[s.path] ?? { path: s.path, element: <ScreenPlaceholder screen={s} /> },
           ),

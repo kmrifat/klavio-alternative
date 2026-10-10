@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"strings"
+	"time"
 )
 
 type Env string
@@ -47,6 +48,15 @@ type Config struct {
 	// links, for local development (e.g. http://localhost:8080).
 	PublicBaseURLOverride string
 
+	// Health (M6). BlocklistResolver is the host:port of your own recursive
+	// DNS resolver: Spamhaus, SURBL and URIBL refuse queries that come through
+	// big public resolvers. "" = the system resolver, "off" = no checks.
+	BlocklistResolver string
+	BlocklistEvery    time.Duration
+	SpamhausDQSKey    string // optional Spamhaus Data Query Service key
+	// PostmasterCredentialsFile: Google service-account JSON for Postmaster
+	// Tools. Mount it as a secret; never commit it. "" = not connected.
+	PostmasterCredentialsFile string
 	// Cloudflare's CF-Connecting-IP / CF-IPCountry headers are believed only
 	// when TrustCloudflareHeaders is on and the request's socket peer is in
 	// TrustedProxies (the cloudflared sidecar). Anyone else could forge them.
@@ -122,6 +132,14 @@ func Load(getenv func(string) string) (Config, error) {
 	cfg.UnsubscribeSecret = get("UNSUBSCRIBE_SECRET", "")
 	cfg.UnsubscribeSecretOld = get("UNSUBSCRIBE_SECRET_OLD", "")
 	cfg.PublicBaseURLOverride = get("PUBLIC_BASE_URL_OVERRIDE", "")
+	cfg.BlocklistResolver = get("BLOCKLIST_RESOLVER", "")
+	cfg.SpamhausDQSKey = get("SPAMHAUS_DQS_KEY", "")
+	cfg.PostmasterCredentialsFile = get("POSTMASTER_CREDENTIALS_FILE", "")
+	if d, err := time.ParseDuration(get("BLOCKLIST_CHECK_INTERVAL", "6h")); err != nil || d < time.Hour {
+		errs = append(errs, errors.New("BLOCKLIST_CHECK_INTERVAL must be a duration of at least 1h (the lists limit free use)"))
+	} else {
+		cfg.BlocklistEvery = d
+	}
 	switch v := get("TRUST_CLOUDFLARE_HEADERS", map[Env]string{EnvDevelopment: "false", EnvProduction: "true"}[cfg.Env]); v {
 	case "true":
 		cfg.TrustCloudflareHeaders = true

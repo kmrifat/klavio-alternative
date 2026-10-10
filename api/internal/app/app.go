@@ -14,22 +14,26 @@ import (
 	"github.com/kmrifat/klavio-alternative/api/internal/anomaly"
 	"github.com/kmrifat/klavio-alternative/api/internal/approvals"
 	"github.com/kmrifat/klavio-alternative/api/internal/auth"
+	"github.com/kmrifat/klavio-alternative/api/internal/blocklist"
 	"github.com/kmrifat/klavio-alternative/api/internal/brands"
 	"github.com/kmrifat/klavio-alternative/api/internal/cache"
 	"github.com/kmrifat/klavio-alternative/api/internal/config"
 	"github.com/kmrifat/klavio-alternative/api/internal/contacts"
 	"github.com/kmrifat/klavio-alternative/api/internal/dnscheck"
 	"github.com/kmrifat/klavio-alternative/api/internal/exports"
+	"github.com/kmrifat/klavio-alternative/api/internal/health"
 	"github.com/kmrifat/klavio-alternative/api/internal/httpx"
 	"github.com/kmrifat/klavio-alternative/api/internal/imports"
 	"github.com/kmrifat/klavio-alternative/api/internal/jobs"
 	"github.com/kmrifat/klavio-alternative/api/internal/limits"
+	"github.com/kmrifat/klavio-alternative/api/internal/postmaster"
 	"github.com/kmrifat/klavio-alternative/api/internal/server"
 	"github.com/kmrifat/klavio-alternative/api/internal/ses"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
 	"github.com/kmrifat/klavio-alternative/api/internal/team"
 	"github.com/kmrifat/klavio-alternative/api/internal/templates"
 	"github.com/kmrifat/klavio-alternative/api/internal/unsubscribe"
+	"github.com/kmrifat/klavio-alternative/api/internal/warmup"
 )
 
 type Deps struct {
@@ -48,7 +52,10 @@ type Deps struct {
 	TemplateRebuilder templates.Rebuilder
 	// Limiter rate-limits the public unsubscribe POSTs (Redis in production).
 	Limiter cache.Limiter
-	Version string
+	// Blocklists nil = blocklist checks off; Postmaster nil = not connected.
+	Blocklists *blocklist.Checker
+	Postmaster *postmaster.Client
+	Version    string
 }
 
 // Resolver answers the DNS questions for brand checks and import MX checks.
@@ -73,6 +80,9 @@ type App struct {
 	Anomaly   *anomaly.Service
 	exports   *exports.Service
 	team      *team.Handlers
+	// Warmup paces new brands' daily volume; the sending worker reserves from it.
+	Warmup *warmup.Service
+	Health *health.Service
 }
 
 func New(d Deps) (*App, error) {
@@ -129,6 +139,15 @@ func New(d Deps) (*App, error) {
 	if a.deps.Limiter == nil {
 		a.deps.Limiter = &cache.MemoryLimiter{}
 	}
+
+	// Health (M6): warm-up, health score, Safety center.
+	a.Warmup = warmup.NewService(st)
+	a.Health = health.NewService(st, d.SES, a.Brands, a.Warmup, health.Config{
+		Blocklists:     d.Blocklists,
+		BlocklistEvery: d.Config.BlocklistEvery,
+		Postmaster:     d.Postmaster,
+		AccessOn:       d.Access != nil,
+	}, d.Log)
 	return a, nil
 }
 
@@ -152,6 +171,14 @@ func FromConfig(ctx context.Context, cfg config.Config, log *slog.Logger, pool *
 		}
 		d.SES = aws
 	}
+	if cfg.BlocklistResolver != "off" {
+		d.Blocklists = &blocklist.Checker{R: blocklist.NewResolver(cfg.BlocklistResolver), DQSKey: cfg.SpamhausDQSKey}
+	}
+	pm, err := postmaster.New(ctx, cfg.PostmasterCredentialsFile)
+	if err != nil {
+		return nil, err
+	}
+	d.Postmaster = pm
 	return New(d)
 }
 
@@ -176,6 +203,7 @@ func (a *App) Handler() http.Handler {
 			a.exports.Routes(mux)
 			contactsH.Routes(mux)
 			a.Imports.Routes(mux, a.Auth)
+			(&health.Handlers{Service: a.Health, Store: a.Store, Approvals: a.Approvals}).Routes(mux)
 		},
 		RegisterPublic: (&unsubscribe.Handlers{Signer: a.Unsubscribe, Service: a.unsubSvc, Limiter: a.deps.Limiter, Log: a.deps.Log}).Routes,
 	})
@@ -220,7 +248,7 @@ func (a *App) ServeHTTP(ctx context.Context) error {
 // RunWorker works background jobs until ctx is cancelled.
 func (a *App) RunWorker(ctx context.Context) error {
 	log := a.deps.Log
-	client, err := jobs.NewWorker(a.deps.Pool, log, jobs.Deps{Brands: a.Brands, Sessions: a.Store, Imports: a.Imports, ImportFiles: a.Store, Templates: a.Templates, Governance: governanceJobs{a}})
+	client, err := jobs.NewWorker(a.deps.Pool, log, jobs.Deps{Brands: a.Brands, Sessions: a.Store, Imports: a.Imports, ImportFiles: a.Store, Templates: a.Templates, Governance: governanceJobs{a}, Health: a.Health})
 	if err != nil {
 		return err
 	}

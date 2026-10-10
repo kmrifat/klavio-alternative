@@ -3,13 +3,15 @@ import { Link, useNavigate } from "react-router";
 import { Check, ChevronDown, Plus } from "lucide-react";
 import type { BrandListItem } from "../api/types";
 import { useMe } from "../api/hooks";
+import { seesCompany } from "../routes/Home";
 
 // "Sending as" card from the design. No brand selected = read-only company view.
 export function BrandSwitcher({ brands, current }: { brands: BrandListItem[]; current: BrandListItem | undefined }) {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
   const ref = useRef<HTMLDivElement>(null);
-  const isOwner = useMe().data?.user.company_role === "owner";
+  const role = useMe().data?.user.company_role;
+  const isOwner = role === "owner";
 
   useEffect(() => {
     if (!open) return;
@@ -80,10 +82,14 @@ export function BrandSwitcher({ brands, current }: { brands: BrandListItem[]; cu
 
       {open && (
         <div role="menu" className="absolute inset-x-0 top-full z-10 mt-1 rounded-lg border border-zinc-200 bg-white p-1 shadow-lg">
-          <MenuItem selected={!current} onSelect={() => go("/safety")}>
-            <span className="text-sm">All brands (company view)</span>
-          </MenuItem>
-          <div className="my-1 border-t border-zinc-100" />
+          {seesCompany(role) && (
+            <>
+              <MenuItem selected={!current} onSelect={() => go("/safety")}>
+                <span className="text-sm">All brands (company view)</span>
+              </MenuItem>
+              <div className="my-1 border-t border-zinc-100" />
+            </>
+          )}
           {brands.map((b) => (
             <MenuItem key={b.slug} selected={current?.slug === b.slug} onSelect={() => go(`/b/${b.slug}/campaigns`)}>
               <BrandMark brand={b} small />

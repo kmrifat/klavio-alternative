@@ -33,7 +33,22 @@ type Provisioner interface {
 	// SetUpBrand is idempotent: re-running it for an existing brand is safe.
 	SetUpBrand(ctx context.Context, domain, mailFromDomain, configurationSet string) (DomainSetup, error)
 	IdentityStatus(ctx context.Context, domain string) (string, error)
+	// Account reports the shared SES account's quota and standing (S1 meters).
+	Account(ctx context.Context) (Account, error)
 	Region() string
+}
+
+// Account is the SES account every brand shares. Its limits and reputation
+// are account-wide: one brand's complaints can pause sending for all.
+type Account struct {
+	Max24HourSend   float64 `json:"max_24_hour_send"` // emails per rolling 24 hours
+	MaxSendRate     float64 `json:"max_send_rate"`    // emails per second
+	SentLast24Hours float64 `json:"sent_last_24_hours"`
+	// ProductionAccess false = SES sandbox: only verified addresses receive mail.
+	ProductionAccess bool `json:"production_access"`
+	SendingEnabled   bool `json:"sending_enabled"`
+	// EnforcementStatus: HEALTHY, PROBATION or SHUTDOWN.
+	EnforcementStatus string `json:"enforcement_status"`
 }
 
 // --- AWS ---
@@ -131,14 +146,31 @@ func (a *AWS) IdentityStatus(ctx context.Context, domain string) (string, error)
 	return string(got.VerificationStatus), nil
 }
 
+func (a *AWS) Account(ctx context.Context) (Account, error) {
+	got, err := a.client.GetAccount(ctx, &sesv2.GetAccountInput{})
+	if err != nil {
+		return Account{}, err
+	}
+	acc := Account{
+		ProductionAccess:  got.ProductionAccessEnabled,
+		SendingEnabled:    got.SendingEnabled,
+		EnforcementStatus: aws.ToString(got.EnforcementStatus),
+	}
+	if q := got.SendQuota; q != nil {
+		acc.Max24HourSend, acc.MaxSendRate, acc.SentLast24Hours = q.Max24HourSend, q.MaxSendRate, q.SentLast24Hours
+	}
+	return acc, nil
+}
+
 // --- Fake, for development and tests ---
 
 // Fake hands out deterministic DKIM tokens and never talks to AWS. Identities
 // start PENDING and report SUCCESS on the next status check (there is nothing
 // to verify), unless a test sets another status.
 type Fake struct {
-	mu     sync.Mutex
-	status map[string]string
+	mu      sync.Mutex
+	status  map[string]string
+	account *Account
 }
 
 func (f *Fake) Region() string { return "us-east-1" }
@@ -159,6 +191,23 @@ func (f *Fake) IdentityStatus(_ context.Context, domain string) (string, error) 
 		return s, nil
 	}
 	return StatusSuccess, nil
+}
+
+// Account returns a production account with a typical new quota, plus
+// whatever a test set with SetAccount.
+func (f *Fake) Account(context.Context) (Account, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.account != nil {
+		return *f.account, nil
+	}
+	return Account{Max24HourSend: 50000, MaxSendRate: 14, ProductionAccess: true, SendingEnabled: true, EnforcementStatus: "HEALTHY"}, nil
+}
+
+func (f *Fake) SetAccount(a Account) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.account = &a
 }
 
 func (f *Fake) SetStatus(domain, status string) {
