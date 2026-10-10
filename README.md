@@ -80,6 +80,17 @@ binary, builds the Docker image and validates the OpenTofu config.
 
 Every write needs `Content-Type: application/json` from an allowed origin (CSRF guard).
 
+**Public pages** (no login; served on each brand's link domain, e.g. `go.brand.com`; signed links from `internal/unsubscribe`):
+
+| Path | Purpose |
+|---|---|
+| `GET /u/{token}` | P4: "Unsubscribe from <topic>?" — read-only, so mail scanners can't unsubscribe anyone |
+| `POST /u/{token}` | The page's confirm button, or the RFC 8058 one-click POST (`List-Unsubscribe=One-Click`, form or multipart) |
+| `GET/POST /p/{token}` | P3 preference center: per-topic choices, unsubscribe from all; suppressed addresses can only remove |
+
+Tokens are HMAC-signed (brand, contact, optional campaign and topic) and never expire. POSTs are rate-limited
+per IP and per token; logs show `/u/[token]`.
+
 ## Configuration (`api/.env.example`)
 
 | Variable | Default | |
@@ -96,6 +107,9 @@ Every write needs `Content-Type: application/json` from an allowed origin (CSRF 
 | `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD` | — | required in production |
 | `SES_MODE` | `fake` (dev), `aws` (prod) | `aws` also needs `SES_REGION`, `SES_EVENT_BUS_ARN` |
 | `DNS_RESOLVER` | `1.1.1.1:53` | DNS server for brand checks |
+| `UNSUBSCRIBE_SECRET` | dev-only default | required in production, 32+ random characters; signs unsubscribe links |
+| `UNSUBSCRIBE_SECRET_OLD` | — | previous secret during rotation (old links keep working) |
+| `PUBLIC_BASE_URL_OVERRIDE` | — | development only, e.g. `http://localhost:8080` instead of `https://<link domain>` |
 
 ## Deploying (M0 checklist — manual steps)
 

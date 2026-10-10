@@ -37,7 +37,18 @@ type Config struct {
 	SESRegion      string
 	SESEventBusARN string // EventBridge bus that receives SES events
 	DNSResolver    string // host:port of the DNS server used for brand DNS checks
+
+	// Unsubscribe links are HMAC-signed with this (32+ chars). Rotate by moving
+	// the current value to UNSUBSCRIBE_SECRET_OLD: links in sent email keep working.
+	UnsubscribeSecret    string
+	UnsubscribeSecretOld string
+	// PublicBaseURLOverride replaces https://<brand link domain> in public
+	// links, for local development (e.g. http://localhost:8080).
+	PublicBaseURLOverride string
 }
+
+// devUnsubscribeSecret is only for local development; production must set its own.
+const devUnsubscribeSecret = "dev-only-unsubscribe-secret-not-for-production"
 
 // Load reads configuration from the environment. getenv is injectable for tests;
 // pass os.Getenv in production.
@@ -101,6 +112,17 @@ func Load(getenv func(string) string) (Config, error) {
 	cfg.SESRegion = get("SES_REGION", "us-east-1")
 	cfg.SESEventBusARN = get("SES_EVENT_BUS_ARN", "")
 	cfg.DNSResolver = get("DNS_RESOLVER", "1.1.1.1:53")
+	cfg.UnsubscribeSecret = get("UNSUBSCRIBE_SECRET", "")
+	cfg.UnsubscribeSecretOld = get("UNSUBSCRIBE_SECRET_OLD", "")
+	cfg.PublicBaseURLOverride = get("PUBLIC_BASE_URL_OVERRIDE", "")
+	if cfg.UnsubscribeSecret == "" && cfg.Env == EnvDevelopment {
+		cfg.UnsubscribeSecret = devUnsubscribeSecret
+	}
+	for name, v := range map[string]string{"UNSUBSCRIBE_SECRET": cfg.UnsubscribeSecret, "UNSUBSCRIBE_SECRET_OLD": cfg.UnsubscribeSecretOld} {
+		if v != "" && len(v) < 32 {
+			errs = append(errs, fmt.Errorf("%s must be at least 32 characters", name))
+		}
+	}
 
 	if (cfg.AccessTeamDomain == "") != (cfg.AccessAUD == "") {
 		errs = append(errs, errors.New("set both CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD, or neither"))
@@ -123,6 +145,15 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		if getenv("WEBAUTHN_RP_ID") == "" {
 			errs = append(errs, errors.New("WEBAUTHN_RP_ID is required in production"))
+		}
+		if cfg.UnsubscribeSecret == "" || cfg.UnsubscribeSecret == devUnsubscribeSecret {
+			errs = append(errs, errors.New("UNSUBSCRIBE_SECRET is required in production (32+ random characters)"))
+		}
+		if cfg.UnsubscribeSecretOld == devUnsubscribeSecret {
+			errs = append(errs, errors.New("UNSUBSCRIBE_SECRET_OLD can't be the public development secret"))
+		}
+		if cfg.PublicBaseURLOverride != "" {
+			errs = append(errs, errors.New("PUBLIC_BASE_URL_OVERRIDE is for development only"))
 		}
 	}
 
