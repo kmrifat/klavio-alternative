@@ -215,6 +215,11 @@ func (r inlineRunner) StartCommit(ctx context.Context, brandID, id uuid.UUID) er
 	return (*r.a).Imports.RunCommit(context.WithoutCancel(ctx), brandID, id)
 }
 
+// QueueRebuild recompiles templates right away, after the change committed.
+func (r inlineRunner) QueueRebuild(ctx context.Context, brandID uuid.UUID) error {
+	return (*r.a).Templates.RebuildBrand(context.WithoutCancel(ctx), brandID)
+}
+
 func setup(t *testing.T) (*app.App, *httptest.Server, *fakeDNS) {
 	pool := testdb.New(t)
 	var appRef *app.App
@@ -224,14 +229,15 @@ func setup(t *testing.T) (*app.App, *httptest.Server, *fakeDNS) {
 			Env: config.EnvDevelopment, AllowedOrigins: []string{origin}, AppURL: origin,
 			WebAuthnRPID: "localhost", WebAuthnRPName: "Test",
 		},
-		Log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Pool:         pool,
-		Redis:        upPinger{},
-		Ceremonies:   &auth.MemoryCeremonies{},
-		SES:          &ses.Fake{},
-		DNS:          dns,
-		Version:      "test",
-		ImportRunner: inlineRunner{a: &appRef},
+		Log:               slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Pool:              pool,
+		Redis:             upPinger{},
+		Ceremonies:        &auth.MemoryCeremonies{},
+		SES:               &ses.Fake{},
+		DNS:               dns,
+		Version:           "test",
+		ImportRunner:      inlineRunner{a: &appRef},
+		TemplateRebuilder: inlineRunner{a: &appRef},
 	})
 	if err != nil {
 		t.Fatal(err)

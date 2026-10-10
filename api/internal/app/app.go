@@ -37,7 +37,10 @@ type Deps struct {
 	DNS        Resolver
 	// ImportRunner overrides the river job runner (tests run imports inline).
 	ImportRunner imports.Runner
-	Version      string
+	// TemplateRebuilder overrides the river job that recompiles templates
+	// after a layout or allowlist change (tests run it inline).
+	TemplateRebuilder templates.Rebuilder
+	Version           string
 }
 
 // Resolver answers the DNS questions for brand checks and import MX checks.
@@ -75,15 +78,21 @@ func New(d Deps) (*App, error) {
 		Imports:   imports.NewService(st, d.DNS, d.Log),
 		Templates: templates.NewService(st, d.Log),
 	}
-	runner := d.ImportRunner
-	if runner == nil {
+	runner, rebuilder := d.ImportRunner, d.TemplateRebuilder
+	if runner == nil || rebuilder == nil {
 		client, err := jobs.NewInserter(d.Pool, d.Log)
 		if err != nil {
 			return nil, err
 		}
-		runner = jobs.Runner{Client: client}
+		if runner == nil {
+			runner = jobs.Runner{Client: client}
+		}
+		if rebuilder == nil {
+			rebuilder = jobs.Runner{Client: client}
+		}
 	}
 	a.Imports.SetRunner(runner)
+	a.Templates.SetRebuilder(rebuilder)
 	return a, nil
 }
 
@@ -170,7 +179,7 @@ func (a *App) ServeHTTP(ctx context.Context) error {
 // RunWorker works background jobs until ctx is cancelled.
 func (a *App) RunWorker(ctx context.Context) error {
 	log := a.deps.Log
-	client, err := jobs.NewWorker(a.deps.Pool, log, jobs.Deps{Brands: a.Brands, Sessions: a.Store, Imports: a.Imports, ImportFiles: a.Store})
+	client, err := jobs.NewWorker(a.deps.Pool, log, jobs.Deps{Brands: a.Brands, Sessions: a.Store, Imports: a.Imports, ImportFiles: a.Store, Templates: a.Templates})
 	if err != nil {
 		return err
 	}

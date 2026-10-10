@@ -52,6 +52,7 @@ const tpl: Template = {
   error_count: 1,
   warning_count: 0,
   layout_version: 0,
+  stale: false,
   version: 3,
   created_at: "2026-10-01T00:00:00Z",
   updated_at: new Date().toISOString(),
@@ -67,7 +68,12 @@ function api(me: Me, extra: Parameters<typeof fakeApi>[0] = {}) {
     [`GET ${base}/link-allowlist`]: { status: 200, body: { domains: [{ domain: "shop.example.com", added_by: null, created_at: "" }], brand_domains: ["news.brightside.co", "go.brightside.co"] } },
     [`GET ${base}/templates`]: {
       status: 200,
-      body: { templates: [{ id: "t1", name: "Autumn launch", error_count: 1, warning_count: 0, updated_at: tpl.updated_at, updated_by_name: "Jon Park" }] },
+      body: {
+        templates: [
+          { id: "t1", name: "Autumn launch", error_count: 1, warning_count: 0, stale: false, updated_at: tpl.updated_at, updated_by_name: "Jon Park" },
+          { id: "t3", name: "Old promo", error_count: 0, warning_count: 0, stale: true, updated_at: tpl.updated_at, updated_by_name: null },
+        ],
+      },
     },
     [`GET ${base}/templates/t1`]: { status: 200, body: tplResponse },
     ...extra,
@@ -81,6 +87,8 @@ describe("templates list (S13)", () => {
     const row = (await screen.findByRole("link", { name: "Autumn launch" })).closest("tr")!;
     expect(within(row).getByText("1 error")).toBeInTheDocument();
     expect(within(row).getByText(/Jon Park/)).toBeInTheDocument();
+    const stale = screen.getByRole("link", { name: "Old promo" }).closest("tr")!;
+    expect(within(stale).getByText("Re-checking…")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /new template/i })).toBeInTheDocument();
     expect(await screen.findByText("Using the default layout.")).toBeInTheDocument();
     const allowed = await screen.findByRole("list", { name: "Allowed domains" });
@@ -92,13 +100,13 @@ describe("templates list (S13)", () => {
     const calls = api(ownerMe, {
       [`POST ${base}/link-allowlist`]: {
         status: 201,
-        body: { domains: [], brand_domains: [], templates_rebuilt: 3, templates_with_errors: 1 },
+        body: { domains: [], brand_domains: [], templates_queued: 3 },
       },
     }).calls;
     renderAt("/b/brightside/templates");
     await userEvent.type(await screen.findByLabelText("Domain to allow"), "blog.example.org");
     await userEvent.click(screen.getByRole("button", { name: "Allow" }));
-    expect(await screen.findByText(/Re-checked 3 templates; 1 now have errors/)).toBeInTheDocument();
+    expect(await screen.findByText(/Re-checking 3 templates in the background/)).toBeInTheDocument();
     expect(calls.find((c) => c.method === "POST" && c.path.endsWith("/link-allowlist"))?.body).toEqual({ domain: "blog.example.org" });
   });
 
@@ -129,7 +137,12 @@ describe("template editor", () => {
     const router = renderAt("/b/brightside/templates/new");
 
     expect(await screen.findByText("image hero.png has no alt text")).toBeInTheDocument();
-    expect(screen.getByTitle("Email preview")).toHaveAttribute("sandbox", "");
+    const frame = screen.getByTitle("Email preview");
+    expect(frame).toHaveAttribute("sandbox", "");
+    // Remote images are blocked until asked for.
+    expect(frame.getAttribute("srcdoc")).toContain("img-src data:");
+    await userEvent.click(screen.getByLabelText("Load images"));
+    expect(screen.getByTitle("Email preview").getAttribute("srcdoc")).toContain("img-src https: http: data:");
 
     await userEvent.type(screen.getByLabelText("Template name"), "Welcome");
     await userEvent.click(screen.getByRole("button", { name: "Create template" }));

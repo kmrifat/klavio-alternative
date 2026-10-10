@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 const welcome = `<mj-section><mj-column>
@@ -12,6 +14,11 @@ const welcome = `<mj-section><mj-column>
     shipped in recycled packaging, and members get early access all week long.</mj-text>
   <mj-button href="https://shop.example.com/autumn">Shop the range</mj-button>
 </mj-column></mj-section>`
+
+// nopRebuilder drops rebuild requests, as if the job were lost.
+type nopRebuilder struct{}
+
+func (nopRebuilder) QueueRebuild(context.Context, uuid.UUID) error { return nil }
 
 func issueCodes(v any) []string {
 	var out []string
@@ -65,11 +72,16 @@ func TestTemplates(t *testing.T) {
 	}
 
 	// Allowlisting the shop fixes it: every template is re-checked.
+	for _, d := range []string{"co.uk", "github.io"} {
+		if r := owner.do("POST", base+"/link-allowlist", map[string]any{"domain": d}); r.errCode() != "public_suffix" {
+			t.Fatalf("public suffix %s: %d %s", d, r.status, r.raw)
+		}
+	}
 	if r := owner.do("POST", base+"/link-allowlist", map[string]any{"domain": "bit.ly"}); r.errCode() != "shortener" {
 		t.Fatalf("shortener: %d %s", r.status, r.raw)
 	}
 	allowed := owner.must(201, owner.do("POST", base+"/link-allowlist", map[string]any{"domain": "https://Shop.Example.com."}))
-	if num(allowed.body["templates_rebuilt"]) != 1 || num(allowed.body["templates_with_errors"]) != 0 {
+	if num(allowed.body["templates_queued"]) != 1 {
 		t.Fatalf("allowlist rebuild: %s", allowed.raw)
 	}
 	if d := allowed.body["domains"].([]any)[0].(map[string]any)["domain"]; d != "shop.example.com" {
@@ -113,7 +125,7 @@ func TestTemplates(t *testing.T) {
 	// A good layout change recompiles every template.
 	purple := strings.ReplaceAll(def, "#f97316", "#7c3aed")
 	put := owner.must(200, owner.do("PUT", base+"/layout", map[string]any{"mjml": purple, "version": 0}))
-	if num(put.body["layout"].(map[string]any)["version"]) != 1 || num(put.body["templates_rebuilt"]) != 1 {
+	if num(put.body["layout"].(map[string]any)["version"]) != 1 || num(put.body["templates_queued"]) != 1 {
 		t.Fatalf("layout save: %s", put.raw)
 	}
 	tpl = owner.must(200, owner.do("GET", base+"/templates/"+id, nil)).body["template"].(map[string]any)
@@ -130,6 +142,9 @@ func TestTemplates(t *testing.T) {
 	}
 	if r := owner.do("PUT", base+"/layout", map[string]any{"mjml": def, "version": 1}); r.errCode() != "step_up_required" {
 		t.Fatalf("layout without step-up: %d %s", r.status, r.raw)
+	}
+	if r := owner.do("DELETE", base+"/link-allowlist/shop.example.com", nil); r.errCode() != "step_up_required" {
+		t.Fatalf("allowlist removal without step-up: %d %s", r.status, r.raw)
 	}
 	if r := owner.do("POST", base+"/link-allowlist", map[string]any{"domain": "blog.example.org"}); r.errCode() != "step_up_required" {
 		t.Fatalf("allowlist without step-up: %d %s", r.status, r.raw)
@@ -176,8 +191,13 @@ func TestTemplates(t *testing.T) {
 
 	// Removing an allowlisted domain re-checks templates again.
 	removed := owner.must(200, owner.do("DELETE", base+"/link-allowlist/shop.example.com", nil))
-	if num(removed.body["templates_with_errors"]) != 2 {
+	if num(removed.body["templates_queued"]) != 2 {
 		t.Fatalf("after removing the domain: %s", removed.raw)
+	}
+	for _, row := range owner.must(200, owner.do("GET", base+"/templates", nil)).body["templates"].([]any) {
+		if r := row.(map[string]any); num(r["error_count"]) != 1 || r["stale"] != false {
+			t.Fatalf("templates should be rebuilt with the link error: %v", r)
+		}
 	}
 	owner.must(404, owner.do("DELETE", base+"/link-allowlist/shop.example.com", nil))
 
@@ -185,6 +205,29 @@ func TestTemplates(t *testing.T) {
 	editor.must(204, editor.do("DELETE", base+"/templates/"+editorID, nil))
 	editor.must(404, editor.do("GET", base+"/templates/"+editorID, nil))
 	editor.must(201, editor.do("POST", base+"/templates", map[string]any{"name": "Editor's draft", "mjml": welcome}))
+
+	// If the rebuild job is lost, templates show as stale until the periodic
+	// sweep catches up.
+	a.Templates.SetRebuilder(nopRebuilder{})
+	owner.must(200, owner.do("PUT", base+"/layout", map[string]any{"mjml": def, "version": 1}))
+	staleCount := func() int {
+		n := 0
+		for _, row := range owner.must(200, owner.do("GET", base+"/templates", nil)).body["templates"].([]any) {
+			if row.(map[string]any)["stale"] == true {
+				n++
+			}
+		}
+		return n
+	}
+	if n := staleCount(); n != 2 {
+		t.Fatalf("want 2 stale templates after a lost rebuild, got %d", n)
+	}
+	if err := a.Templates.RebuildStale(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := staleCount(); n != 0 {
+		t.Fatalf("sweep left %d stale templates", n)
+	}
 
 	// Everything above is in the audit log.
 	entries := owner.must(200, owner.do("GET", "/admin/v1/audit", nil)).body["entries"].([]any)

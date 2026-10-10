@@ -59,7 +59,13 @@ export function TemplatesPage() {
                     </Link>
                   </td>
                   <td className="px-2 py-3">
-                    <IssueSummary errors={t.error_count} warnings={t.warning_count} />
+                    {t.stale ? (
+                      <Badge tone="blue" dot>
+                        Re-checking…
+                      </Badge>
+                    ) : (
+                      <IssueSummary errors={t.error_count} warnings={t.warning_count} />
+                    )}
                   </td>
                   <td className="px-2 py-3 pr-5 text-zinc-600">
                     {timeAgo(t.updated_at)}
@@ -183,10 +189,9 @@ function AllowlistCard({ slug }: { slug: string }) {
         )}
         <div className="mt-2 space-y-2">
           <ErrorNote error={allow.error ?? disallow.error} />
-          {result?.templates_rebuilt ? (
+          {result?.templates_queued ? (
             <p className="text-xs text-zinc-600">
-              Re-checked {result.templates_rebuilt} {result.templates_rebuilt === 1 ? "template" : "templates"}
-              {result.templates_with_errors ? `; ${result.templates_with_errors} now have errors` : ""}.
+              Re-checking {result.templates_queued} {result.templates_queued === 1 ? "template" : "templates"} in the background.
             </p>
           ) : null}
         </div>

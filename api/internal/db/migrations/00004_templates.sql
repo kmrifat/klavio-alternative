@@ -19,6 +19,14 @@ CREATE TABLE link_allowlist (
     PRIMARY KEY (brand_id, domain)
 );
 
+-- Bumped whenever a brand's layout or allowlist changes. Templates record the
+-- generation they were built against; older ones are rebuilt in the
+-- background (a template with built_generation < generation is stale).
+CREATE TABLE template_generations (
+    brand_id   uuid PRIMARY KEY REFERENCES brands ON DELETE CASCADE,
+    generation bigint NOT NULL DEFAULT 0 CHECK (generation >= 0)
+);
+
 -- The body of an email. html/text_body are the compiled result inside the
 -- brand layout (merge tags still in place); issues are the last check run.
 CREATE TABLE templates (
@@ -32,6 +40,7 @@ CREATE TABLE templates (
     error_count    integer NOT NULL DEFAULT 0,
     warning_count  integer NOT NULL DEFAULT 0,
     layout_version integer NOT NULL DEFAULT 0, -- 0 = compiled with the default layout
+    built_generation bigint NOT NULL DEFAULT 0, -- template_generations.generation it was compiled against
     version        integer NOT NULL DEFAULT 1, -- bumped on every save, for edit conflicts
     created_by     uuid REFERENCES users ON DELETE SET NULL,
     updated_by     uuid REFERENCES users ON DELETE SET NULL,
@@ -47,5 +56,6 @@ CREATE INDEX templates_brand_updated ON templates (brand_id, updated_at DESC) WH
 
 -- +goose Down
 DROP TABLE templates;
+DROP TABLE template_generations;
 DROP TABLE link_allowlist;
 DROP TABLE brand_layouts;

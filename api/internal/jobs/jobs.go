@@ -30,6 +30,10 @@ type Deps struct {
 	ImportFiles interface {
 		PurgeAbandonedImports(ctx context.Context) (int64, error)
 	}
+	Templates interface {
+		RebuildBrand(ctx context.Context, brandID uuid.UUID) error
+		RebuildStale(ctx context.Context) error
+	}
 }
 
 // HeartbeatArgs is a periodic no-op job that shows the worker is alive.
@@ -141,7 +145,48 @@ func (w *ImportCheckWorker) Timeout(*river.Job[ImportCheckArgs]) time.Duration {
 	return 30 * time.Minute
 }
 
-// Runner queues import jobs; it satisfies imports.Runner.
+// TemplateRebuildArgs recompiles a brand's templates after its layout or
+// link allowlist changed.
+type TemplateRebuildArgs struct {
+	BrandID uuid.UUID `json:"brand_id"`
+}
+
+func (TemplateRebuildArgs) Kind() string { return "templates.rebuild" }
+
+type TemplateRebuildWorker struct {
+	river.WorkerDefaults[TemplateRebuildArgs]
+	Deps Deps
+}
+
+func (w *TemplateRebuildWorker) Work(ctx context.Context, j *river.Job[TemplateRebuildArgs]) error {
+	return w.Deps.Templates.RebuildBrand(ctx, j.Args.BrandID)
+}
+
+func (w *TemplateRebuildWorker) Timeout(*river.Job[TemplateRebuildArgs]) time.Duration {
+	return 30 * time.Minute
+}
+
+// TemplateSweepArgs rebuilds any brand whose templates are still stale, in
+// case a rebuild job was lost.
+type TemplateSweepArgs struct{}
+
+func (TemplateSweepArgs) Kind() string { return "templates.sweep" }
+
+type TemplateSweepWorker struct {
+	river.WorkerDefaults[TemplateSweepArgs]
+	Deps Deps
+}
+
+func (w *TemplateSweepWorker) Work(ctx context.Context, _ *river.Job[TemplateSweepArgs]) error {
+	return w.Deps.Templates.RebuildStale(ctx)
+}
+
+func (w *TemplateSweepWorker) Timeout(*river.Job[TemplateSweepArgs]) time.Duration {
+	return 30 * time.Minute
+}
+
+// Runner queues import jobs and template rebuilds; it satisfies
+// imports.Runner and templates.Rebuilder.
 type Runner struct{ Client *Client }
 
 func (r Runner) StartCheck(ctx context.Context, brandID, importID uuid.UUID) error {
@@ -151,6 +196,11 @@ func (r Runner) StartCheck(ctx context.Context, brandID, importID uuid.UUID) err
 
 func (r Runner) StartCommit(ctx context.Context, brandID, importID uuid.UUID) error {
 	_, err := r.Client.Insert(ctx, ImportCommitArgs{BrandID: brandID, ImportID: importID}, &river.InsertOpts{MaxAttempts: 3})
+	return err
+}
+
+func (r Runner) QueueRebuild(ctx context.Context, brandID uuid.UUID) error {
+	_, err := r.Client.Insert(ctx, TemplateRebuildArgs{BrandID: brandID}, &river.InsertOpts{MaxAttempts: 10})
 	return err
 }
 
@@ -184,6 +234,11 @@ func NewWorker(pool *pgxpool.Pool, log *slog.Logger, deps Deps) (*Client, error)
 	if deps.ImportFiles != nil {
 		river.AddWorker(workers, &PurgeImportsWorker{Deps: deps, Log: log})
 		jobs = append(jobs, periodic(time.Hour, PurgeImportsArgs{}, true))
+	}
+	if deps.Templates != nil {
+		river.AddWorker(workers, &TemplateRebuildWorker{Deps: deps})
+		river.AddWorker(workers, &TemplateSweepWorker{Deps: deps})
+		jobs = append(jobs, periodic(10*time.Minute, TemplateSweepArgs{}, true))
 	}
 	if deps.Sessions != nil {
 		river.AddWorker(workers, &SessionCleanupWorker{Deps: deps, Log: log})

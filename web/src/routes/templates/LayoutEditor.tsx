@@ -63,10 +63,12 @@ function Editor({ slug, saved, save }: { slug: string; saved: LayoutResponse; sa
       ) : (
         <ErrorNote error={save.error} />
       )}
-      {save.data?.templates_rebuilt ? (
+      {save.isSuccess ? (
         <p role="status" className="rounded-md bg-green-50 px-3 py-2 text-sm text-green-800">
-          Saved. Recompiled {save.data.templates_rebuilt} {save.data.templates_rebuilt === 1 ? "template" : "templates"}
-          {save.data.templates_with_errors ? `; ${save.data.templates_with_errors} now have errors to fix.` : "."}
+          Saved.
+          {save.data.templates_queued
+            ? ` Recompiling ${save.data.templates_queued} ${save.data.templates_queued === 1 ? "template" : "templates"} in the background; check the list for any that now have errors.`
+            : ""}
         </p>
       ) : null}
 

@@ -11,7 +11,7 @@ import (
 // sent with both: some readers prefer it, and an HTML-only email scores
 // worse with spam filters.
 func PlainText(htmlBody string) string {
-	doc, err := html.Parse(strings.NewReader(htmlBody))
+	doc, err := parseHTML(htmlBody)
 	if err != nil {
 		return ""
 	}

@@ -99,7 +99,7 @@ func TestSourceIssues(t *testing.T) {
 	cases := map[string]string{
 		"<mjml><mj-body></mj-body></mjml>":      "template_has_wrapper",
 		"<mj-section>{{content}}</mj-section>":  "template_has_content_tag",
-		`<mj-include path="./footer.mjml" />`:   "mj_include",
+		`<mj-include path="./footer.mjml" />`:   "template_has_wrapper",
 		strings.Repeat("x", MaxTemplateBytes+1): "too_large",
 	}
 	for content, want := range cases {
@@ -118,8 +118,10 @@ func TestSourceIssues(t *testing.T) {
 func page(body string) string {
 	return `<html><head><style>p{color:red}</style></head><body>` + body +
 		`<p>Plenty of real words here so that the email does not look image only to the checks at all, honestly.</p>` +
-		`<a href="{{unsubscribe_url}}">Unsubscribe</a> {{postal_address}}</body></html>`
+		footerHTML + `</body></html>`
 }
+
+const footerHTML = `<div class="klv-footer"><a href="{{unsubscribe_url}}">Unsubscribe</a> {{postal_address}}</div>`
 
 func TestCheck(t *testing.T) {
 	cases := []struct {
@@ -156,19 +158,18 @@ func TestCheck(t *testing.T) {
 		}
 	}
 
-	bare := codes(Check(`<p>hello</p>`, cc))
-	if !slices.Contains(bare, "missing_unsubscribe") || !slices.Contains(bare, "missing_postal_address") {
-		t.Errorf("bare: %v", bare)
+	if bare := codes(Check(`<p>hello</p><a href="{{unsubscribe_url}}">Unsubscribe</a> {{postal_address}}`, cc)); !slices.Equal(bare, []string{"missing_footer"}) {
+		t.Errorf("unsubscribe and address outside a footer don't count: %v", bare)
 	}
 	// An unsubscribe link with other words in its href doesn't count.
-	if got := codes(Check(`<a href="https://brightside.co/?u={{unsubscribe_url}}">Unsubscribe</a> {{postal_address}}`, cc)); !slices.Contains(got, "missing_unsubscribe") {
+	if got := codes(Check(`<div class="klv-footer"><a href="https://brightside.co/?u={{unsubscribe_url}}">Unsubscribe</a> {{postal_address}}</div>`, cc)); !slices.Contains(got, "missing_unsubscribe") {
 		t.Errorf("wrapped unsubscribe: %v", got)
 	}
 	big := page(strings.Repeat("<p>long</p>", GmailClipBytes/10))
 	if !slices.Contains(codes(Check(big, cc)), "gmail_clipping") {
 		t.Error("no gmail_clipping warning")
 	}
-	imageOnly := `<img src="https://brightside.co/a.png" alt="Sale"><a href="{{unsubscribe_url}}">Unsubscribe</a> {{postal_address}}`
+	imageOnly := `<img src="https://brightside.co/a.png" alt="Sale">` + footerHTML
 	if got := codes(Check(imageOnly, cc)); !slices.Equal(got, []string{"image_only"}) {
 		t.Errorf("image only: %v", got)
 	}

@@ -73,10 +73,21 @@ export function IssueList({ issues, checking }: { issues: Issue[]; checking?: bo
 
 type View = "desktop" | "mobile" | "text";
 
+// withPolicy adds a Content-Security-Policy to the previewed email. Remote
+// images stay blocked until asked for: loading them tells the image host the
+// viewer's IP address. Nothing else remote ever loads.
+export function withPolicy(html: string, images: boolean): string {
+  const policy = `default-src 'none'; style-src 'unsafe-inline'; img-src ${images ? "https: http: data:" : "data:"}`;
+  const meta = `<meta http-equiv="Content-Security-Policy" content="${policy}">`;
+  const head = /<head[^>]*>/i.exec(html);
+  return head ? html.slice(0, head.index + head[0].length) + meta + html.slice(head.index + head[0].length) : meta + html;
+}
+
 // EmailPreview shows compiled HTML in a sandboxed frame: no scripts, no
 // navigation, nothing from the email can touch the app.
 export function EmailPreview({ html, text }: { html: string; text?: string }) {
   const [view, setView] = useState<View>("desktop");
+  const [images, setImages] = useState(false);
   const views: { id: View; label: string; icon: typeof Monitor }[] = [
     { id: "desktop", label: "Desktop", icon: Monitor },
     { id: "mobile", label: "Mobile", icon: Smartphone },
@@ -99,6 +110,12 @@ export function EmailPreview({ html, text }: { html: string; text?: string }) {
             <v.icon className="size-3.5" /> {v.label}
           </button>
         ))}
+        {view !== "text" && (
+          <label className="ml-auto inline-flex items-center gap-1.5 text-xs text-zinc-600">
+            <input type="checkbox" checked={images} onChange={(e) => setImages(e.target.checked)} />
+            Load images
+          </label>
+        )}
       </div>
       <div className="flex flex-1 justify-center overflow-auto bg-zinc-100 p-4">
         {view === "text" ? (
@@ -107,7 +124,7 @@ export function EmailPreview({ html, text }: { html: string; text?: string }) {
           <iframe
             title="Email preview"
             sandbox=""
-            srcDoc={html}
+            srcDoc={withPolicy(html, images)}
             className={`h-full min-h-[480px] rounded-lg border border-zinc-200 bg-white ${view === "mobile" ? "w-[375px]" : "w-full max-w-[680px]"}`}
           />
         ) : (

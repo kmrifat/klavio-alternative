@@ -17,8 +17,9 @@ export type MergeTag = { name: string; description: string; url: boolean };
 
 export type Layout = { mjml: string; version: number; is_default: boolean; updated_at: string | null };
 
-// Returned after a layout or allowlist change: every template is recompiled.
-type Rebuilt = { templates_rebuilt?: number; templates_with_errors?: number };
+// Returned after a layout or allowlist change: every template is recompiled
+// in the background, and shows as stale until then.
+type Rebuilt = { templates_queued?: number };
 
 export type LayoutResponse = Rebuilt & { layout: Layout; preview_html: string; issues: Issue[]; tags: MergeTag[] };
 
@@ -31,6 +32,7 @@ export type TemplateSummary = {
   name: string;
   error_count: number;
   warning_count: number;
+  stale: boolean;
   updated_at: string;
   updated_by_name: string | null;
 };
@@ -87,7 +89,9 @@ export function useDisallowDomain(slug: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (domain: string) =>
-      apiFetch<AllowlistResponse>(`${brandPath(slug)}/link-allowlist/${encodeURIComponent(domain)}`, { method: "DELETE" }),
+      withStepUp(() =>
+        apiFetch<AllowlistResponse>(`${brandPath(slug)}/link-allowlist/${encodeURIComponent(domain)}`, { method: "DELETE" }),
+      ),
     onSuccess: (d) => {
       qc.setQueryData(["allowlist", slug], d);
       void qc.invalidateQueries({ queryKey: ["templates", slug] });

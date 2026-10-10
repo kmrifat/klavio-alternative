@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"regexp"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/net/publicsuffix"
 
 	"github.com/kmrifat/klavio-alternative/api/internal/auth"
 	"github.com/kmrifat/klavio-alternative/api/internal/httpx"
@@ -27,16 +29,19 @@ type authorizer interface {
 // Changes to the layout will also need a second admin's approval once the
 // approvals engine lands (M5).
 func (s *Service) Routes(mux *http.ServeMux, az authorizer) {
-	h := func(f httpx.HandlerFunc) http.HandlerFunc { return httpx.Handle(s.log, f) }
+	h := func(f httpx.HandlerFunc) http.HandlerFunc { return httpx.Handle(s.log, compileErrors(f)) }
+	withAZ := func(f func(http.ResponseWriter, *http.Request, authorizer) error) http.HandlerFunc {
+		return h(func(w http.ResponseWriter, r *http.Request) error { return f(w, r, az) })
+	}
 	base := "/admin/v1/brands/{slug}"
 
 	mux.HandleFunc("GET "+base+"/layout", h(s.getLayout))
-	mux.HandleFunc("PUT "+base+"/layout", h(func(w http.ResponseWriter, r *http.Request) error { return s.putLayout(w, r, az) }))
+	mux.HandleFunc("PUT "+base+"/layout", withAZ(s.putLayout))
 	mux.HandleFunc("POST "+base+"/layout/preview", h(s.previewLayout))
 
 	mux.HandleFunc("GET "+base+"/link-allowlist", h(s.getAllowlist))
-	mux.HandleFunc("POST "+base+"/link-allowlist", h(func(w http.ResponseWriter, r *http.Request) error { return s.allowDomain(w, r, az) }))
-	mux.HandleFunc("DELETE "+base+"/link-allowlist/{domain}", h(s.disallowDomain))
+	mux.HandleFunc("POST "+base+"/link-allowlist", withAZ(s.allowDomain))
+	mux.HandleFunc("DELETE "+base+"/link-allowlist/{domain}", withAZ(s.disallowDomain))
 
 	mux.HandleFunc("GET "+base+"/templates", h(s.listTemplates))
 	mux.HandleFunc("POST "+base+"/templates", h(s.createTemplate))
@@ -44,6 +49,21 @@ func (s *Service) Routes(mux *http.ServeMux, az authorizer) {
 	mux.HandleFunc("GET "+base+"/templates/{id}", h(s.getTemplate))
 	mux.HandleFunc("PUT "+base+"/templates/{id}", h(s.updateTemplate))
 	mux.HandleFunc("DELETE "+base+"/templates/{id}", h(s.archiveTemplate))
+}
+
+// compileErrors turns a busy or slow compiler into a 503 the editor can retry.
+func compileErrors(f httpx.HandlerFunc) httpx.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) error {
+		err := f(w, r)
+		switch {
+		case errors.Is(err, ErrBusy):
+			w.Header().Set("Retry-After", "5")
+			return httpx.Errorf(http.StatusServiceUnavailable, "compiler_busy", "the template compiler is busy; try again in a few seconds")
+		case errors.Is(err, ErrTimeout):
+			return httpx.Errorf(http.StatusServiceUnavailable, "compile_timeout", "compiling took too long; make the template smaller")
+		}
+		return err
+	}
 }
 
 // visibleBrand loads the {slug} brand, answering 404 (not 403) for brands the
@@ -66,6 +86,16 @@ func (s *Service) brandWithRole(r *http.Request, min store.BrandRole) (store.Bra
 	if err == nil && !p.HasBrandRole(b.ID, min) {
 		err = httpx.ErrForbidden
 	}
+	return b, p, err
+}
+
+// adminWithStepUp is brandWithRole(brand admin) plus a fresh passkey confirmation.
+func (s *Service) adminWithStepUp(r *http.Request, az authorizer) (store.Brand, *auth.Principal, error) {
+	b, _, err := s.brandWithRole(r, store.RoleBrandAdmin)
+	if err != nil {
+		return b, nil, err
+	}
+	p, err := az.RequireStepUp(r)
 	return b, p, err
 }
 
@@ -94,21 +124,23 @@ type layoutView struct {
 	UpdatedAt *time.Time `json:"updated_at"`
 }
 
+// writeLayout answers with the layout, its preview and its check results.
+// Compiled layouts are cached, so this rarely compiles.
 func (s *Service) writeLayout(w http.ResponseWriter, r *http.Request, b store.Brand, l store.Layout, extra map[string]any) error {
 	cc, err := checkContext(r.Context(), s.store, b)
 	if err != nil {
 		return err
 	}
-	c, issues, err := Compile(r.Context(), l.MJML, SampleContent)
+	preview, issues, err := LayoutPreview(r.Context(), l.MJML)
 	if err != nil {
 		return err
 	}
 	if len(issues) == 0 {
-		issues = Check(c.HTML, cc)
+		issues = Check(preview, cc)
 	}
 	out := map[string]any{
 		"layout":       layoutView{MJML: l.MJML, Version: l.Version, IsDefault: l.Version == 0, UpdatedAt: l.UpdatedAt},
-		"preview_html": Render(c.HTML, SampleVars(b.Name, b.PostalAddress)),
+		"preview_html": Render(preview, SampleVars(b.Name, b.PostalAddress)),
 		"issues":       nonNil(issues),
 		"tags":         Tags,
 	}
@@ -145,18 +177,32 @@ func (s *Service) previewLayout(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.ReadJSON(r, &in); err != nil {
 		return err
 	}
-	if len(in.MJML) > MaxLayoutBytes {
-		return bad("too_large", "the layout is over %d KB", MaxLayoutBytes>>10)
-	}
 	return s.writeLayout(w, r, b, store.Layout{MJML: in.MJML, Version: in.Version}, nil)
 }
 
-func (s *Service) putLayout(w http.ResponseWriter, r *http.Request, az authorizer) error {
-	b, _, err := s.brandWithRole(r, store.RoleBrandAdmin)
-	if err != nil {
+// changeContent runs a layout or allowlist change: a short transaction that
+// makes the change, starts a new template generation and writes the audit
+// entry, then a background rebuild of every template. Nothing compiles
+// while the transaction is open.
+func (s *Service) changeContent(ctx context.Context, b store.Brand, change func(tx *store.Store) error) (queued int, err error) {
+	err = s.store.InTx(ctx, func(tx *store.Store) error {
+		if err := change(tx); err != nil {
+			return err
+		}
+		if _, err := tx.BumpTemplateGeneration(ctx, b.ID); err != nil {
+			return err
+		}
+		queued, err = tx.CountLiveTemplates(ctx, b.ID)
 		return err
+	})
+	if err == nil {
+		s.queueRebuild(ctx, b.ID)
 	}
-	p, err := az.RequireStepUp(r)
+	return queued, err
+}
+
+func (s *Service) putLayout(w http.ResponseWriter, r *http.Request, az authorizer) error {
+	b, p, err := s.adminWithStepUp(r, az)
 	if err != nil {
 		return err
 	}
@@ -177,11 +223,7 @@ func (s *Service) putLayout(w http.ResponseWriter, r *http.Request, az authorize
 	}
 
 	var saved store.Layout
-	var rebuilt, withErrors int
-	err = s.store.InTx(r.Context(), func(tx *store.Store) error {
-		if err := tx.LockBrandContent(r.Context(), b.ID, true); err != nil {
-			return err
-		}
+	queued, err := s.changeContent(r.Context(), b, func(tx *store.Store) error {
 		before, err := layoutFor(r.Context(), tx, b)
 		if err != nil {
 			return err
@@ -189,12 +231,9 @@ func (s *Service) putLayout(w http.ResponseWriter, r *http.Request, az authorize
 		if saved, err = tx.SaveLayout(r.Context(), b.ID, in.MJML, in.Version, p.User.ID); err != nil {
 			return err
 		}
-		if rebuilt, withErrors, err = rebuildAll(r.Context(), tx, b); err != nil {
-			return err
-		}
 		return tx.Audit(r.Context(), auth.AuditEntry(r, "layout.updated", "layout", b.Slug, &b.ID),
 			map[string]any{"version": before.Version, "mjml": before.MJML},
-			map[string]any{"version": saved.Version, "mjml": saved.MJML, "templates_rebuilt": rebuilt, "templates_with_errors": withErrors})
+			map[string]any{"version": saved.Version, "mjml": saved.MJML})
 	})
 	if errors.Is(err, store.ErrStale) {
 		return errStale
@@ -202,7 +241,7 @@ func (s *Service) putLayout(w http.ResponseWriter, r *http.Request, az authorize
 	if err != nil {
 		return err
 	}
-	return s.writeLayout(w, r, b, saved, map[string]any{"templates_rebuilt": rebuilt, "templates_with_errors": withErrors})
+	return s.writeLayout(w, r, b, saved, map[string]any{"templates_queued": queued})
 }
 
 // --- link allowlist ---
@@ -231,11 +270,7 @@ func (s *Service) writeAllowlist(w http.ResponseWriter, r *http.Request, b store
 var domainRe = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
 
 func (s *Service) allowDomain(w http.ResponseWriter, r *http.Request, az authorizer) error {
-	b, _, err := s.brandWithRole(r, store.RoleBrandAdmin)
-	if err != nil {
-		return err
-	}
-	p, err := az.RequireStepUp(r)
+	b, p, err := s.adminWithStepUp(r, az)
 	if err != nil {
 		return err
 	}
@@ -247,22 +282,19 @@ func (s *Service) allowDomain(w http.ResponseWriter, r *http.Request, az authori
 	}
 	d := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(in.Domain), "."))
 	d = strings.TrimPrefix(strings.TrimPrefix(d, "https://"), "http://")
+	suffix, _ := publicsuffix.PublicSuffix(d)
 	switch {
 	case !domainRe.MatchString(d):
 		return bad("invalid_domain", "%q is not a domain name, e.g. shop.example.com", in.Domain)
 	case IsShortener(d):
 		return bad("shortener", "%s is a link shortener; shortened links are never allowed", d)
+	case suffix == d:
+		// co.uk or github.io would allow every site under it.
+		return bad("public_suffix", "%s is shared by many unrelated sites; allow a specific domain under it", d)
 	}
 
-	var rebuilt, withErrors int
-	err = s.store.InTx(r.Context(), func(tx *store.Store) error {
-		if err := tx.LockBrandContent(r.Context(), b.ID, true); err != nil {
-			return err
-		}
+	queued, err := s.changeContent(r.Context(), b, func(tx *store.Store) error {
 		if _, err := tx.AllowDomain(r.Context(), b.ID, d, p.User.ID); err != nil {
-			return err
-		}
-		if rebuilt, withErrors, err = rebuildAll(r.Context(), tx, b); err != nil {
 			return err
 		}
 		return tx.Audit(r.Context(), auth.AuditEntry(r, "link_allowlist.added", "link_allowlist", d, &b.ID), nil, map[string]string{"domain": d})
@@ -273,24 +305,17 @@ func (s *Service) allowDomain(w http.ResponseWriter, r *http.Request, az authori
 	if err != nil {
 		return err
 	}
-	return s.writeAllowlist(w, r, b, http.StatusCreated, map[string]any{"templates_rebuilt": rebuilt, "templates_with_errors": withErrors})
+	return s.writeAllowlist(w, r, b, http.StatusCreated, map[string]any{"templates_queued": queued})
 }
 
-func (s *Service) disallowDomain(w http.ResponseWriter, r *http.Request) error {
-	b, _, err := s.brandWithRole(r, store.RoleBrandAdmin)
+func (s *Service) disallowDomain(w http.ResponseWriter, r *http.Request, az authorizer) error {
+	b, _, err := s.adminWithStepUp(r, az)
 	if err != nil {
 		return err
 	}
 	d := strings.ToLower(r.PathValue("domain"))
-	var rebuilt, withErrors int
-	err = s.store.InTx(r.Context(), func(tx *store.Store) error {
-		if err := tx.LockBrandContent(r.Context(), b.ID, true); err != nil {
-			return err
-		}
+	queued, err := s.changeContent(r.Context(), b, func(tx *store.Store) error {
 		if err := tx.DisallowDomain(r.Context(), b.ID, d); err != nil {
-			return err
-		}
-		if rebuilt, withErrors, err = rebuildAll(r.Context(), tx, b); err != nil {
 			return err
 		}
 		return tx.Audit(r.Context(), auth.AuditEntry(r, "link_allowlist.removed", "link_allowlist", d, &b.ID), map[string]string{"domain": d}, nil)
@@ -301,7 +326,7 @@ func (s *Service) disallowDomain(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	return s.writeAllowlist(w, r, b, http.StatusOK, map[string]any{"templates_rebuilt": rebuilt, "templates_with_errors": withErrors})
+	return s.writeAllowlist(w, r, b, http.StatusOK, map[string]any{"templates_queued": queued})
 }
 
 // --- templates ---
@@ -386,15 +411,11 @@ func (s *Service) previewTemplate(w http.ResponseWriter, r *http.Request) error 
 	if err := httpx.ReadJSON(r, &in); err != nil {
 		return err
 	}
-	layout, err := layoutFor(r.Context(), s.store, b)
+	bs, err := readState(r.Context(), s.store, b)
 	if err != nil {
 		return err
 	}
-	cc, err := checkContext(r.Context(), s.store, b)
-	if err != nil {
-		return err
-	}
-	res, issues, err := build(r.Context(), layout, in.MJML, cc)
+	res, issues, err := build(r.Context(), bs, in.MJML)
 	if err != nil {
 		return err
 	}
@@ -407,38 +428,47 @@ func (s *Service) previewTemplate(w http.ResponseWriter, r *http.Request) error 
 	return nil
 }
 
-// saveTemplate compiles and stores a template inside one transaction that
-// holds the brand's shared content lock (see LockBrandContent).
+var errLayoutChanging = httpx.Errorf(http.StatusConflict, "layout_changing", "the brand layout or allowlist is changing right now; save again in a moment")
+
+// saveTemplate compiles a template with no lock held, then stores it if the
+// layout and allowlist it was built against are still current; otherwise it
+// compiles again against the new ones.
 func (s *Service) saveTemplate(r *http.Request, b store.Brand, mjml string, save func(tx *store.Store, res store.TemplateBuild) (store.Template, error)) (store.Template, error) {
-	var t store.Template
-	err := s.store.InTx(r.Context(), func(tx *store.Store) error {
-		if err := tx.LockBrandContent(r.Context(), b.ID, false); err != nil {
-			return err
-		}
-		layout, err := layoutFor(r.Context(), tx, b)
+	for range 3 {
+		bs, err := readState(r.Context(), s.store, b)
 		if err != nil {
-			return err
+			return store.Template{}, err
 		}
-		cc, err := checkContext(r.Context(), tx, b)
+		res, _, err := build(r.Context(), bs, mjml)
 		if err != nil {
-			return err
+			return store.Template{}, err
 		}
-		res, _, err := build(r.Context(), layout, mjml, cc)
-		if err != nil {
+		var t store.Template
+		var moved bool
+		err = s.store.InTx(r.Context(), func(tx *store.Store) error {
+			g, err := tx.LockTemplateGeneration(r.Context(), b.ID)
+			if err != nil {
+				return err
+			}
+			if g != bs.generation {
+				moved = true
+				return nil
+			}
+			t, err = save(tx, res)
 			return err
+		})
+		switch {
+		case errors.Is(err, store.ErrConflict):
+			return t, httpx.Errorf(http.StatusConflict, "template_name_taken", "another template of this brand already has that name")
+		case errors.Is(err, store.ErrStale):
+			return t, errStale
+		case errors.Is(err, store.ErrNotFound):
+			return t, httpx.ErrNotFound
+		case err != nil || !moved:
+			return t, err
 		}
-		t, err = save(tx, res)
-		return err
-	})
-	switch {
-	case errors.Is(err, store.ErrConflict):
-		return t, httpx.Errorf(http.StatusConflict, "template_name_taken", "another template of this brand already has that name")
-	case errors.Is(err, store.ErrStale):
-		return t, errStale
-	case errors.Is(err, store.ErrNotFound):
-		return t, httpx.ErrNotFound
 	}
-	return t, err
+	return store.Template{}, errLayoutChanging
 }
 
 func (s *Service) createTemplate(w http.ResponseWriter, r *http.Request) error {

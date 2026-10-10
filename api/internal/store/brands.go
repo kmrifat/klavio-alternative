@@ -49,6 +49,11 @@ func (s *Store) BrandBySlug(ctx context.Context, slug string) (Brand, error) {
 	return one[Brand](rows, err)
 }
 
+func (s *Store) BrandByID(ctx context.Context, id uuid.UUID) (Brand, error) {
+	rows, err := s.db.Query(ctx, `SELECT `+brandCols+` FROM brands WHERE id = $1`, id)
+	return one[Brand](rows, err)
+}
+
 func (s *Store) ListBrands(ctx context.Context) ([]Brand, error) {
 	rows, err := s.db.Query(ctx, `SELECT `+brandCols+` FROM brands ORDER BY name`)
 	return all[Brand](rows, err)
