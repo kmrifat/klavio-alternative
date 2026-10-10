@@ -1,0 +1,160 @@
+{
+  "tag": { "name": "Meta", "description": "The server, the signed-in member, company alerts, and this reference." },
+  "x-todo": [],
+  "paths": {
+    "/meta": {
+      "get": {
+        "operationId": "getMeta",
+        "summary": "Server version and mode",
+        "description": "Read by the app on every page, before anyone signs in.",
+        "x-role": "public",
+        "x-step-up": false,
+        "x-error-codes": [],
+        "responses": {
+          "200": {
+            "description": "The server.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Meta" } } }
+          }
+        }
+      }
+    },
+    "/me": {
+      "get": {
+        "operationId": "getMe",
+        "summary": "The signed-in member",
+        "description": "Who is signed in, their roles, and until when their last passkey confirmation (step-up) counts.",
+        "x-role": "signed_in",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated"],
+        "responses": {
+          "200": {
+            "description": "The member.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Me" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" }
+        }
+      }
+    },
+    "/alerts": {
+      "get": {
+        "operationId": "listAlerts",
+        "summary": "Company alerts",
+        "description": "Unusual activity the app noticed (anomalies, frozen accounts), newest first, at most 100.",
+        "x-role": "company:approver",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden"],
+        "parameters": [
+          { "name": "open", "in": "query", "description": "`true`: only alerts nobody has acknowledged yet.", "schema": { "type": "boolean" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "The alerts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["alerts"],
+                  "properties": { "alerts": { "type": "array", "maxItems": 100, "items": { "$ref": "#/components/schemas/Alert" } } }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/alerts/{id}/acknowledge": {
+      "post": {
+        "operationId": "acknowledgeAlert",
+        "summary": "Acknowledge an alert",
+        "description": "Marks it handled by the caller. Recorded in the audit log (`alert.acknowledged`).",
+        "x-role": "company:approver",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found"],
+        "parameters": [{ "$ref": "#/components/parameters/ID" }],
+        "responses": {
+          "204": { "description": "Acknowledged." },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/docs": {
+      "get": {
+        "operationId": "getAdminDocs",
+        "summary": "This reference",
+        "description": "An HTML page that renders `/openapi.json`. Only served when `DEBUG` is on (404 otherwise).",
+        "x-role": "signed_in",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated"],
+        "responses": {
+          "200": { "description": "The page.", "content": { "text/html": { "schema": { "type": "string" } } } },
+          "401": { "$ref": "#/components/responses/Unauthenticated" }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "operationId": "getAdminOpenAPI",
+        "summary": "This document",
+        "description": "The admin API as OpenAPI 3.1. Only served when `DEBUG` is on (404 otherwise).",
+        "x-role": "signed_in",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated"],
+        "responses": {
+          "200": { "description": "The document.", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "401": { "$ref": "#/components/responses/Unauthenticated" }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Meta": {
+        "type": "object",
+        "required": ["version", "env", "debug"],
+        "properties": {
+          "version": { "type": "string", "examples": ["1.4.0"] },
+          "env": { "type": "string", "enum": ["development", "production"] },
+          "debug": { "type": "boolean", "description": "Whether debug aids (this reference) are on." }
+        }
+      },
+      "Me": {
+        "type": "object",
+        "required": ["user", "brand_roles", "stepped_up_until"],
+        "properties": {
+          "user": {
+            "type": "object",
+            "required": ["id", "email", "name", "company_role"],
+            "properties": {
+              "id": { "type": "string", "format": "uuid" },
+              "email": { "type": "string", "format": "email" },
+              "name": { "type": "string" },
+              "company_role": { "$ref": "#/components/schemas/CompanyRole" }
+            }
+          },
+          "brand_roles": { "$ref": "#/components/schemas/BrandRoles" },
+          "stepped_up_until": { "type": ["string", "null"], "format": "date-time", "description": "Until when the last passkey confirmation counts; null if none." }
+        }
+      },
+      "Alert": {
+        "type": "object",
+        "required": ["id", "kind", "severity", "user_id", "brand_id", "message", "details", "created_at", "acknowledged_by", "acknowledged_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "kind": { "type": "string", "description": "What was noticed: `new_device`, `unknown_country`, `import_spike`, `account_brake`, `brand_…` (a brand brake), and others.", "examples": ["new_device"] },
+          "severity": { "type": "string", "enum": ["info", "warning", "critical"] },
+          "user_id": { "type": ["string", "null"], "format": "uuid" },
+          "brand_id": { "type": ["string", "null"], "format": "uuid" },
+          "message": { "type": "string" },
+          "details": { "description": "Kind-specific facts, as recorded." },
+          "created_at": { "type": "string", "format": "date-time" },
+          "acknowledged_by": { "type": ["string", "null"], "format": "uuid" },
+          "acknowledged_at": { "type": ["string", "null"], "format": "date-time" }
+        }
+      }
+    }
+  }
+}

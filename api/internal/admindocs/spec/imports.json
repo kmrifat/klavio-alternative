@@ -1,0 +1,19 @@
+{
+  "tag": {
+    "name": "Imports",
+    "description": "CSV imports."
+  },
+  "x-todo": [
+    "GET /admin/v1/brands/{slug}/imports",
+    "POST /admin/v1/brands/{slug}/imports",
+    "GET /admin/v1/brands/{slug}/imports/{id}",
+    "PUT /admin/v1/brands/{slug}/imports/{id}",
+    "POST /admin/v1/brands/{slug}/imports/{id}/cancel",
+    "POST /admin/v1/brands/{slug}/imports/{id}/check",
+    "POST /admin/v1/brands/{slug}/imports/{id}/commit"
+  ],
+  "paths": {},
+  "components": {
+    "schemas": {}
+  }
+}

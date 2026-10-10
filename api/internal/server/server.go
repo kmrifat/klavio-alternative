@@ -26,6 +26,7 @@ type Options struct {
 	Redis          Pinger
 	Version        string
 	Env            string
+	Debug          bool // shown in /admin/v1/meta, so the app can offer debug-only links
 	AllowedOrigins []string
 	// Proxy decides whose Cloudflare headers (client IP, country) to believe.
 	Proxy httpx.ProxyTrust
@@ -61,14 +62,7 @@ func New(o Options) http.Handler {
 	})
 
 	// Admin API, used by the React app. Behind Cloudflare Access in production.
-	admin := http.NewServeMux()
-	admin.HandleFunc("GET /admin/v1/meta", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"version": o.Version, "env": o.Env})
-	})
-	if o.RegisterAdmin != nil {
-		o.RegisterAdmin(admin)
-	}
-	var adminH http.Handler = admin
+	var adminH http.Handler = AdminMux(o)
 	if o.AdminMiddleware != nil {
 		adminH = o.AdminMiddleware(adminH)
 	}
@@ -78,6 +72,19 @@ func New(o Options) http.Handler {
 	}
 
 	return recoverer(o.Log, o.Proxy.Middleware(o.Log, requestLog(o.Log, mux)))
+}
+
+// AdminMux holds every /admin/v1 route, before middleware. New serves it;
+// tests read its routing to check the API reference covers it.
+func AdminMux(o Options) *http.ServeMux {
+	admin := http.NewServeMux()
+	admin.HandleFunc("GET /admin/v1/meta", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"version": o.Version, "env": o.Env, "debug": o.Debug})
+	})
+	if o.RegisterAdmin != nil {
+		o.RegisterAdmin(admin)
+	}
+	return admin
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

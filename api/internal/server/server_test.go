@@ -34,11 +34,11 @@ func newTestServerDeps(dbErr, redisErr error) http.Handler {
 	})
 }
 
-func do(t *testing.T, h http.Handler, req *http.Request) (*httptest.ResponseRecorder, map[string]string) {
+func do(t *testing.T, h http.Handler, req *http.Request) (*httptest.ResponseRecorder, map[string]any) {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	var body map[string]string
+	var body map[string]any
 	if rec.Body.Len() > 0 {
 		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 			t.Fatalf("decode body %q: %v", rec.Body.String(), err)

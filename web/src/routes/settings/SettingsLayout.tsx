@@ -1,5 +1,7 @@
 import { NavLink, Outlet } from "react-router";
-import { Gauge, Globe, KeyRound, Lock, Server, Settings } from "lucide-react";
+import { BookOpen, ExternalLink, Gauge, Globe, KeyRound, Lock, Server, Settings } from "lucide-react";
+import { API_URL } from "../../api/client";
+import { useMeta } from "../../api/hooks";
 import { PageHeader } from "../../components/ui";
 
 export const settingsTabs = [
@@ -12,6 +14,8 @@ export const settingsTabs = [
 ];
 
 export function SettingsLayout() {
+  // The admin API reference exists only while the server runs with DEBUG on.
+  const debug = useMeta().data?.debug === true;
   return (
     <div className="max-w-6xl">
       <PageHeader title="Settings" description="Company-wide configuration. Changes need a passkey confirmation and are logged." />
@@ -31,6 +35,20 @@ export function SettingsLayout() {
                 </NavLink>
               </li>
             ))}
+            {debug && (
+              <li className="mt-3 border-t border-zinc-200 pt-3">
+                <a
+                  href={`${API_URL}/admin/v1/docs`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm text-zinc-700 hover:bg-zinc-100"
+                >
+                  <BookOpen className="size-4" />
+                  Admin API (debug)
+                  <ExternalLink className="ml-auto size-3.5 text-zinc-400" />
+                </a>
+              </li>
+            )}
           </ul>
         </nav>
         <div className="min-w-0 flex-1">

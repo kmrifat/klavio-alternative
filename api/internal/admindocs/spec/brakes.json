@@ -1,0 +1,16 @@
+{
+  "tag": {
+    "name": "Brakes",
+    "description": "Account and brand brakes, and recovery."
+  },
+  "x-todo": [
+    "GET /admin/v1/account-brake",
+    "POST /admin/v1/account-brake/release",
+    "GET /admin/v1/brands/{slug}/recovery",
+    "POST /admin/v1/brands/{slug}/recovery/resume"
+  ],
+  "paths": {},
+  "components": {
+    "schemas": {}
+  }
+}

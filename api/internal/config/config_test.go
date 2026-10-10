@@ -11,6 +11,33 @@ func envFrom(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
 }
 
+func TestDebugDefaults(t *testing.T) {
+	base := map[string]string{"DATABASE_URL": "postgres://x", "REDIS_URL": "redis://x"}
+	dev, err := Load(envFrom(base))
+	if err != nil || !dev.Debug {
+		t.Fatalf("development: Debug %v, %v; want on", dev.Debug, err)
+	}
+	prod := map[string]string{
+		"APP_ENV": "production", "DATABASE_URL": "postgres://x", "REDIS_URL": "redis://x",
+		"CF_ACCESS_TEAM_DOMAIN": "acme.cloudflareaccess.com", "CF_ACCESS_AUD": "aud123",
+		"SES_EVENT_BUS_ARN":    "arn:aws:events:us-east-1:123:event-bus/default",
+		"SES_EVENTS_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/123/mail-ses-events",
+		"WEBAUTHN_RP_ID":       "example.com", "UNSUBSCRIBE_SECRET": "prod-secret-0123456789abcdef0123456789",
+	}
+	cfg, err := Load(envFrom(prod))
+	if err != nil || cfg.Debug {
+		t.Fatalf("production: Debug %v, %v; want off", cfg.Debug, err)
+	}
+	prod["DEBUG"] = "true" // allowed (the app logs a warning)
+	if cfg, err = Load(envFrom(prod)); err != nil || !cfg.Debug {
+		t.Fatalf("production with DEBUG=true: %v, %v", cfg.Debug, err)
+	}
+	base["DEBUG"] = "yes"
+	if _, err := Load(envFrom(base)); err == nil || !strings.Contains(err.Error(), "DEBUG must be true or false") {
+		t.Fatalf("DEBUG=yes: %v", err)
+	}
+}
+
 func TestLoadDefaults(t *testing.T) {
 	cfg, err := Load(envFrom(map[string]string{"DATABASE_URL": "postgres://x", "REDIS_URL": "redis://x"}))
 	if err != nil {

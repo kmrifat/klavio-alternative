@@ -1,0 +1,72 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Admin API",
+    "version": "v1",
+    "description": "The API behind the admin app, under `/admin/v1`. It is internal: it changes with the app and is documented for people working on it. Served only when `DEBUG` is on.\n\n**Signing in.** Every call except a few public ones needs the `sid` session cookie (`__Host-sid` with secure cookies), set by the passkey sign-in or invite flow. In production the whole app also sits behind Cloudflare Access.\n\n**Roles** (`x-role` on each operation):\n- `public`: no session needed.\n- `signed_in`: any signed-in member.\n- `company:approver`: owners and approvers, who see every brand.\n- `company:owner`: owners only.\n- `brand:viewer`, `brand:editor`, `brand:sender`, `brand:brand_admin`: at least that role on the brand in the path (`{slug}`). Owners and approvers have every brand role.\n\n**Step-up** (`x-step-up: true`): the call also needs a passkey confirmation from the last few minutes (`POST /auth/stepup/begin` and `/finish`). Without it the answer is 403 `step_up_required`.\n\n**Errors** are JSON: `{\"error\": {\"code\": \"…\", \"message\": \"…\"}}`. The code is stable and machine-readable; the message is for people. Each operation lists its codes in `x-error-codes`. Any call can also fail with 500 `internal`.\n\n**Writes** must send `Content-Type: application/json` (cross-site writes are refused) and bodies may not have unknown fields (400 `bad_json`)."
+  },
+  "servers": [{ "url": "/admin/v1" }],
+  "security": [{ "session": [] }],
+  "tags": [],
+  "paths": {},
+  "components": {
+    "securitySchemes": {
+      "session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "sid",
+        "description": "Session cookie from the passkey sign-in (`__Host-sid` when secure cookies are on)."
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": ["code", "message"],
+            "properties": {
+              "code": { "type": "string", "description": "Stable, machine-readable.", "examples": ["not_found"] },
+              "message": { "type": "string", "description": "For people; may change.", "examples": ["not found"] }
+            }
+          }
+        }
+      },
+      "CompanyRole": { "type": "string", "enum": ["member", "approver", "owner"] },
+      "BrandRole": { "type": "string", "enum": ["viewer", "editor", "sender", "brand_admin"] },
+      "BrandRoles": {
+        "type": "object",
+        "description": "Brand ID → the member's role on that brand.",
+        "propertyNames": { "format": "uuid" },
+        "additionalProperties": { "$ref": "#/components/schemas/BrandRole" }
+      }
+    },
+    "parameters": {
+      "Slug": { "name": "slug", "in": "path", "required": true, "description": "The brand's slug.", "schema": { "type": "string", "examples": ["brightside"] } },
+      "ID": { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+    },
+    "responses": {
+      "BadJSON": {
+        "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "Unauthenticated": {
+        "description": "`unauthenticated`: no valid session.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "Forbidden": {
+        "description": "`forbidden`: the member's role doesn't allow this.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "ForbiddenOrStepUp": {
+        "description": "`forbidden`: the member's role doesn't allow this. `step_up_required`: confirm with a passkey first.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "NotFound": {
+        "description": "`not_found`: nothing with that ID or slug (or the member can't see it).",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      }
+    }
+  }
+}

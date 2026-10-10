@@ -5,6 +5,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kmrifat/klavio-alternative/api/internal/admindocs"
 	"github.com/kmrifat/klavio-alternative/api/internal/anomaly"
 	"github.com/kmrifat/klavio-alternative/api/internal/approvals"
 	"github.com/kmrifat/klavio-alternative/api/internal/auth"
@@ -120,6 +122,8 @@ type App struct {
 	recorder *tracking.Recorder
 	Brakes   *brakes.Service // the sending worker checks Brakes.CheckGate between batches
 	recovery *brakes.Recovery
+	// adminDocs is the admin API reference, built only when DEBUG is on.
+	adminDocs *admindocs.Spec
 }
 
 func New(d Deps) (*App, error) {
@@ -241,6 +245,13 @@ func New(d Deps) (*App, error) {
 	a.Campaigns.SetTracking(a.Tracking, d.Config.TrackingHoneypot)
 	a.recovery = &brakes.Recovery{Service: a.Brakes, Store: st, Auth: authSvc, Approvals: a.Approvals, Log: d.Log}
 	a.recovery.RegisterApprovals()
+	if d.Config.Debug {
+		spec, err := admindocs.Build()
+		if err != nil {
+			return nil, fmt.Errorf("admin API reference: %w", err)
+		}
+		a.adminDocs = &spec
+	}
 	return a, nil
 }
 
@@ -295,14 +306,21 @@ func FromConfig(ctx context.Context, cfg config.Config, log *slog.Logger, pool *
 	return a, nil
 }
 
-func (a *App) Handler() http.Handler {
+func (a *App) Handler() http.Handler { return server.New(a.serverOptions()) }
+
+// AdminMux is every /admin/v1 route as Handler serves them, without the
+// middleware: tests read its routing to check the API reference covers it.
+func (a *App) AdminMux() *http.ServeMux { return server.AdminMux(a.serverOptions()) }
+
+func (a *App) serverOptions() server.Options {
 	contactsH := &contacts.Handlers{Store: a.Store, Log: a.deps.Log}
-	return server.New(server.Options{
+	return server.Options{
 		Log:             a.deps.Log,
 		DB:              a.deps.Pool,
 		Redis:           a.deps.Redis,
 		Version:         a.deps.Version,
 		Env:             string(a.deps.Config.Env),
+		Debug:           a.deps.Config.Debug,
 		AllowedOrigins:  a.deps.Config.AllowedOrigins,
 		Proxy:           httpx.ProxyTrust{Cloudflare: a.deps.Config.TrustCloudflareHeaders, Proxies: a.deps.Config.TrustedProxies},
 		AdminMiddleware: a.Auth.Middleware,
@@ -321,6 +339,9 @@ func (a *App) Handler() http.Handler {
 			(&segments.Handlers{Store: a.Store, Limiter: a.deps.Limiter, Log: a.deps.Log}).Routes(mux)
 			a.contactsAdm.Routes(mux)
 			a.recovery.Routes(mux)
+			if a.adminDocs != nil {
+				admindocs.Routes(mux, *a.adminDocs, a.deps.Log)
+			}
 		},
 		RegisterPublic: func(mux *http.ServeMux) {
 			(&unsubscribe.Handlers{Signer: a.Unsubscribe, Service: a.unsubSvc, Limiter: a.deps.Limiter, Log: a.deps.Log}).Routes(mux)
@@ -328,7 +349,7 @@ func (a *App) Handler() http.Handler {
 			a.contactsAPI.Routes(mux)
 			(&tracking.Handlers{Signer: a.Tracking, Recorder: a.recorder, Log: a.deps.Log}).Routes(mux)
 		},
-	})
+	}
 }
 
 // ServeHTTP runs the HTTP server until ctx is cancelled, then shuts down gracefully.

@@ -1,0 +1,24 @@
+{
+  "tag": {
+    "name": "Templates",
+    "description": "Templates, the brand layout and the link allowlist."
+  },
+  "x-todo": [
+    "GET /admin/v1/brands/{slug}/layout",
+    "PUT /admin/v1/brands/{slug}/layout",
+    "POST /admin/v1/brands/{slug}/layout/preview",
+    "GET /admin/v1/brands/{slug}/link-allowlist",
+    "POST /admin/v1/brands/{slug}/link-allowlist",
+    "DELETE /admin/v1/brands/{slug}/link-allowlist/{domain}",
+    "GET /admin/v1/brands/{slug}/templates",
+    "POST /admin/v1/brands/{slug}/templates",
+    "POST /admin/v1/brands/{slug}/templates/preview",
+    "DELETE /admin/v1/brands/{slug}/templates/{id}",
+    "GET /admin/v1/brands/{slug}/templates/{id}",
+    "PUT /admin/v1/brands/{slug}/templates/{id}"
+  ],
+  "paths": {},
+  "components": {
+    "schemas": {}
+  }
+}
