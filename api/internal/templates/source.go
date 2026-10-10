@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
 )
 
 // Template source is read with the HTML tokenizer from golang.org/x/net/html,
@@ -306,9 +307,56 @@ const (
 var compiledAllowed = map[string]bool{"tbody": true, "tr": true, "td": true, "table": true, "div": true, "p": true,
 	"img": true, "a": true, "span": true, "br": true}
 
+// compiledDenied are CSS properties that may never appear in the compiled
+// template, whoever wrote them: each one can lift content out of its box
+// and over the footer. MJML's own output (font-size:0 wrappers, mso-*
+// fixes, direction) doesn't use any of them, so this list can be checked
+// against everything MJML generates, unlike the author allowlist.
+var compiledDenied = map[string]bool{
+	"position": true, "z-index": true, "top": true, "left": true, "right": true, "bottom": true, "inset": true,
+	"transform": true, "translate": true, "rotate": true, "scale": true, "zoom": true, "perspective": true,
+	"opacity": true, "visibility": true, "filter": true, "backdrop-filter": true, "mix-blend-mode": true,
+	"clip": true, "clip-path": true, "mask": true, "mask-image": true, "offset": true, "offset-path": true,
+	"offset-distance": true, "will-change": true, "contain": true, "isolation": true, "content": true,
+	"behavior": true, "-moz-binding": true,
+}
+
+// compiledStyleProblem checks one compiled style attribute.
+func compiledStyleProblem(style string) string {
+	css := strings.ToLower(style)
+	if strings.ContainsAny(css, `\`) || strings.Contains(css, "/*") || unsafeValue(css) {
+		return "CSS escapes, comments or functions"
+	}
+	for prop, val := range declarations(css) {
+		val = strings.TrimSpace(strings.TrimSuffix(val, "!important"))
+		switch {
+		case compiledDenied[prop] || strings.HasPrefix(prop, "transform") || strings.HasPrefix(prop, "offset-") ||
+			strings.HasPrefix(prop, "mask-") || strings.HasPrefix(prop, "clip"):
+			return "the CSS property " + prop
+		case negativeLenRe.MatchString(val) && !strings.HasSuffix(prop, "spacing"):
+			return "a negative value for " + prop
+		case strings.HasPrefix(prop, "margin") || strings.HasPrefix(prop, "padding") || strings.Contains(prop, "height") && prop != "line-height":
+			if !lengthsOK(val, maxBoxPx, true, false) {
+				return prop + ": " + clip(val)
+			}
+		case strings.Contains(prop, "width") && !strings.HasPrefix(prop, "border"):
+			if !lengthsOK(val, maxWidthPx, true, false) {
+				return prop + ": " + clip(val)
+			}
+		case strings.HasPrefix(prop, "border") && !strings.Contains(prop, "radius") && !strings.Contains(prop, "collapse"):
+			if !lengthsOK(val, maxBorderPx, false, false) {
+				return prop + ": " + clip(val)
+			}
+		}
+	}
+	return ""
+}
+
 // compiledSlotIssues checks the compiled template exactly as email clients
 // will parse it: every element between the slot markers must be one a
-// template may produce, with sane attribute names.
+// template may produce, with sane attribute names and styles. Outlook's
+// conditional comments are parsed and checked the same way, because Outlook
+// renders them (and a broken-out css-class lands in one).
 func compiledSlotIssues(compiled string) []Issue {
 	doc, err := parseHTML(compiled)
 	if err != nil {
@@ -316,10 +364,35 @@ func compiledSlotIssues(compiled string) []Issue {
 	}
 	var issues []Issue
 	seen := map[string]bool{}
+	add := func(code, format string, args ...any) {
+		is := errorf(code, format, args...)
+		if !seen[is.Message] {
+			seen[is.Message] = true
+			issues = append(issues, is)
+		}
+	}
+	checkElement := func(n *html.Node) {
+		if !allowedElements[n.Data] && !compiledAllowed[n.Data] && !strings.HasPrefix(n.Data, "v:") && !strings.HasPrefix(n.Data, "o:") {
+			add("template_element", "the compiled template contains <%s>, which templates can't produce", n.Data)
+		}
+		for _, a := range n.Attr {
+			name := a.Key
+			if a.Namespace != "" {
+				name = a.Namespace + ":" + name
+			}
+			if !validAttrName(name) {
+				add("template_attr_name", "the compiled template has an attribute named %q", clip(name))
+			}
+			if a.Key == "style" {
+				if why := compiledStyleProblem(a.Val); why != "" {
+					add("template_css", "the compiled template uses %s, which can cover the brand layout; check the MJML attributes that feed it", why)
+				}
+			}
+		}
+	}
+	var walk func(n *html.Node, in bool) bool
 	starts, ends := 0, 0
-	in := false
-	var walk func(n *html.Node)
-	walk = func(n *html.Node) {
+	walk = func(n *html.Node, in bool) bool {
 		switch n.Type {
 		case html.CommentNode:
 			switch strings.TrimSpace(n.Data) {
@@ -329,30 +402,29 @@ func compiledSlotIssues(compiled string) []Issue {
 			case slotEnd:
 				ends++
 				in = false
+			default:
+				if in && strings.Contains(n.Data, "<") {
+					body := &html.Node{Type: html.ElementNode, Data: "body", DataAtom: atom.Body}
+					nodes, err := html.ParseFragmentWithOptions(strings.NewReader(n.Data), body, html.ParseOptionEnableScripting(false))
+					if err != nil {
+						add("bad_html", "an Outlook-only block in the compiled template could not be read")
+					}
+					for _, f := range nodes {
+						walk(f, true)
+					}
+				}
 			}
 		case html.ElementNode:
 			if in {
-				if !allowedElements[n.Data] && !compiledAllowed[n.Data] && !seen[n.Data] {
-					seen[n.Data] = true
-					issues = append(issues, errorf("template_element", "the compiled template contains <%s>, which templates can't produce", n.Data))
-				}
-				for _, a := range n.Attr {
-					name := a.Key
-					if a.Namespace != "" {
-						name = a.Namespace + ":" + name
-					}
-					if !validAttrName(name) && !seen["attr:"+name] {
-						seen["attr:"+name] = true
-						issues = append(issues, errorf("template_attr_name", "the compiled template has an attribute named %q", clip(name)))
-					}
-				}
+				checkElement(n)
 			}
 		}
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			walk(c)
+			in = walk(c, in)
 		}
+		return in
 	}
-	walk(doc)
+	walk(doc, false)
 	if starts != 1 || ends != 1 {
 		issues = append(issues, errorf("template_breaks_layout",
 			"the template changes the brand layout around it, usually through a tag it opens and never closes; close every tag you open"))

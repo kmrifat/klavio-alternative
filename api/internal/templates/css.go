@@ -171,6 +171,10 @@ func mjAttrIssues(tag string, as []htmlAttr, add func(string, string, ...any)) {
 		bad := func(why string) {
 			add("template_css", "<%s %s=%q> isn't allowed in a template: %s", tag, a.name, clip(a.val), why)
 		}
+		if why := mjValueProblem(a.name, a.val); why != "" {
+			bad(why)
+			continue
+		}
 		switch {
 		case negativeLenRe.MatchString(v):
 			bad("negative values can pull content over the brand layout")
@@ -214,6 +218,51 @@ func mjAttrIssues(tag string, as []htmlAttr, add func(string, string, ...any)) {
 			}
 		}
 	}
+}
+
+// MJML copies most attribute values straight into the style attribute it
+// generates (font-family="Arial;position:absolute" becomes
+// style="font-family:Arial;position:absolute"), and some into other
+// attributes. So every value must fit what its attribute can hold.
+var (
+	mjPlainValueRe = regexp.MustCompile(`^[a-zA-Z0-9 #%.,()/_+-]*$`)
+	mjFontFamilyRe = regexp.MustCompile(`^[a-zA-Z0-9 ,_-]*$`)
+	mjColorRe      = regexp.MustCompile(`(?i)^(#[0-9a-f]{3,8}|[a-z]+|rgba?\([0-9., %]+\))?$`)
+	mjClassRe      = regexp.MustCompile(`^[a-zA-Z0-9 _-]*$`)
+)
+
+func mjValueProblem(name, val string) string {
+	isURL := name == "href" || name == "src" || name == "srcset" || strings.HasSuffix(name, "-url") || strings.HasSuffix(name, "-src")
+	switch {
+	case isURL:
+		if strings.ContainsAny(val, "\"'<>\\ \t\r\n") {
+			return "links and image addresses may not contain quotes, angle brackets, backslashes or spaces"
+		}
+		if (name != "href") && strings.ContainsAny(val, "();") {
+			return "image addresses may not contain brackets or semicolons"
+		}
+	case name == "alt" || name == "title":
+		if strings.ContainsAny(val, "\"<>\\\r\n") {
+			return "alt text and titles may not contain double quotes, angle brackets or line breaks"
+		}
+	case name == "css-class":
+		if !mjClassRe.MatchString(val) {
+			return "class names may only use letters, digits, dashes and underscores"
+		}
+	case name == "font-family":
+		if !mjFontFamilyRe.MatchString(val) {
+			return "list font names separated by commas, without quotes or semicolons"
+		}
+	case strings.Contains(name, "color"):
+		if !mjColorRe.MatchString(strings.TrimSpace(val)) {
+			return "use a colour such as #c2410c, rgb(194,65,12) or a colour name"
+		}
+	default:
+		if !mjPlainValueRe.MatchString(val) {
+			return "the value may not contain ; quotes, angle brackets, braces, backslashes or line breaks"
+		}
+	}
+	return ""
 }
 
 // HTML size attributes, by element.
