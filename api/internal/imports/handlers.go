@@ -76,6 +76,13 @@ func (s *Service) upload(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	if s.spike != nil {
+		if st, err := s.store.ContactStats(r.Context(), b.ID); err == nil {
+			if err := s.spike(r.Context(), p.User, b, imp.RowCount, st.Total); err != nil {
+				s.log.WarnContext(r.Context(), "import spike check", "err", err)
+			}
+		}
+	}
 	return s.writeImport(w, r, http.StatusCreated, imp)
 }
 

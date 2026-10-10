@@ -1,6 +1,8 @@
 import { useEffect } from "react";
 import { NavLink, Outlet, useLocation, useNavigate, useParams } from "react-router";
-import { Bell, LogOut, Mail, Search } from "lucide-react";
+import { LogOut, Mail, Search } from "lucide-react";
+import { useApprovals } from "../api/governance";
+import { AlertsBell } from "./AlertsBell";
 import { useBrands, useMe, useSignOut } from "../api/hooks";
 import type { BrandListItem } from "../api/types";
 import { brandScreens, companyScreens, settingsScreen, type Screen } from "../lib/screens";
@@ -14,6 +16,7 @@ export function AppLayout() {
   const brands = useBrands().data ?? [];
   const brand = brands.find((b) => b.slug === params.brand);
   const linkBrand = brand ?? lastBrand(brands);
+  const waitingCount = useApprovals("decide").data?.length;
 
   useEffect(() => {
     if (brand) rememberBrand(brand.slug);
@@ -39,7 +42,7 @@ export function AppLayout() {
 
         <NavSection label="Company">
           {companyScreens.map((s) => (
-            <NavItem key={s.id} screen={s} to={`/${s.path}`} />
+            <NavItem key={s.id} screen={s} to={`/${s.path}`} count={s.path === "approvals" ? waitingCount : undefined} />
           ))}
         </NavSection>
 
@@ -72,7 +75,7 @@ function NavSection({ label, children }: { label: string; children: React.ReactN
 }
 
 // NavItem without `to` renders disabled (e.g. brand pages before any brand exists).
-function NavItem({ screen, to }: { screen: Screen; to?: string }) {
+function NavItem({ screen, to, count }: { screen: Screen; to?: string; count?: number }) {
   const Icon = screen.icon;
   const base = "flex items-center gap-2.5 rounded-md border px-2 py-1.5 text-sm";
   if (!to) {
@@ -99,6 +102,11 @@ function NavItem({ screen, to }: { screen: Screen; to?: string }) {
       >
         <Icon className="size-4 text-zinc-500" />
         {screen.title}
+        {!!count && (
+          <span className="ml-auto text-xs text-zinc-500" aria-label={`${count} waiting`}>
+            {count}
+          </span>
+        )}
       </NavLink>
     </li>
   );
@@ -159,7 +167,7 @@ function TopBar({ brandName }: { brandName: string }) {
           <input disabled placeholder="Search…" aria-label="Search (coming later)" className="w-full bg-transparent outline-none" />
         </label>
         <ApiStatus />
-        <Bell className="size-4 text-zinc-600" aria-hidden />
+        <AlertsBell />
       </div>
     </header>
   );

@@ -1,5 +1,7 @@
 import { useState } from "react";
-import { useAddContact, useContact, useSuppress, useTopics, useUnsubscribe, type NewContact } from "../../api/contacts";
+import { Link } from "react-router";
+import { useAddContact, useContact, useSuppress, useTopics, useUnsubscribe, type ContactFilters, type NewContact } from "../../api/contacts";
+import { useRequestExport } from "../../api/governance";
 import type { BrandRole } from "../../api/types";
 import { Badge, Button, Dialog, ErrorNote, Field, Spinner, inputClass } from "../../components/ui";
 import { consentBasisLabel, engagementBadge, shortDate, suppressionLabel } from "../../lib/format";
@@ -213,6 +215,70 @@ export function ContactDialog({ slug, id, role, onClose }: { slug: string; id: s
             )}
           </div>
         )
+      )}
+    </Dialog>
+  );
+}
+
+// ExportDialog asks for a reason; every export waits for a second admin (S9).
+export function ExportDialog({ slug, open, filters, onClose }: {
+  slug: string;
+  open: boolean;
+  filters: ContactFilters;
+  onClose: () => void;
+}) {
+  const req = useRequestExport(slug);
+  const [reason, setReason] = useState("");
+  const close = () => {
+    req.reset();
+    setReason("");
+    onClose();
+  };
+  const scope = [filters.tiers.length ? `tiers: ${filters.tiers.join(" + ")}` : "all tiers", filters.status && `status: ${filters.status}`, filters.tag && `tag: ${filters.tag}`]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <Dialog open={open} title="Export contacts" onClose={close}>
+      {req.data ? (
+        <div className="space-y-3 text-sm">
+          <p>
+            Sent for approval: <strong>{req.data.export.row_count.toLocaleString()} contacts</strong>. When a second admin approves, you can download
+            it from <Link to="/approvals" className="text-accent underline">Approvals → Your requests</Link> for 24 hours.
+          </p>
+          {req.data.requester_frozen && (
+            <p className="rounded-md bg-red-50 px-3 py-2 text-red-800">
+              That's a lot of exports at once, so your account was frozen as a precaution. An owner has been alerted.
+            </p>
+          )}
+          <div className="flex justify-end">
+            <Button variant="primary" onClick={close}>
+              Done
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <form
+          className="space-y-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            req.mutate({ filter: { tiers: filters.tiers, status: filters.status, tag: filters.tag }, reason });
+          }}
+        >
+          <p className="text-sm text-zinc-600">
+            Exports contain personal data, so every one needs a second admin's approval. The file is watermarked with your name and can be
+            downloaded for 24 hours. Exporting: {scope}.
+          </p>
+          <Field label="What's it for?" hint="The approver sees this.">
+            {(id) => <input id={id} required className={inputClass} value={reason} onChange={(e) => setReason(e.target.value)} />}
+          </Field>
+          <ErrorNote error={req.error} />
+          <div className="flex justify-end gap-2">
+            <Button onClick={close}>Cancel</Button>
+            <Button type="submit" variant="primary" disabled={req.isPending}>
+              Request export
+            </Button>
+          </div>
+        </form>
       )}
     </Dialog>
   );

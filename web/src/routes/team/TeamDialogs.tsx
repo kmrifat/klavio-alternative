@@ -82,6 +82,11 @@ export function InviteDialog({ open, onClose, brands }: { open: boolean; onClose
             Send this link to <strong>{email}</strong>. It works once, expires in 7 days and{" "}
             <strong>won't be shown again</strong>.
           </p>
+          {invite.data.awaiting_approval && (
+            <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              This invite gives admin rights, so the link only works once a second admin approves it in Approvals.
+            </p>
+          )}
           <div className="flex items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2">
             <code className="min-w-0 flex-1 truncate text-xs">{invite.data.invite_url}</code>
             <CopyButton text={invite.data.invite_url} label="Copy invite link" />
@@ -135,7 +140,8 @@ export function EditRolesDialog({ member, brands, isSelf, onClose }: {
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    setRolesM.mutate({ id: member.id, company_role: companyRole, brand_roles: roles }, { onSuccess: onClose });
+    // A response body means the change gives admin rights and is waiting for approval.
+    setRolesM.mutate({ id: member.id, company_role: companyRole, brand_roles: roles }, { onSuccess: (res) => !res && onClose() });
   };
 
   return (
@@ -153,12 +159,25 @@ export function EditRolesDialog({ member, brands, isSelf, onClose }: {
           </div>
         )}
         <ErrorNote error={setRolesM.error} />
-        <div className="flex justify-end gap-2">
-          <Button onClick={onClose}>Cancel</Button>
-          <Button type="submit" variant="primary" disabled={setRolesM.isPending}>
-            {setRolesM.isPending ? "Saving…" : "Save roles"}
-          </Button>
-        </div>
+        {setRolesM.data ? (
+          <div className="space-y-3">
+            <p role="status" className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              {setRolesM.data.message}
+            </p>
+            <div className="flex justify-end">
+              <Button variant="primary" onClick={onClose}>
+                Done
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex justify-end gap-2">
+            <Button onClick={onClose}>Cancel</Button>
+            <Button type="submit" variant="primary" disabled={setRolesM.isPending}>
+              {setRolesM.isPending ? "Saving…" : "Save roles"}
+            </Button>
+          </div>
+        )}
       </form>
     </Dialog>
   );

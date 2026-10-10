@@ -11,14 +11,18 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kmrifat/klavio-alternative/api/internal/anomaly"
+	"github.com/kmrifat/klavio-alternative/api/internal/approvals"
 	"github.com/kmrifat/klavio-alternative/api/internal/auth"
 	"github.com/kmrifat/klavio-alternative/api/internal/brands"
 	"github.com/kmrifat/klavio-alternative/api/internal/cache"
 	"github.com/kmrifat/klavio-alternative/api/internal/config"
 	"github.com/kmrifat/klavio-alternative/api/internal/contacts"
 	"github.com/kmrifat/klavio-alternative/api/internal/dnscheck"
+	"github.com/kmrifat/klavio-alternative/api/internal/exports"
 	"github.com/kmrifat/klavio-alternative/api/internal/imports"
 	"github.com/kmrifat/klavio-alternative/api/internal/jobs"
+	"github.com/kmrifat/klavio-alternative/api/internal/limits"
 	"github.com/kmrifat/klavio-alternative/api/internal/server"
 	"github.com/kmrifat/klavio-alternative/api/internal/ses"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
@@ -62,6 +66,12 @@ type App struct {
 	// Unsubscribe signs the unsubscribe/preferences links in every email.
 	Unsubscribe *unsubscribe.Signer
 	unsubSvc    *unsubscribe.Service
+	// Approvals is the two-person rule; features Register their kinds on it.
+	Approvals *approvals.Service
+	Limits    *limits.Service
+	Anomaly   *anomaly.Service
+	exports   *exports.Service
+	team      *team.Handlers
 }
 
 func New(d Deps) (*App, error) {
@@ -103,6 +113,17 @@ func New(d Deps) (*App, error) {
 		return nil, err
 	}
 	a.unsubSvc = unsubscribe.NewService(st)
+
+	// Governance (M5): approvals, safety limits, exports, anomaly alerts.
+	a.Approvals = approvals.NewService(st, d.Log)
+	a.Limits = limits.NewService(st, a.Approvals, d.Log)
+	a.Anomaly = anomaly.NewService(st, d.Log)
+	a.exports = exports.NewService(st, a.Approvals, a.Anomaly, d.Log)
+	a.team = &team.Handlers{Store: st, Auth: authSvc, Approvals: a.Approvals, Log: d.Log}
+	a.team.RegisterApprovals()
+	authSvc.SetSignInGuard(a.Anomaly)
+	a.Imports.SetLimits(a.Limits.Get)
+	a.Imports.SetSpikeCheck(a.Anomaly.CheckImport)
 	if a.deps.Limiter == nil {
 		a.deps.Limiter = &cache.MemoryLimiter{}
 	}
@@ -133,7 +154,6 @@ func FromConfig(ctx context.Context, cfg config.Config, log *slog.Logger, pool *
 }
 
 func (a *App) Handler() http.Handler {
-	teamH := &team.Handlers{Store: a.Store, Auth: a.Auth, Log: a.deps.Log}
 	contactsH := &contacts.Handlers{Store: a.Store, Log: a.deps.Log}
 	return server.New(server.Options{
 		Log:             a.deps.Log,
@@ -147,7 +167,10 @@ func (a *App) Handler() http.Handler {
 			a.Auth.Routes(mux)
 			a.Brands.Routes(mux, a.Auth)
 			a.Templates.Routes(mux, a.Auth)
-			teamH.Routes(mux)
+			a.team.Routes(mux)
+			a.Approvals.Routes(mux, a.Auth)
+			a.Limits.Routes(mux, a.Auth)
+			a.exports.Routes(mux)
 			contactsH.Routes(mux)
 			a.Imports.Routes(mux, a.Auth)
 		},
@@ -194,7 +217,7 @@ func (a *App) ServeHTTP(ctx context.Context) error {
 // RunWorker works background jobs until ctx is cancelled.
 func (a *App) RunWorker(ctx context.Context) error {
 	log := a.deps.Log
-	client, err := jobs.NewWorker(a.deps.Pool, log, jobs.Deps{Brands: a.Brands, Sessions: a.Store, Imports: a.Imports, ImportFiles: a.Store, Templates: a.Templates})
+	client, err := jobs.NewWorker(a.deps.Pool, log, jobs.Deps{Brands: a.Brands, Sessions: a.Store, Imports: a.Imports, ImportFiles: a.Store, Templates: a.Templates, Governance: governanceJobs{a}})
 	if err != nil {
 		return err
 	}
@@ -239,4 +262,14 @@ func (a *App) Bootstrap(ctx context.Context, email, name string) (string, error)
 		return err
 	})
 	return link, err
+}
+
+// governanceJobs adapts the housekeeping job to the approvals engine and store.
+type governanceJobs struct{ a *App }
+
+func (g governanceJobs) ExpireApprovals(ctx context.Context) (int64, error) {
+	return g.a.Approvals.Expire(ctx)
+}
+func (g governanceJobs) PurgeExpiredExports(ctx context.Context) (int64, error) {
+	return g.a.Store.PurgeExpiredExports(ctx)
 }
