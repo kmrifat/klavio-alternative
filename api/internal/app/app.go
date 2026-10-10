@@ -212,7 +212,7 @@ func New(d Deps) (*App, error) {
 		d.Mailer = mailer.Unconfigured{}
 	}
 	a.Confirm = confirm.NewService(confirm.Deps{
-		Store: st, Signer: a.confirmer, Unsub: a.Unsubscribe, Sender: d.Mailer, Caps: a.FreqCap, Warmup: a.Warmup,
+		Store: st, Signer: a.confirmer, Unsub: a.Unsubscribe, Sender: d.Mailer, Caps: a.FreqCap, Warmup: a.Warmup, Limiter: a.deps.Limiter,
 		Override: d.Config.PublicBaseURLOverride, Log: d.Log,
 	})
 	queue := d.ConfirmationQueue
@@ -445,8 +445,8 @@ func (g governanceJobs) PurgeExpiredExports(ctx context.Context) (int64, error) 
 // optJobs adapts the Contacts API jobs (confirmations, re-permission, cleanup).
 type optJobs struct{ a *App }
 
-func (o optJobs) SendConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID) error {
-	return o.a.Confirm.SendConfirmation(ctx, brandID, contactID, requestID)
+func (o optJobs) SendConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID, queuedAt time.Time) error {
+	return o.a.Confirm.SendConfirmation(ctx, brandID, contactID, requestID, queuedAt)
 }
 func (o optJobs) SendRepermissions(ctx context.Context) error {
 	return o.a.Confirm.SendRepermissions(ctx)

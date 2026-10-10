@@ -60,7 +60,7 @@ type Deps struct {
 	}
 	// Contacts API (M7): confirmation and re-permission emails, log cleanup.
 	Opt interface {
-		SendConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID) error
+		SendConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID, queuedAt time.Time) error
 		SendRepermissions(ctx context.Context) error
 		Housekeeping(ctx context.Context) (int64, error)
 	}
@@ -351,13 +351,13 @@ type ConfirmationWorker struct {
 }
 
 func (w *ConfirmationWorker) Work(ctx context.Context, j *river.Job[ConfirmationArgs]) error {
-	err := w.Deps.Opt.SendConfirmation(ctx, j.Args.BrandID, j.Args.ContactID, j.Args.RequestID)
-	if !errors.Is(err, confirm.ErrGateClosed) {
-		return err
-	}
 	queued := j.Args.QueuedAt
 	if queued.IsZero() {
 		queued = j.CreatedAt
+	}
+	err := w.Deps.Opt.SendConfirmation(ctx, j.Args.BrandID, j.Args.ContactID, j.Args.RequestID, queued)
+	if !errors.Is(err, confirm.ErrGateClosed) {
+		return err
 	}
 	waited := time.Since(queued)
 	if waited > ConfirmationMaxWait {

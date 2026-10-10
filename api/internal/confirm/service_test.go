@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/kmrifat/klavio-alternative/api/internal/cache"
 	"github.com/kmrifat/klavio-alternative/api/internal/freqcap"
 	"github.com/kmrifat/klavio-alternative/api/internal/mailer"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
@@ -138,10 +140,78 @@ func TestUnknownOutcomeIsNotRetried(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.SendConfirmation(ctx, b.ID, id, uuid.Nil); err != nil {
+	if err := svc.SendConfirmation(ctx, b.ID, id, uuid.Nil, time.Now()); err != nil {
 		t.Fatalf("confirmation with an unknown outcome should be done, not retried: %v", err)
 	}
 	if u.calls != 6 {
 		t.Fatalf("%d send attempts, want 6", u.calls)
+	}
+}
+
+// Six confirmation jobs held back during a pause all run when it's lifted:
+// one email goes out, and the per-address daily limit still holds after.
+func TestHeldConfirmationsSendOnce(t *testing.T) {
+	mem := &mailer.Memory{}
+	svc, st, b := repermissionSetup(t, mem)
+	svc.limiter = &cache.MemoryLimiter{}
+	ctx := context.Background()
+	id, err := st.InsertContact(ctx, store.NewContact{BrandID: b.ID, Email: "ann@example.com", Status: store.ContactPending, ConsentBasis: "double_opt_in"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now().Add(-48 * time.Hour)
+	var wg sync.WaitGroup
+	for i := range 6 {
+		wg.Go(func() {
+			if err := svc.SendConfirmation(ctx, b.ID, id, uuid.Nil, start.Add(time.Duration(i)*8*time.Hour)); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	if n := len(mem.Sent()); n != 1 {
+		t.Fatalf("%d confirmation emails from 6 held jobs", n)
+	}
+	// Asked again later: sent, until the daily limit (3 at send time).
+	for range 4 {
+		if err := svc.SendConfirmation(ctx, b.ID, id, uuid.Nil, time.Now().Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond) // a later request than the last send
+	}
+	if n := len(mem.Sent()); n != SendsPerDay {
+		t.Fatalf("%d confirmation emails in a day, limit %d", n, SendsPerDay)
+	}
+}
+
+// Asking again for the same topics reuses the waiting request (one link);
+// other topics get their own request. Held jobs for one request send once.
+func TestTopicRequestsReuseAndSendOnce(t *testing.T) {
+	mem := &mailer.Memory{}
+	svc, st, b := repermissionSetup(t, mem)
+	ctx := context.Background()
+	id, _ := st.InsertContact(ctx, store.NewContact{BrandID: b.ID, Email: "sub@example.com", Status: store.ContactSubscribed, ConsentBasis: "double_opt_in"})
+	t1, _ := st.CreateTopic(ctx, b.ID, "Deals")
+	t2, _ := st.CreateTopic(ctx, b.ID, "Events")
+	first, err := st.RequestTopics(ctx, b.ID, id, []uuid.UUID{t1.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, _ := st.RequestTopics(ctx, b.ID, id, []uuid.UUID{t1.ID, t1.ID})
+	other, _ := st.RequestTopics(ctx, b.ID, id, []uuid.UUID{t2.ID})
+	if again != first || other == first {
+		t.Fatalf("reuse: first %s, again %s, other %s", first, again, other)
+	}
+	queued := time.Now().Add(-time.Hour)
+	for range 3 {
+		if err := svc.SendConfirmation(ctx, b.ID, id, first, queued); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := svc.SendConfirmation(ctx, b.ID, id, other, queued); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(mem.Sent()); n != 2 {
+		t.Fatalf("%d emails for two requests (one asked for three times)", n)
 	}
 }
