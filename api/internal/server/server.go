@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/kmrifat/klavio-alternative/api/internal/httpx"
 )
 
 // Pinger reports whether a dependency (Postgres, Redis) is reachable.
@@ -25,6 +27,8 @@ type Options struct {
 	Version        string
 	Env            string
 	AllowedOrigins []string
+	// Proxy decides whose Cloudflare headers (client IP, country) to believe.
+	Proxy httpx.ProxyTrust
 
 	// RegisterAdmin adds the feature routes under /admin/v1.
 	RegisterAdmin func(mux *http.ServeMux)
@@ -73,7 +77,7 @@ func New(o Options) http.Handler {
 		o.RegisterPublic(mux)
 	}
 
-	return recoverer(o.Log, requestLog(o.Log, mux))
+	return recoverer(o.Log, o.Proxy.Middleware(o.Log, requestLog(o.Log, mux)))
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

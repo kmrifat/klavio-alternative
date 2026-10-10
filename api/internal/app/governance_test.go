@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/kmrifat/klavio-alternative/api/internal/app"
+	"github.com/kmrifat/klavio-alternative/api/internal/config"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
 )
 
@@ -24,8 +25,10 @@ type govFixture struct {
 	brandID string
 }
 
-func newGov(t *testing.T) govFixture {
-	a, srv, dns := setup(t)
+func newGov(t *testing.T) govFixture { return newGovWith(t, nil) }
+
+func newGovWith(t *testing.T, edit func(*config.Config)) govFixture {
+	a, srv, dns := setupWith(t, edit)
 	_ = dns
 	ctx := context.Background()
 	ownerA := newBrowser(t, srv.URL)

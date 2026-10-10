@@ -8,8 +8,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
+
+	"github.com/kmrifat/klavio-alternative/api/internal/httpx"
 )
 
 type fakeDB struct{ err error }
@@ -160,6 +163,33 @@ func TestRedactPath(t *testing.T) {
 	} {
 		if got := redactPath(in); got != want {
 			t.Errorf("redactPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Every route sees the client as resolved by Options.Proxy.
+func TestClientResolvedForRoutes(t *testing.T) {
+	var got string
+	h := New(Options{
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), DB: fakeDB{}, Redis: fakeDB{},
+		Proxy: httpx.ProxyTrust{Cloudflare: true, Proxies: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}},
+		RegisterPublic: func(mux *http.ServeMux) {
+			mux.HandleFunc("GET /who", func(w http.ResponseWriter, r *http.Request) {
+				got = httpx.ClientIP(r) + " " + httpx.ClientCountry(r)
+			})
+		},
+	})
+	for remote, want := range map[string]string{
+		"127.0.0.1:1":     "203.0.113.7 DE",
+		"198.51.100.66:1": "198.51.100.66 ",
+	} {
+		req := httptest.NewRequest("GET", "/who", nil)
+		req.RemoteAddr = remote
+		req.Header.Set("CF-Connecting-IP", "203.0.113.7")
+		req.Header.Set("CF-IPCountry", "DE")
+		h.ServeHTTP(httptest.NewRecorder(), req)
+		if got != want {
+			t.Errorf("from %s: got %q, want %q", remote, got, want)
 		}
 	}
 }

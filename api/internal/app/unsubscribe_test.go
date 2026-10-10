@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/kmrifat/klavio-alternative/api/internal/app"
+	"github.com/kmrifat/klavio-alternative/api/internal/config"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
 	"github.com/kmrifat/klavio-alternative/api/internal/unsubscribe"
 )
@@ -66,8 +67,10 @@ type unsubFixture struct {
 	contactID         uuid.UUID
 }
 
-func newUnsubFixture(t *testing.T) unsubFixture {
-	a, srv, _ := setup(t)
+func newUnsubFixture(t *testing.T) unsubFixture { return newUnsubFixtureWith(t, nil) }
+
+func newUnsubFixtureWith(t *testing.T, edit func(*config.Config)) unsubFixture {
+	a, srv, _ := setupWith(t, edit)
 	ctx := context.Background()
 	owner := newBrowser(t, srv.URL)
 	link, _ := a.Bootstrap(ctx, "owner@acme.test", "Olivia Owner")
