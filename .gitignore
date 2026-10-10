@@ -24,3 +24,4 @@ node_modules/
 *.tfstate.*
 *.tfvars
 !*.tfvars.example
+.claude/

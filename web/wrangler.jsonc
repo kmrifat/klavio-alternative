@@ -1,0 +1,9 @@
+// Cloudflare Workers static assets. Deploy with: npx wrangler deploy
+{
+  "name": "mail-console-web",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  }
+}
