@@ -25,7 +25,8 @@ func (s *Store) SendHistory(ctx context.Context, brandID uuid.UUID, contactIDs [
 			max(m.sent_at) FILTER (WHERE m.brand_id = $1)
 		FROM contacts c
 		LEFT JOIN marketing_sends m ON m.email_hash = c.email_hash
-			AND m.sent_at > $3::timestamptz - interval '7 days' AND m.sent_at <= $3::timestamptz
+			AND m.sent_at > $3::timestamptz - interval '7 days' -- no upper bound: a send stamped a moment
+			                                                   -- "later" (another worker's clock) still counts
 		WHERE c.brand_id = $1 AND c.id = ANY($2)
 		GROUP BY c.id`, brandID, contactIDs, now)
 	if err != nil {
