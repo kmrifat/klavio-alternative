@@ -114,7 +114,7 @@ export type ContactStats = {
   pending_confirmation: number;
   unsubscribed: number;
   suppressed_in_brand: number;
-  suppressed_company_wide: number;
+  suppressed_company_wide?: number; // not shown to viewers
 };
 
 export type ConsentRecord = {
@@ -139,9 +139,12 @@ export type ImportMapping = {
   consented_at: string;
   last_engaged_at: string;
   rating: string;
+  tracking: string;
   timezone: string;
   country: string;
 };
+
+export type TrackingMode = "eu_by_country" | "all" | "none" | "column";
 
 export type ImportConsent = {
   source: string;
@@ -150,6 +153,7 @@ export type ImportConsent = {
   wording: string;
   legal_basis: "consent" | "soft_opt_in" | "";
   double_opt_in: boolean;
+  tracking: TrackingMode;
   attested: boolean;
   attested_by_email?: string;
   attested_at?: string;
@@ -172,6 +176,7 @@ export type CheckResult = {
   counts: Partial<Record<Outcome, number>>;
   samples: Partial<Record<Outcome, string[]>>;
   no_mailbox_domains: string[];
+  no_tracking: number;
   dates_mapped: boolean;
   gate: {
     invalid_rate: number;
@@ -210,6 +215,7 @@ export type Import = {
   import_result: ImportResult | null;
   error: string;
   created_at: string;
+  updated_at: string;
 };
 
 export type ImportView = {

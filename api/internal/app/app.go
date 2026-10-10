@@ -166,7 +166,7 @@ func (a *App) ServeHTTP(ctx context.Context) error {
 // RunWorker works background jobs until ctx is cancelled.
 func (a *App) RunWorker(ctx context.Context) error {
 	log := a.deps.Log
-	client, err := jobs.NewWorker(a.deps.Pool, log, jobs.Deps{Brands: a.Brands, Sessions: a.Store, Imports: a.Imports})
+	client, err := jobs.NewWorker(a.deps.Pool, log, jobs.Deps{Brands: a.Brands, Sessions: a.Store, Imports: a.Imports, ImportFiles: a.Store})
 	if err != nil {
 		return err
 	}

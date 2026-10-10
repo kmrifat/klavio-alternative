@@ -44,20 +44,9 @@ func (s *Service) Upload(ctx context.Context, brandID, by uuid.UUID, filename st
 	if err != nil {
 		return store.Import{}, httpx.Errorf(http.StatusBadRequest, "bad_file", "%v", err)
 	}
-	return s.store.CreateImport(ctx, brandID, by, filename, data, len(t.Rows), t.Headers, SuggestMapping(t.Headers))
-}
-
-// Preview returns the first rows so the person can see the column mapping is right.
-func (s *Service) Preview(ctx context.Context, imp store.Import, n int) ([][]string, error) {
-	data, err := s.store.ImportFile(ctx, imp.ID)
-	if err != nil || data == nil {
-		return [][]string{}, err
-	}
-	t, err := Parse(data)
-	if err != nil {
-		return nil, err
-	}
-	return t.Rows[:min(n, len(t.Rows))], nil
+	// The first rows are stored so the mapping screen (and polling) never re-reads the file.
+	preview := t.Rows[:min(5, len(t.Rows))]
+	return s.store.CreateImport(ctx, brandID, by, filename, data, len(t.Rows), t.Headers, preview, SuggestMapping(t.Headers))
 }
 
 type SetupInput struct {
@@ -74,6 +63,9 @@ func (s *Service) Setup(ctx context.Context, imp store.Import, by store.User, in
 	}
 	if err := in.Mapping.Validate(imp.Headers); err != nil {
 		return httpx.Errorf(http.StatusBadRequest, "bad_mapping", "%v", err)
+	}
+	if in.Consent.Tracking == "column" && in.Mapping.Tracking == "" {
+		return httpx.Errorf(http.StatusBadRequest, "bad_mapping", "choose the column that says who agreed to click tracking")
 	}
 	if len(in.TopicIDs) == 0 {
 		return httpx.Errorf(http.StatusBadRequest, "no_topics", "choose at least one topic these people agreed to")
@@ -92,7 +84,11 @@ func (s *Service) Setup(ctx context.Context, imp store.Import, by store.User, in
 		now := s.now()
 		in.Consent.AttestedBy, in.Consent.AttestedByEmail, in.Consent.AttestedAt = &by.ID, by.Email, &now
 	}
-	return s.store.UpdateImportSetup(ctx, imp.ID, in.Mapping, in.Consent, in.TopicIDs)
+	err = s.store.UpdateImportSetup(ctx, imp.ID, in.Mapping, in.Consent, in.TopicIDs)
+	if errors.Is(err, store.ErrNotFound) {
+		return httpx.Errorf(http.StatusConflict, "import_locked", "this import is running or finished and can't be changed")
+	}
+	return err
 }
 
 // RequestCheck queues the safety check.
@@ -164,7 +160,8 @@ func (s *Service) load(ctx context.Context, brandID, id uuid.UUID) (loaded, erro
 	if err := json.Unmarshal(imp.Consent, &l.consent); err != nil {
 		return l, err
 	}
-	l.rows = Rows(t, l.mapping)
+	l.rows = Rows(t, l.mapping, s.now())
+	ResolveTracking(l.rows, l.consent.Tracking)
 	return l, nil
 }
 
@@ -204,12 +201,36 @@ func (s *Service) facts(ctx context.Context, brandID uuid.UUID, rows []Row) (Fac
 	return f, nil
 }
 
-// RunCheck is the background safety check.
+// RunCheck is the background safety check. A replayed or late job for an
+// import that's no longer "checking" (cancelled, finished) does nothing.
 func (s *Service) RunCheck(ctx context.Context, brandID, id uuid.UUID) error {
-	err := s.runCheck(ctx, brandID, id)
+	return s.runJob(ctx, id, store.ImportChecking, "The safety check failed: ", func() error {
+		return s.runCheck(ctx, brandID, id)
+	})
+}
+
+// runJob runs fn only while the import is in `want`, and records failures.
+// FailImport uses a context that survives the job's timeout, so a timed-out
+// run still ends as "failed" instead of staying "running" forever.
+func (s *Service) runJob(ctx context.Context, id uuid.UUID, want store.ImportStatus, failPrefix string, fn func() error) error {
+	st, err := s.store.ImportStatusOf(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
 	if err != nil {
-		s.log.ErrorContext(ctx, "import check failed", "import", id, "err", err)
-		return s.store.FailImport(ctx, id, "The safety check failed: "+err.Error())
+		return err
+	}
+	if st != want {
+		s.log.InfoContext(ctx, "import job skipped", "import", id, "status", st, "want", want)
+		return nil
+	}
+	err = fn()
+	if err == nil || errors.Is(err, store.ErrNotFound) { // ErrNotFound: state changed under us (e.g. cancelled)
+		return nil
+	}
+	s.log.ErrorContext(ctx, "import job failed", "import", id, "status", want, "err", err)
+	if ferr := s.store.FailImport(context.WithoutCancel(ctx), id, failPrefix+err.Error()); ferr != nil && !errors.Is(ferr, store.ErrNotFound) {
+		return ferr // retry: the failure wasn't recorded
 	}
 	return nil
 }
@@ -257,13 +278,11 @@ type ImportResult struct {
 
 // RunCommit imports in one transaction: all rows or none. It re-reads
 // suppressions and contacts, since they may have changed since the check.
+// A replay of a finished import does nothing.
 func (s *Service) RunCommit(ctx context.Context, brandID, id uuid.UUID) error {
-	err := s.runCommit(ctx, brandID, id)
-	if err != nil {
-		s.log.ErrorContext(ctx, "import failed", "import", id, "err", err)
-		return s.store.FailImport(ctx, id, "The import failed and nothing was imported: "+err.Error())
-	}
-	return nil
+	return s.runJob(ctx, id, store.ImportImporting, "The import failed and nothing was imported: ", func() error {
+		return s.runCommit(ctx, brandID, id)
+	})
 }
 
 func (s *Service) runCommit(ctx context.Context, brandID, id uuid.UUID) error {
@@ -301,7 +320,7 @@ func (s *Service) runCommit(ctx context.Context, brandID, id uuid.UUID) error {
 				cid, err := tx.InsertContact(ctx, store.NewContact{
 					BrandID: brandID, Email: r.Email, FirstName: r.FirstName, LastName: r.LastName, Status: status,
 					ConsentBasis: l.consent.basis(), ConsentSource: source, ConsentedAt: r.ConsentedAt,
-					LastClickAt: r.LastEngagedAt, EngagedAt: engagedAt(r, importedAt), TrackingAllowed: true,
+					LastClickAt: r.LastEngagedAt, EngagedAt: engagedAt(r, importedAt), TrackingAllowed: r.TrackingAllowed,
 					Tags: r.Tags, Timezone: r.Timezone, Country: r.Country, ImportID: &id,
 				})
 				if err != nil {

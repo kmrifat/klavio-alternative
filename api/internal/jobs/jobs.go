@@ -27,6 +27,9 @@ type Deps struct {
 	Sessions interface {
 		DeleteExpiredSessions(ctx context.Context) (int64, error)
 	}
+	ImportFiles interface {
+		PurgeAbandonedImports(ctx context.Context) (int64, error)
+	}
 }
 
 // HeartbeatArgs is a periodic no-op job that shows the worker is alive.
@@ -73,6 +76,25 @@ func (w *SessionCleanupWorker) Work(ctx context.Context, _ *river.Job[SessionCle
 	n, err := w.Deps.Sessions.DeleteExpiredSessions(ctx)
 	if err == nil && n > 0 {
 		w.Log.InfoContext(ctx, "deleted expired sessions", "count", n)
+	}
+	return err
+}
+
+// PurgeImportsArgs deletes uploaded files (personal data) of abandoned imports.
+type PurgeImportsArgs struct{}
+
+func (PurgeImportsArgs) Kind() string { return "imports.purge_abandoned" }
+
+type PurgeImportsWorker struct {
+	river.WorkerDefaults[PurgeImportsArgs]
+	Deps Deps
+	Log  *slog.Logger
+}
+
+func (w *PurgeImportsWorker) Work(ctx context.Context, _ *river.Job[PurgeImportsArgs]) error {
+	n, err := w.Deps.ImportFiles.PurgeAbandonedImports(ctx)
+	if err == nil && n > 0 {
+		w.Log.InfoContext(ctx, "purged abandoned import files", "count", n)
 	}
 	return err
 }
@@ -158,6 +180,10 @@ func NewWorker(pool *pgxpool.Pool, log *slog.Logger, deps Deps) (*Client, error)
 	if deps.Imports != nil {
 		river.AddWorker(workers, &ImportCheckWorker{Deps: deps})
 		river.AddWorker(workers, &ImportCommitWorker{Deps: deps})
+	}
+	if deps.ImportFiles != nil {
+		river.AddWorker(workers, &PurgeImportsWorker{Deps: deps, Log: log})
+		jobs = append(jobs, periodic(time.Hour, PurgeImportsArgs{}, true))
 	}
 	if deps.Sessions != nil {
 		river.AddWorker(workers, &SessionCleanupWorker{Deps: deps, Log: log})

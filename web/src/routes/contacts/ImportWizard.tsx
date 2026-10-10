@@ -97,8 +97,12 @@ const emptyConsent: ImportConsent = {
   wording: "",
   legal_basis: "consent",
   double_opt_in: false,
+  tracking: "eu_by_country",
   attested: false,
 };
+
+// A check or import still "running" after this is dead and may be cancelled (matches the API).
+const staleAfterMs = 35 * 60 * 1000;
 
 function ImportFlow({ slug, view }: { slug: string; view: ImportView }) {
   const imp = view.import;
@@ -122,15 +126,24 @@ function ImportFlow({ slug, view }: { slug: string; view: ImportView }) {
     return <ErrorNote error={new Error("This import was cancelled. Start a new one from Contacts.")} />;
   }
 
+  const running = imp.status === "checking" || imp.status === "importing";
+  const stale = running && Date.now() - new Date(imp.updated_at).getTime() > staleAfterMs;
+  const canCancel = imp.status === "uploaded" || imp.status === "checked" || imp.status === "failed" || stale;
+
   const runCheck = () =>
     actions.setup.mutate({ mapping, consent, topic_ids: topicIds }, { onSuccess: () => actions.check.mutate() });
 
   return (
     <>
       <Stepper current={step} />
-      {imp.status === "failed" && (
-        <div className="mb-4">
-          <ErrorNote error={new Error(imp.error)} />
+      {(imp.status === "failed" || stale) && (
+        <div className="mb-4 space-y-2">
+          <ErrorNote error={new Error(stale ? "This run stopped responding." : imp.error)} />
+          {canCancel && (
+            <Button size="sm" variant="danger" disabled={actions.cancel.isPending} onClick={() => actions.cancel.mutate()}>
+              Cancel this import and delete the file
+            </Button>
+          )}
         </div>
       )}
       {step === 1 && <MappingStep view={view} mapping={mapping} setMapping={setMapping} onNext={() => setStep(2)} />}
@@ -166,6 +179,7 @@ const mappingFields: { key: keyof ImportMapping; label: string; hint: string }[]
   { key: "consented_at", label: "Signup / confirmation date", hint: "Used to tier and quarantine" },
   { key: "last_engaged_at", label: "Last click date", hint: "Better than signup date if the old tool has it" },
   { key: "rating", label: "Engagement rating", hint: "Mailchimp MEMBER_RATING: 4–5 stars counts as recent activity" },
+  { key: "tracking", label: "Click-tracking consent", hint: "Only if the file says per person (yes/no)" },
   { key: "tags", label: "Tags", hint: "" },
   { key: "timezone", label: "Time zone", hint: "For quiet hours" },
   { key: "country", label: "Country", hint: "" },
@@ -284,6 +298,19 @@ function ConsentForm({ view, consent, setConsent, topics, topicIds, setTopicIds 
             </label>
           ))}
         </fieldset>
+        <Field
+          label="Who agreed to click tracking?"
+          hint="People without it are tiered from their signup date only and are never Active (GDPR / ePrivacy)."
+        >
+          {(id) => (
+            <select id={id} className={inputClass} value={consent.tracking} onChange={(e) => set("tracking", e.target.value as ImportConsent["tracking"])}>
+              <option value="eu_by_country">Everyone outside the EU, EEA and UK (uses the Country column)</option>
+              <option value="all">Everyone in this file</option>
+              <option value="none">Nobody in this file</option>
+              <option value="column">It's in a column of the file (yes/no per person)</option>
+            </select>
+          )}
+        </Field>
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={consent.double_opt_in} onChange={(e) => set("double_opt_in", e.target.checked)} />
           These people confirmed by email (double opt-in)
@@ -345,6 +372,11 @@ function CheckPanel({ result, checking, error, onRun, onBack, onNext }: {
                   </li>
                 ))}
             </ul>
+            {result.no_tracking > 0 && (
+              <p className="text-xs text-zinc-600">
+                {result.no_tracking.toLocaleString()} without click-tracking consent: tiered from their signup date only.
+              </p>
+            )}
             <Gate result={result} />
           </>
         )}

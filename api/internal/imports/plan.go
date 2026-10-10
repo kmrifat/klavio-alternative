@@ -21,6 +21,11 @@ type Consent struct {
 	Wording         string `json:"wording"`     // consent text or signup page URL
 	LegalBasis      string `json:"legal_basis"` // consent | soft_opt_in
 	DoubleOptIn     bool   `json:"double_opt_in"`
+	// Tracking: who agreed to click tracking. "all", "none", "column" (per
+	// row, from Mapping.Tracking) or "eu_by_country" (default: nobody in the
+	// EU/EEA/UK, everyone else yes). Without it, people are tiered from their
+	// opt-in date only and are never Active.
+	Tracking string `json:"tracking"`
 
 	Attested        bool       `json:"attested"`
 	AttestedBy      *uuid.UUID `json:"attested_by,omitempty"`
@@ -71,10 +76,48 @@ func (c Consent) Problems() []string {
 	default:
 		p = append(p, "choose the legal basis")
 	}
+	switch c.Tracking {
+	case "", "all", "none", "column", "eu_by_country":
+	default:
+		p = append(p, "choose who agreed to click tracking")
+	}
 	if !c.Attested {
 		p = append(p, "confirm the list wasn't bought, rented or scraped")
 	}
 	return p
+}
+
+// euCountries need click-tracking consent (GDPR / UK GDPR + ePrivacy): EU, EEA and the UK.
+var euCountries = map[string]bool{
+	"AT": true, "BE": true, "BG": true, "HR": true, "CY": true, "CZ": true, "DK": true, "EE": true, "FI": true,
+	"FR": true, "DE": true, "GR": true, "EL": true, "HU": true, "IE": true, "IT": true, "LV": true, "LT": true,
+	"LU": true, "MT": true, "NL": true, "PL": true, "PT": true, "RO": true, "SK": true, "SI": true, "ES": true,
+	"SE": true, "IS": true, "LI": true, "NO": true, "GB": true, "UK": true,
+}
+
+func truthy(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "yes", "y", "true", "1", "granted", "agreed", "opted in", "opt-in", "optin", "subscribed":
+		return true
+	}
+	return false
+}
+
+// ResolveTracking decides each row's click-tracking consent.
+func ResolveTracking(rows []Row, mode string) {
+	for i := range rows {
+		r := &rows[i]
+		switch mode {
+		case "all":
+			r.TrackingAllowed = true
+		case "none":
+			r.TrackingAllowed = false
+		case "column":
+			r.TrackingAllowed = truthy(r.TrackingRaw)
+		default: // eu_by_country
+			r.TrackingAllowed = !euCountries[r.Country]
+		}
+	}
 }
 
 func (c Consent) basis() string {
@@ -97,14 +140,28 @@ type Row struct {
 	ConsentedAt   *time.Time
 	LastEngagedAt *time.Time
 	Rating        int // 1–5 stars from the old tool, 0 = unknown
-	Timezone      string
-	Country       string
-	Outcome       Outcome
-	ExistingID    uuid.UUID
+	TrackingRaw   string
+	// TrackingAllowed: set by ResolveTracking. Without it, clicks and stars
+	// don't count; only the opt-in date does.
+	TrackingAllowed bool
+	Timezone        string
+	Country         string
+	Outcome         Outcome
+	ExistingID      uuid.UUID
 }
 
-// Rows extracts mapped values; Email is normalized ("" if invalid).
-func Rows(t Table, m Mapping) []Row {
+// ClockSkew: dates up to a day ahead are accepted (time zones, clock drift).
+const ClockSkew = 24 * time.Hour
+
+// Rows extracts mapped values; Email is normalized ("" if invalid). Dates in
+// the future count as no date: they'd keep someone "Active" for years.
+func Rows(t Table, m Mapping, now time.Time) []Row {
+	past := func(d *time.Time) *time.Time {
+		if d == nil || d.After(now.Add(ClockSkew)) {
+			return nil
+		}
+		return d
+	}
 	out := make([]Row, 0, len(t.Rows))
 	for i, rec := range t.Rows {
 		out = append(out, Row{
@@ -113,9 +170,10 @@ func Rows(t Table, m Mapping) []Row {
 			FirstName:     truncate(t.Get(rec, m.FirstName), 100),
 			LastName:      truncate(t.Get(rec, m.LastName), 100),
 			Tags:          ParseTags(t.Get(rec, m.Tags)),
-			ConsentedAt:   ParseDate(t.Get(rec, m.ConsentedAt)),
-			LastEngagedAt: ParseDate(t.Get(rec, m.LastEngagedAt)),
+			ConsentedAt:   past(ParseDate(t.Get(rec, m.ConsentedAt))),
+			LastEngagedAt: past(ParseDate(t.Get(rec, m.LastEngagedAt))),
 			Rating:        parseRating(t.Get(rec, m.Rating)),
+			TrackingRaw:   t.Get(rec, m.Tracking),
 			Timezone:      truncate(t.Get(rec, m.Timezone), 64),
 			Country:       strings.ToUpper(truncate(t.Get(rec, m.Country), 2)),
 		})
@@ -127,8 +185,9 @@ func Rows(t Table, m Mapping) []Row {
 // Mailchimp only gives 4–5 stars to people who opened or clicked lately.
 const EngagedRating = 4
 
-// Engaged: a 4–5 star rating counts like a click at import time.
-func (r Row) Engaged() bool { return r.Rating >= EngagedRating }
+// Engaged: a 4–5 star rating counts like a click at import time — but only
+// for people who agreed to tracking (the rating comes from tracked opens/clicks).
+func (r Row) Engaged() bool { return r.Rating >= EngagedRating && r.TrackingAllowed }
 
 func parseRating(s string) int {
 	n, err := strconv.Atoi(strings.TrimSpace(s))
@@ -138,11 +197,13 @@ func parseRating(s string) int {
 	return n
 }
 
+// truncate keeps at most n characters (runes, so multi-byte text isn't cut mid-character).
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n]
+	return string(r[:n])
 }
 
 // Facts are what we know about the addresses from the database and DNS.
@@ -198,6 +259,9 @@ func stale(r *Row, now time.Time) bool {
 		return false
 	}
 	last := r.LastEngagedAt
+	if !r.TrackingAllowed {
+		last = nil // no tracking consent: only the opt-in counts
+	}
 	if r.ConsentedAt != nil && (last == nil || r.ConsentedAt.After(*last)) {
 		last = r.ConsentedAt
 	}
@@ -210,6 +274,7 @@ type CheckResult struct {
 	Counts           map[Outcome]int      `json:"counts"`
 	Samples          map[Outcome][]string `json:"samples"` // a few addresses per outcome
 	NoMailboxDomains []string             `json:"no_mailbox_domains"`
+	NoTracking       int                  `json:"no_tracking"` // importable rows without click-tracking consent
 	DatesMapped      bool                 `json:"dates_mapped"`
 	Gate             Gate                 `json:"gate"`
 	CheckedAt        time.Time            `json:"checked_at"`
@@ -235,6 +300,9 @@ func Summarize(rows []Row, c Consent, m Mapping, noMailbox []string, now time.Ti
 	}
 	for _, r := range rows {
 		res.Counts[r.Outcome]++
+		if importable(r.Outcome) && !r.TrackingAllowed {
+			res.NoTracking++
+		}
 		if len(res.Samples[r.Outcome]) < 5 {
 			sample := r.Email
 			if sample == "" {

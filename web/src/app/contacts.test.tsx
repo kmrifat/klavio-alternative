@@ -138,14 +138,15 @@ describe("import wizard (S4)", () => {
     counts: { ready: 8940, quarantine: 412, suppressed: 96, role: 61, disposable: 23, invalid: 148 },
     samples: {},
     no_mailbox_domains: [],
+    no_tracking: 37,
     dates_mapped: true,
     gate: { invalid_rate: 0.015, invalid_limit: 0.02, role_disposable_rate: 0.009, role_disposable_limit: 0.05, consent_recorded: true, passed: true, problems: [] },
     checked_at: "2026-10-10T00:00:00Z",
   };
   const imp: Import = {
     id: "i1", filename: "mailchimp.csv", row_count: 9680, headers: ["Email Address", "First Name", "CONFIRM_TIME", "MEMBER_RATING"],
-    mapping: { email: "Email Address", first_name: "First Name", last_name: "", tags: "", consented_at: "CONFIRM_TIME", last_engaged_at: "", rating: "MEMBER_RATING", timezone: "", country: "" },
-    consent: {}, topic_ids: [], status: "uploaded", check_result: null, import_result: null, error: "", created_at: "2026-10-10T00:00:00Z",
+    mapping: { email: "Email Address", first_name: "First Name", last_name: "", tags: "", consented_at: "CONFIRM_TIME", last_engaged_at: "", rating: "MEMBER_RATING", tracking: "", timezone: "", country: "" },
+    consent: {}, topic_ids: [], status: "uploaded", check_result: null, import_result: null, error: "", created_at: "2026-10-10T00:00:00Z", updated_at: new Date().toISOString(),
   };
   const view = (i: Partial<Import>): ImportView => ({
     import: { ...imp, ...i }, preview: [["maya@example.com", "Maya", "2025-03-12", "4"]],
@@ -201,10 +202,11 @@ describe("import wizard (S4)", () => {
     await userEvent.click(screen.getByRole("button", { name: "Run safety check" }));
     expect(await screen.findByText("8,940")).toBeInTheDocument();
     expect(screen.getByText(/Passes the import gate/)).toBeInTheDocument();
+    expect(screen.getByText(/37 without click-tracking consent/)).toBeInTheDocument();
     const put = api.calls.find((c) => c.method === "PUT")!;
     expect(put.body).toMatchObject({
       topic_ids: ["t1"],
-      consent: { source: "platform_migration", source_detail: "Mailchimp export", attested: true },
+      consent: { source: "platform_migration", source_detail: "Mailchimp export", attested: true, tracking: "eu_by_country" },
     });
 
     // 4. Review + import (server asks for a passkey first)
@@ -220,5 +222,37 @@ describe("import wizard (S4)", () => {
     renderAt("/b/brightside/contacts/import/i1");
     expect(await screen.findByRole("alert")).toHaveTextContent("confirm the list wasn't bought, rented or scraped");
     expect(screen.queryByRole("button", { name: "Continue to review" })).toBeNull();
+  });
+});
+
+describe("import wizard recovery", () => {
+  const base = "/admin/v1/brands/brightside";
+  const stuck = (minutesAgo: number): ImportView => ({
+    import: {
+      id: "i9", filename: "x.csv", row_count: 1, headers: ["email"],
+      mapping: { email: "email", first_name: "", last_name: "", tags: "", consented_at: "", last_engaged_at: "", rating: "", tracking: "", timezone: "", country: "" },
+      consent: {}, topic_ids: [], status: "checking", check_result: null, import_result: null, error: "",
+      created_at: "2026-10-10T00:00:00Z", updated_at: new Date(Date.now() - minutesAgo * 60_000).toISOString(),
+    },
+    preview: [], attestation_text: "x", sources: {},
+  });
+
+  it("offers to cancel a run that stopped responding", async () => {
+    const api = fakeApi({
+      ...signedIn(),
+      [`GET ${base}/imports/i9`]: { status: 200, body: stuck(60) },
+      [`POST ${base}/imports/i9/cancel`]: { status: 200, body: { ...stuck(60), import: { ...stuck(60).import, status: "cancelled" } } },
+    });
+    renderAt("/b/brightside/contacts/import/i9");
+    await userEvent.click(await screen.findByRole("button", { name: /cancel this import/i }));
+    expect(await screen.findByText(/This import was cancelled/)).toBeInTheDocument();
+    expect(api.calls.some((c) => c.path === `${base}/imports/i9/cancel`)).toBe(true);
+  });
+
+  it("doesn't offer cancel while a run is healthy", async () => {
+    fakeApi({ ...signedIn(), [`GET ${base}/imports/i9`]: { status: 200, body: stuck(1) } });
+    renderAt("/b/brightside/contacts/import/i9");
+    expect(await screen.findByText(/Checking every address/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /cancel this import/i })).toBeNull();
   });
 });

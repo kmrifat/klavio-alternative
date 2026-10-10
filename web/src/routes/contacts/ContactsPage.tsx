@@ -114,7 +114,7 @@ export function ContactsPage() {
               <option value="unsubscribed">Unsubscribed</option>
             </select>
             <input aria-label="Tag" placeholder="Tag" className={`${inputBase} w-32`} value={tag} onChange={(e) => setTag(e.target.value)} />
-            {s && (
+            {s?.suppressed_company_wide !== undefined && (
               <span className="ml-auto flex items-center gap-1.5 text-xs text-zinc-500">
                 <Lock className="size-3.5" /> {s.suppressed_company_wide.toLocaleString()} addresses suppressed company-wide · can't be re-imported
               </span>

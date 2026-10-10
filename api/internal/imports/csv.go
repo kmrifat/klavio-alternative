@@ -29,6 +29,7 @@ type Mapping struct {
 	ConsentedAt   string `json:"consented_at"`    // when they signed up / confirmed
 	LastEngagedAt string `json:"last_engaged_at"` // last click (or activity) in the old tool
 	Rating        string `json:"rating"`          // engagement stars, e.g. Mailchimp MEMBER_RATING (1–5)
+	Tracking      string `json:"tracking"`        // per-row click-tracking consent (yes/no), used when Consent.Tracking = "column"
 	Timezone      string `json:"timezone"`
 	Country       string `json:"country"`
 }
@@ -36,7 +37,7 @@ type Mapping struct {
 func (m Mapping) columns() map[string]string {
 	return map[string]string{
 		"email": m.Email, "first_name": m.FirstName, "last_name": m.LastName, "tags": m.Tags,
-		"consented_at": m.ConsentedAt, "last_engaged_at": m.LastEngagedAt, "rating": m.Rating,
+		"consented_at": m.ConsentedAt, "last_engaged_at": m.LastEngagedAt, "rating": m.Rating, "tracking": m.Tracking,
 		"timezone": m.Timezone, "country": m.Country,
 	}
 }
@@ -157,6 +158,7 @@ var known = []struct {
 	{"consented_at", []string{"confirmtime", "optintime", "consentedat", "consenttimestamp", "subscribedat", "signupdate", "dateadded", "createdat", "created"}},
 	{"last_engaged_at", []string{"lastclick", "lastclickdate", "lastclicked", "lastengaged", "lastengagement", "lastactive", "lastactivity"}},
 	{"rating", []string{"memberrating", "rating", "starrating", "engagementrating"}},
+	{"tracking", []string{"trackingconsent", "trackingallowed", "clicktracking", "trackingoptin"}},
 	{"timezone", []string{"timezone", "tz"}},
 	{"country", []string{"cc", "countrycode", "country"}},
 }
@@ -195,6 +197,8 @@ func SuggestMapping(headers []string) Mapping {
 			m.LastEngagedAt = v
 		case "rating":
 			m.Rating = v
+		case "tracking":
+			m.Tracking = v
 		case "timezone":
 			m.Timezone = v
 		case "country":

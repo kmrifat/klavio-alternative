@@ -38,6 +38,7 @@ type fakeDNS struct {
 	mx    map[string][]*net.MX
 	txt   map[string][]string
 	hosts map[string]bool // domains with an A record but no MX
+	hang  bool            // MX lookups wait until the context ends (a stuck DNS server)
 }
 
 func nx(name string) error { return &net.DNSError{Err: "no such host", Name: name, IsNotFound: true} }
@@ -51,8 +52,13 @@ func (f *fakeDNS) LookupCNAME(_ context.Context, h string) (string, error) {
 	return "", nx(h)
 }
 
-func (f *fakeDNS) LookupMX(_ context.Context, n string) ([]*net.MX, error) {
+func (f *fakeDNS) LookupMX(ctx context.Context, n string) ([]*net.MX, error) {
 	f.mu.Lock()
+	if f.hang {
+		f.mu.Unlock()
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	defer f.mu.Unlock()
 	if v, ok := f.mx[n]; ok {
 		return v, nil

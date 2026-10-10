@@ -153,7 +153,8 @@ type ContactStats struct {
 	Pending          int          `json:"pending_confirmation"`
 	Unsubscribed     int          `json:"unsubscribed"`
 	SuppressedHere   int          `json:"suppressed_in_brand"`
-	SuppressedGlobal int          `json:"suppressed_company_wide"`
+	SuppressedGlobal *int         `json:"suppressed_company_wide,omitempty"` // nil for viewers
+
 }
 
 func (s *Store) ContactStats(ctx context.Context, brandID uuid.UUID) (ContactStats, error) {
@@ -190,7 +191,9 @@ func (s *Store) ContactStats(ctx context.Context, brandID uuid.UUID) (ContactSta
 	if err := rows.Err(); err != nil {
 		return st, err
 	}
-	err = s.db.QueryRow(ctx, `SELECT count(*) FROM suppressions`).Scan(&st.SuppressedGlobal)
+	var global int
+	err = s.db.QueryRow(ctx, `SELECT count(*) FROM suppressions`).Scan(&global)
+	st.SuppressedGlobal = &global
 	return st, err
 }
 

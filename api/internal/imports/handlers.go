@@ -80,9 +80,9 @@ func (s *Service) upload(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (s *Service) writeImport(w http.ResponseWriter, r *http.Request, status int, imp store.Import) error {
-	preview, err := s.Preview(r.Context(), imp, 5)
-	if err != nil {
-		return err
+	preview := imp.Preview
+	if preview == nil {
+		preview = [][]string{}
 	}
 	httpx.WriteJSON(w, status, map[string]any{
 		"import": imp, "preview": preview, "attestation_text": AttestationText, "sources": sourceLabels,
@@ -172,7 +172,8 @@ func (s *Service) cancel(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if err := s.store.CancelImport(r.Context(), imp.ID); errors.Is(err, store.ErrNotFound) {
-		return httpx.Errorf(http.StatusConflict, "import_busy", "this import is running or finished and can't be cancelled")
+		return httpx.Errorf(http.StatusConflict, "import_busy",
+			"this import is finished, or still running (a run can be cancelled once it's been stuck for %d minutes)", int(store.StaleRunAfter.Minutes()))
 	} else if err != nil {
 		return err
 	}

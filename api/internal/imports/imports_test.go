@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -33,7 +34,8 @@ func TestParseMailchimpExport(t *testing.T) {
 	if m != want {
 		t.Fatalf("mapping = %+v\nwant      %+v", m, want)
 	}
-	rows := Rows(tbl, m)
+	rows := Rows(tbl, m, time.Now())
+	ResolveTracking(rows, "") // default: by country; both rows are outside the EU
 	r := rows[0]
 	if r.Email != "maya@example.com" || r.FirstName != "Maya" || r.Country != "US" || r.Timezone != "America/New_York" {
 		t.Errorf("row = %+v", r)
@@ -92,20 +94,20 @@ func TestClassify(t *testing.T) {
 	existingID, unsubID := uuid.New(), uuid.New()
 
 	rows := []Row{
-		{Email: "ready@good.com", ConsentedAt: &recent},
-		{Email: ""}, // invalid
-		{Email: "ready@good.com", ConsentedAt: &recent}, // duplicate
-		{Email: "blocked@good.com", ConsentedAt: &recent},
-		{Email: "info@good.com", ConsentedAt: &recent},
-		{Email: "x@mailinator.com", ConsentedAt: &recent},
-		{Email: "y@deadmail.com", ConsentedAt: &recent},
-		{Email: "known@good.com", ConsentedAt: &recent},
-		{Email: "gone@good.com", ConsentedAt: &recent},
-		{Email: "stale@good.com", ConsentedAt: &old},
-		{Email: "nodates@good.com"},
-		{Email: "clicked@good.com", ConsentedAt: &old, LastEngagedAt: &recent},
-		{Email: "starred@good.com", ConsentedAt: &old, Rating: 4},   // 4–5 stars = recent activity
-		{Email: "unstarred@good.com", ConsentedAt: &old, Rating: 3}, // 3 stars isn't enough
+		{Email: "ready@good.com", ConsentedAt: &recent, TrackingAllowed: true},
+		{Email: "", TrackingAllowed: true},                                     // invalid
+		{Email: "ready@good.com", ConsentedAt: &recent, TrackingAllowed: true}, // duplicate
+		{Email: "blocked@good.com", ConsentedAt: &recent, TrackingAllowed: true},
+		{Email: "info@good.com", ConsentedAt: &recent, TrackingAllowed: true},
+		{Email: "x@mailinator.com", ConsentedAt: &recent, TrackingAllowed: true},
+		{Email: "y@deadmail.com", ConsentedAt: &recent, TrackingAllowed: true},
+		{Email: "known@good.com", ConsentedAt: &recent, TrackingAllowed: true},
+		{Email: "gone@good.com", ConsentedAt: &recent, TrackingAllowed: true},
+		{Email: "stale@good.com", ConsentedAt: &old, TrackingAllowed: true},
+		{Email: "nodates@good.com", TrackingAllowed: true},
+		{Email: "clicked@good.com", ConsentedAt: &old, LastEngagedAt: &recent, TrackingAllowed: true},
+		{Email: "starred@good.com", ConsentedAt: &old, Rating: 4, TrackingAllowed: true},   // 4–5 stars = recent activity
+		{Email: "unstarred@good.com", ConsentedAt: &old, Rating: 3, TrackingAllowed: true}, // 3 stars isn't enough
 	}
 	Classify(rows, Facts{
 		Suppressed: map[string]bool{"blocked@good.com": true},
@@ -251,5 +253,74 @@ func TestRoleAndDisposableLists(t *testing.T) {
 		if isDisposable(e) {
 			t.Errorf("%s shouldn't be disposable", e)
 		}
+	}
+}
+
+func TestFutureDatesCountAsNoDate(t *testing.T) {
+	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	tbl, err := Parse([]byte("email,confirm_time,last_click\n" +
+		"future@good.com,2206-03-01,2206-03-01\n" +
+		"skew@good.com,2026-10-10 20:00:00,\n" +
+		"recent@good.com,2026-10-01,\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := Rows(tbl, Mapping{Email: "email", ConsentedAt: "confirm_time", LastEngagedAt: "last_click"}, now)
+	ResolveTracking(rows, "all")
+	if rows[0].ConsentedAt != nil || rows[0].LastEngagedAt != nil {
+		t.Fatalf("future dates kept: %v %v", rows[0].ConsentedAt, rows[0].LastEngagedAt)
+	}
+	if rows[1].ConsentedAt == nil {
+		t.Fatal("a date a few hours ahead (clock skew) should be kept")
+	}
+	Classify(rows, Facts{Now: now})
+	if rows[0].Outcome != Quarantine || rows[2].Outcome != Ready {
+		t.Fatalf("outcomes: %s %s", rows[0].Outcome, rows[2].Outcome)
+	}
+}
+
+func TestTruncateKeepsWholeCharacters(t *testing.T) {
+	long := strings.Repeat("田中倫", 50) // 150 characters, 450 bytes
+	got := truncate(long, 100)
+	if !utf8.ValidString(got) || utf8.RuneCountInString(got) != 100 {
+		t.Fatalf("got %d runes, valid=%v", utf8.RuneCountInString(got), utf8.ValidString(got))
+	}
+	if truncate("Maya", 100) != "Maya" {
+		t.Fatal("short strings must be unchanged")
+	}
+}
+
+func TestResolveTracking(t *testing.T) {
+	rows := func() []Row {
+		return []Row{{Country: "DE", TrackingRaw: "yes"}, {Country: "US", TrackingRaw: ""}, {Country: "GB", TrackingRaw: "Granted"}}
+	}
+	cases := map[string][]bool{
+		"":              {false, true, false}, // default: by country
+		"eu_by_country": {false, true, false},
+		"all":           {true, true, true},
+		"none":          {false, false, false},
+		"column":        {true, false, true},
+	}
+	for mode, want := range cases {
+		rs := rows()
+		ResolveTracking(rs, mode)
+		for i, w := range want {
+			if rs[i].TrackingAllowed != w {
+				t.Errorf("mode %q row %d: %v, want %v", mode, i, rs[i].TrackingAllowed, w)
+			}
+		}
+	}
+}
+
+func TestNoTrackingIgnoresStarsAndClicks(t *testing.T) {
+	now := time.Now()
+	old, recent := now.AddDate(-2, 0, 0), now.AddDate(0, 0, -3)
+	rows := []Row{
+		{Email: "eu@good.com", ConsentedAt: &old, LastEngagedAt: &recent, Rating: 5, TrackingAllowed: false},
+		{Email: "us@good.com", ConsentedAt: &old, Rating: 5, TrackingAllowed: true},
+	}
+	Classify(rows, Facts{Now: now})
+	if rows[0].Outcome != Quarantine || rows[1].Outcome != Ready {
+		t.Fatalf("got %s / %s", rows[0].Outcome, rows[1].Outcome)
 	}
 }

@@ -120,7 +120,7 @@ export function useImport(slug: string, id: string | undefined) {
     // Poll while a background step is running.
     refetchInterval: (q) => {
       const s = q.state.data?.import.status;
-      return s === "checking" || s === "importing" ? 1000 : false;
+      return s === "checking" || s === "importing" ? 2000 : false;
     },
   });
 }

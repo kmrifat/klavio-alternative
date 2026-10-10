@@ -80,15 +80,19 @@ func (h *Handlers) list(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// stats are counts only, so every role can see them.
+// stats are counts only, so every role can see this brand's. The
+// company-wide suppression count spans other brands: editors and up only.
 func (h *Handlers) stats(w http.ResponseWriter, r *http.Request) error {
-	b, _, err := brands.WithRole(r, h.Store, store.RoleViewer)
+	b, p, err := brands.WithRole(r, h.Store, store.RoleViewer)
 	if err != nil {
 		return err
 	}
 	st, err := h.Store.ContactStats(r.Context(), b.ID)
 	if err != nil {
 		return err
+	}
+	if !p.HasBrandRole(b.ID, store.RoleEditor) && !p.SeesAllBrands() {
+		st.SuppressedGlobal = nil
 	}
 	httpx.WriteJSON(w, http.StatusOK, st)
 	return nil

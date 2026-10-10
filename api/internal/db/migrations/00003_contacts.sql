@@ -109,6 +109,7 @@ CREATE TABLE imports (
     file             bytea,
     row_count        int NOT NULL DEFAULT 0,
     headers          text[] NOT NULL DEFAULT '{}',
+    preview          jsonb NOT NULL DEFAULT '[]', -- first rows, so polling never re-reads the file
     mapping          jsonb NOT NULL DEFAULT '{}',
     consent          jsonb NOT NULL DEFAULT '{}',
     topic_ids        uuid[] NOT NULL DEFAULT '{}',
