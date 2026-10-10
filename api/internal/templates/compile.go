@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"html"
 	"regexp"
 	"strings"
 	"time"
@@ -146,8 +145,12 @@ func runMJML(ctx context.Context, doc string) (string, error) {
 }
 
 var (
-	mjTagRe   = regexp.MustCompile(`<(/?)(mj-[a-z-]+|mjml)\b[^>]*?(/?)>`)
-	htmlTagRe = regexp.MustCompile(`(?i)<\s*(style|link|meta|base)\b`)
+	mjTagRe = regexp.MustCompile(`<(/?)(mj-[a-z-]+|mjml)\b[^>]*?(/?)>`)
+	// Elements a template may not contain at all: stylesheets and
+	// metadata belong to the layout, and SVG, MathML and embedded content
+	// bring their own painting (opacity, transforms) that the CSS rules
+	// below can't see.
+	htmlTagRe = regexp.MustCompile(`(?i)<\s*(style|link|meta|base|svg|math|object|embed|iframe|frame|frameset|video|audio|canvas|form|input|button|select|textarea|script|noscript|template|portal|applet)\b`)
 )
 
 func layoutSourceIssues(layout string) []Issue {
@@ -194,7 +197,7 @@ func templateSourceIssues(content string) []Issue {
 		issues = append(issues, errorf("template_has_content_tag", "{{content}} belongs in the layout, not in a template"))
 	}
 	if m := htmlTagRe.FindStringSubmatch(content); m != nil {
-		issues = append(issues, errorf("template_style", "templates can't add <%s> elements; the brand layout sets styles", strings.ToLower(m[1])))
+		issues = append(issues, errorf("template_style", "templates can't contain <%s> elements", strings.ToLower(m[1])))
 	}
 
 	var stack []string
@@ -224,60 +227,6 @@ func templateSourceIssues(content string) []Issue {
 	}
 	issues = append(issues, styleIssues(content)...)
 	return append(issues, htmlBalance(lower)...)
-}
-
-// Inline styles a template may not use: each can lift content out of its
-// slot and over the layout's footer (Apple Mail and iOS render them), hiding
-// the unsubscribe link while the footer's markup stays intact.
-var bannedCSS = map[string]bool{
-	"position": true, "z-index": true, "top": true, "bottom": true, "left": true, "right": true, "inset": true,
-	"transform": true, "translate": true, "rotate": true, "scale": true, "zoom": true,
-	"float": true, "clip": true, "clip-path": true, "mask": true, "mask-image": true, "filter": true,
-	"backdrop-filter": true, "mix-blend-mode": true, "content": true, "behavior": true, "-moz-binding": true,
-	"overflow": true, "contain": true, "will-change": true, "isolation": true, "perspective": true,
-}
-
-var (
-	styleAttrRe = regexp.MustCompile(`(?is)\bstyle\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`)
-	// Any MJML attribute with a negative value (padding="-40px").
-	negativeAttrRe = regexp.MustCompile(`(?is)<mj-[a-z-]+\b[^>]*?\s([a-z-]+)\s*=\s*["']\s*-\s*[0-9.]`)
-	negativeLenRe  = regexp.MustCompile(`(^|[\s,(])-\s*[0-9.]`)
-)
-
-func styleIssues(content string) []Issue {
-	var issues []Issue
-	seen := map[string]bool{}
-	add := func(is Issue) {
-		if !seen[is.Message] {
-			seen[is.Message] = true
-			issues = append(issues, is)
-		}
-	}
-	for _, m := range styleAttrRe.FindAllStringSubmatch(content, -1) {
-		// Browsers decode entities before reading CSS: &#112;osition is position.
-		css := strings.ToLower(html.UnescapeString(m[1] + m[2] + m[3]))
-		if strings.ContainsAny(css, `\`) || strings.Contains(css, "expression(") || strings.Contains(css, "/*") {
-			add(errorf("template_css", "a style uses CSS escapes, comments or expression(); write plain CSS"))
-			continue
-		}
-		for _, decl := range strings.Split(css, ";") {
-			prop, val, ok := strings.Cut(decl, ":")
-			if !ok {
-				continue
-			}
-			prop = strings.TrimSpace(prop)
-			switch {
-			case bannedCSS[prop]:
-				add(errorf("template_css", "templates can't use the CSS property %s: it can move content over the brand layout", prop))
-			case strings.HasPrefix(prop, "margin") && negativeLenRe.MatchString(strings.TrimSpace(val)):
-				add(errorf("template_css", "templates can't use negative margins (%s: %s): they can pull content over the brand layout", prop, strings.TrimSpace(val)))
-			}
-		}
-	}
-	for _, m := range negativeAttrRe.FindAllStringSubmatch(content, -1) {
-		add(errorf("template_css", "templates can't use negative values (%s): they can pull content over the brand layout", strings.ToLower(m[1])))
-	}
-	return issues
 }
 
 // Tags that must be closed as often as they're opened. Browsers confine an
