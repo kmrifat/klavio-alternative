@@ -1,19 +1,356 @@
 {
   "tag": {
     "name": "Segments",
-    "description": "Saved segments."
+    "description": "Saved segments: rules such as \"tier is active AND country is DE\" that pick a brand's contacts when a campaign uses them. People who mustn't be emailed (suppressed, unsubscribed, unconfirmed, sunset, frequency cap) are still removed at send time, whatever a segment says."
   },
-  "x-todo": [
-    "GET /admin/v1/brands/{slug}/segments",
-    "POST /admin/v1/brands/{slug}/segments",
-    "POST /admin/v1/brands/{slug}/segments/preview",
-    "DELETE /admin/v1/brands/{slug}/segments/{id}",
-    "GET /admin/v1/brands/{slug}/segments/{id}",
-    "PUT /admin/v1/brands/{slug}/segments/{id}",
-    "GET /admin/v1/segments/fields"
-  ],
-  "paths": {},
+  "x-todo": [],
+  "paths": {
+    "/segments/fields": {
+      "get": {
+        "operationId": "listSegmentFields",
+        "summary": "Fields rules can test",
+        "description": "The whitelist of fields a condition may name, with the operators each allows and, for fixed lists, the allowed values. In the order the segment editor shows them. The same for every brand.",
+        "x-role": "signed_in",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated"],
+        "responses": {
+          "200": {
+            "description": "The fields.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["fields"],
+                  "properties": { "fields": { "type": "array", "items": { "$ref": "#/components/schemas/SegmentsField" } } }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" }
+        }
+      }
+    },
+    "/brands/{slug}/segments": {
+      "get": {
+        "operationId": "listSegments",
+        "summary": "List segments",
+        "description": "The brand's segments, by name, each with its last saved count (`counts` is null if it was never counted). Listing doesn't recount: that would scan the contacts once per segment. Open one to recount it.",
+        "x-role": "brand:viewer",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }],
+        "responses": {
+          "200": {
+            "description": "The segments.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["segments"],
+                  "properties": { "segments": { "type": "array", "items": { "$ref": "#/components/schemas/SegmentsSegment" } } }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "post": {
+        "operationId": "createSegment",
+        "summary": "Create a segment",
+        "description": "Saves a named segment (at least one condition), then counts it and stores the count. Recorded in the audit log (`segment.created`, with the rules). Names are unique within the brand.",
+        "x-role": "brand:editor",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found", "bad_json", "invalid_name", "invalid_rules", "name_taken"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SegmentsInput" } } }
+        },
+        "responses": {
+          "201": {
+            "description": "Created, with a fresh count.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SegmentsSegment" } } }
+          },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields. `invalid_name`: the name is empty or over 100 characters. `invalid_rules`: no condition, or a rule problem; the message points at the group and condition (\"group 1, condition 2: …\").",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "`name_taken`: another segment of this brand already has this name.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/brands/{slug}/segments/preview": {
+      "post": {
+        "operationId": "previewSegment",
+        "summary": "Live count of unsaved rules",
+        "description": "Counts the contacts some rules match, without saving anything, plus the first 10 matching contacts (by email): the live count while editing. Empty rules (no groups) match everyone. Editors and up only, like the contact list: a count of any rule someone can type would let a viewer spell out addresses (\"email starts with zo…\"). At most 60 previews a minute per member; each count may take at most 5 seconds (500 `internal` beyond that).",
+        "x-role": "brand:editor",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found", "rate_limited", "bad_json", "invalid_rules"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": { "rules": { "$ref": "#/components/schemas/SegmentsRules" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The counts and a sample.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["counts", "sample"],
+                  "properties": {
+                    "counts": { "$ref": "#/components/schemas/SegmentsCounts" },
+                    "sample": { "type": "array", "maxItems": 10, "description": "The first matching contacts, by email.", "items": { "$ref": "#/components/schemas/SegmentsContact" } }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields. `invalid_rules`: a rule problem; the message points at the group and condition.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "429": {
+            "description": "`rate_limited`: more than 60 live counts in the last minute; wait a minute.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/brands/{slug}/segments/{id}": {
+      "get": {
+        "operationId": "getSegment",
+        "summary": "Get a segment",
+        "description": "The segment, recounted now; the new count is stored for the list. Viewers may see a saved segment's numbers (only editors can try rules of their own, with preview). A count may take at most 5 seconds (500 `internal` beyond that).",
+        "x-role": "brand:viewer",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found", "invalid_rules"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/ID" }],
+        "responses": {
+          "200": {
+            "description": "The segment, with a fresh count.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SegmentsSegment" } } }
+          },
+          "400": {
+            "description": "`invalid_rules`: the saved rules no longer pass the checks (say a field or option was since dropped from the whitelist); edit the segment.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "operationId": "updateSegment",
+        "summary": "Change a segment",
+        "description": "Replaces the name and rules (at least one condition), then recounts. Recorded in the audit log (`segment.updated`, with the old and new name and rules).",
+        "x-role": "brand:editor",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found", "bad_json", "invalid_name", "invalid_rules", "name_taken"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/ID" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SegmentsInput" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Changed, with a fresh count.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SegmentsSegment" } } }
+          },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields. `invalid_name`: the name is empty or over 100 characters. `invalid_rules`: no condition, or a rule problem; the message points at the group and condition.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "`name_taken`: another segment of this brand already has this name.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteSegment",
+        "summary": "Delete a segment",
+        "description": "Deletes it for good. Recorded in the audit log (`segment.deleted`, with the rules it had).",
+        "x-role": "brand:editor",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/ID" }],
+        "responses": {
+          "204": { "description": "Deleted." },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    }
+  },
   "components": {
-    "schemas": {}
+    "schemas": {
+      "SegmentsField": {
+        "type": "object",
+        "required": ["key", "label", "kind", "ops"],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "What a condition's `field` names.",
+            "enum": ["tier", "status", "consent_basis", "tag", "topic", "email", "first_name", "last_name", "country", "timezone", "last_engaged_at", "last_click_at", "consented_at", "created_at"]
+          },
+          "label": { "type": "string", "examples": ["Engagement tier"] },
+          "kind": {
+            "type": "string",
+            "enum": ["text", "enum", "tag", "topic", "date", "country"],
+            "description": "Decides the operators and what `value` looks like (see `SegmentsCondition`)."
+          },
+          "ops": { "type": "array", "items": { "type": "string" }, "examples": [["is", "is_not", "in", "not_in"]] },
+          "options": { "type": "array", "items": { "type": "string" }, "description": "Only for `enum` fields: the allowed values.", "examples": [["active", "warm", "at_risk", "sunset"]] }
+        }
+      },
+      "SegmentsRules": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Groups of conditions. Conditions combine within a group by the group's `match`; groups combine by the top-level `match`. Every field and operator is checked against a whitelist (`GET /segments/fields`); no text from the rules ever becomes SQL. At most 10 groups of at most 20 conditions each. No groups at all matches everyone (allowed for preview only; a saved segment needs a condition).",
+        "examples": [{
+          "match": "all",
+          "groups": [
+            { "match": "any", "conditions": [
+              { "field": "tier", "op": "in", "value": ["active", "warm"] },
+              { "field": "tag", "op": "has", "value": "vip" }
+            ] },
+            { "match": "all", "conditions": [{ "field": "country", "op": "is", "value": "DE" }] }
+          ]
+        }],
+        "properties": {
+          "match": { "type": "string", "enum": ["all", "any"], "default": "all", "description": "How groups combine: `all` (AND) or `any` (OR). Empty means `all`." },
+          "groups": { "type": "array", "maxItems": 10, "items": { "$ref": "#/components/schemas/SegmentsGroup" } }
+        }
+      },
+      "SegmentsGroup": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["conditions"],
+        "properties": {
+          "match": { "type": "string", "enum": ["all", "any"], "default": "all", "description": "How this group's conditions combine. Empty means `all`." },
+          "conditions": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "$ref": "#/components/schemas/SegmentsCondition" } }
+        }
+      },
+      "SegmentsCondition": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field", "op"],
+        "description": "One test on a contact. Fields, by kind, and their operators:\n- **enum** `tier` (active, warm, at_risk, sunset), `status` (subscribed, pending_confirmation, quarantined, unsubscribed), `consent_basis` (double_opt_in, single_opt_in, soft_opt_in): `is`, `is_not` take one of the options; `in`, `not_in` take a list of them.\n- **tag** `tag`: `has`, `has_not` take a tag (text, up to 200 characters).\n- **topic** `topic`: `subscribed`, `not_subscribed` take a topic ID (UUID).\n- **text** `email`, `first_name`, `last_name`, `timezone`: `equals`, `not_equals`, `contains`, `starts_with`, `ends_with` take text (case-insensitive, up to 200 characters, not empty); `is_empty`, `is_not_empty` take no value.\n- **country** `country`: `is`, `is_not` take a two-letter code; `in`, `not_in` a list of them (case-insensitive); `is_empty` takes no value.\n- **date** `last_engaged_at`, `last_click_at`, `consented_at`, `created_at`: `within_days`, `older_than_days` take a whole number of days, 1 to 3650 (\"older than\" includes never); `before`, `after` take a date like `2026-01-31` (UTC; `after` starts the next day); `is_empty`, `is_not_empty` take no value.\n\nLists hold 1 to 50 values, each 1 to 200 characters.",
+        "properties": {
+          "field": {
+            "type": "string",
+            "enum": ["tier", "status", "consent_basis", "tag", "topic", "email", "first_name", "last_name", "country", "timezone", "last_engaged_at", "last_click_at", "consented_at", "created_at"]
+          },
+          "op": {
+            "type": "string",
+            "enum": ["is", "is_not", "in", "not_in", "has", "has_not", "subscribed", "not_subscribed", "equals", "not_equals", "contains", "starts_with", "ends_with", "is_empty", "is_not_empty", "within_days", "older_than_days", "before", "after"],
+            "description": "Must be one the field allows."
+          },
+          "value": {
+            "description": "Depends on the field and operator; absent for `is_empty` / `is_not_empty`.",
+            "oneOf": [
+              { "type": "string", "maxLength": 200 },
+              { "type": "array", "minItems": 1, "maxItems": 50, "items": { "type": "string", "minLength": 1, "maxLength": 200 } },
+              { "type": "integer", "minimum": 1, "maximum": 3650 }
+            ]
+          }
+        }
+      },
+      "SegmentsInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "rules"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 100, "description": "Trimmed; unique within the brand.", "examples": ["Active Germans"] },
+          "rules": { "$ref": "#/components/schemas/SegmentsRules" }
+        }
+      },
+      "SegmentsCounts": {
+        "type": "object",
+        "required": ["matching", "mailable", "tiers"],
+        "properties": {
+          "matching": { "type": "integer", "minimum": 0, "description": "Contacts the rules match." },
+          "mailable": { "type": "integer", "minimum": 0, "description": "Of those, how many could be emailed today: subscribed, not suppressed, not sunset." },
+          "tiers": {
+            "type": "object",
+            "description": "Subscribed, unsuppressed matches by engagement tier (sunset included here, though not in `mailable`).",
+            "required": ["active", "warm", "at_risk", "sunset"],
+            "properties": {
+              "active": { "type": "integer", "minimum": 0 },
+              "warm": { "type": "integer", "minimum": 0 },
+              "at_risk": { "type": "integer", "minimum": 0 },
+              "sunset": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      },
+      "SegmentsSegment": {
+        "type": "object",
+        "required": ["id", "name", "rules", "counts", "counted_at", "created_by", "created_at", "updated_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "rules": { "$ref": "#/components/schemas/SegmentsRules" },
+          "counts": {
+            "description": "The last count; null if never counted.",
+            "oneOf": [{ "$ref": "#/components/schemas/SegmentsCounts" }, { "type": "null" }]
+          },
+          "counted_at": { "type": ["string", "null"], "format": "date-time", "description": "When `counts` was taken." },
+          "created_by": { "type": ["string", "null"], "format": "uuid", "description": "The member who created it (null if they're gone)." },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "SegmentsContact": {
+        "type": "object",
+        "required": ["id", "email", "first_name", "last_name", "status", "consent_basis", "consent_source", "consented_at", "last_click_at", "last_engaged_at", "tags", "tracking_allowed", "timezone", "country", "created_at", "tier", "suppression_reason"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "email": { "type": "string", "format": "email" },
+          "first_name": { "type": "string" },
+          "last_name": { "type": "string" },
+          "status": { "type": "string", "enum": ["subscribed", "pending_confirmation", "quarantined", "unsubscribed"] },
+          "consent_basis": { "type": "string", "examples": ["double_opt_in"] },
+          "consent_source": { "type": "string", "description": "Where the consent came from (a form, an import, the API…)." },
+          "consented_at": { "type": ["string", "null"], "format": "date-time" },
+          "last_click_at": { "type": ["string", "null"], "format": "date-time" },
+          "last_engaged_at": { "type": ["string", "null"], "format": "date-time" },
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "tracking_allowed": { "type": "boolean" },
+          "timezone": { "type": "string", "examples": ["Europe/Berlin"] },
+          "country": { "type": "string", "examples": ["DE"] },
+          "created_at": { "type": "string", "format": "date-time" },
+          "tier": { "type": "string", "enum": ["active", "warm", "at_risk", "sunset"] },
+          "suppression_reason": { "type": ["string", "null"], "description": "Why the address is suppressed; null if it isn't." }
+        }
+      }
+    }
   }
 }

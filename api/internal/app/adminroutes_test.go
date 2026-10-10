@@ -193,7 +193,7 @@ func sourceAdminRoutes(t *testing.T) []adminRoute {
 func sourceErrorCodes(t *testing.T) map[string]bool {
 	t.Helper()
 	codes := map[string]bool{"internal": true} // httpx.Handle's 500
-	re := regexp.MustCompile(`(?:Errorf\(\s*http\.Status\w+,\s*|Code:\s*)"([a-z][a-z0-9_]*)"`)
+	re := regexp.MustCompile(`(?:Errorf\(\s*http\.Status\w+,\s*|\b(?:bad|errBad)\(\s*|Code:\s*)"([a-z][a-z0-9_]*)"`)
 	err := filepath.WalkDir("..", func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return err

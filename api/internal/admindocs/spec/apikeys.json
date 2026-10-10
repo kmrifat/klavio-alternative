@@ -1,21 +1,386 @@
 {
   "tag": {
     "name": "API keys",
-    "description": "Contacts API keys, consent wordings, re-permission and the API call log."
+    "description": "The admin side of the Contacts API (`/api/v1`), through which a brand's websites and apps add people (always with double opt-in): its API keys, the consent wordings sign-ups agree to, the log of recent calls, and re-permission emails to quarantined contacts."
   },
-  "x-todo": [
-    "GET /admin/v1/brands/{slug}/api-calls",
-    "GET /admin/v1/brands/{slug}/api-keys",
-    "POST /admin/v1/brands/{slug}/api-keys",
-    "POST /admin/v1/brands/{slug}/api-keys/{id}/revoke",
-    "GET /admin/v1/brands/{slug}/consent-wordings",
-    "POST /admin/v1/brands/{slug}/consent-wordings",
-    "POST /admin/v1/brands/{slug}/consent-wordings/{id}/retire",
-    "GET /admin/v1/brands/{slug}/repermission",
-    "PUT /admin/v1/brands/{slug}/repermission"
-  ],
-  "paths": {},
+  "x-todo": [],
+  "paths": {
+    "/brands/{slug}/api-keys": {
+      "get": {
+        "operationId": "listApiKeys",
+        "summary": "List API keys",
+        "description": "Every key the brand has had, newest first, including expired and revoked ones, plus the scopes a key can have. Secrets are never shown again; keys are known by their `prefix`.",
+        "x-role": "brand:brand_admin",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }],
+        "responses": {
+          "200": {
+            "description": "The keys.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["keys", "scopes"],
+                  "properties": {
+                    "keys": { "type": "array", "items": { "$ref": "#/components/schemas/ApiKeysKey" } },
+                    "scopes": { "type": "array", "description": "The scopes a key can have.", "items": { "$ref": "#/components/schemas/ApiKeysScope" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "post": {
+        "operationId": "createApiKey",
+        "summary": "Create an API key",
+        "description": "Makes a key and returns its secret: **the only time it is shown** (only a hash is stored). The key expires after `expires_in_days` (at most 90).\n\nA new key works only once a second admin approves it: this creates an approval request (`api_key`, recorded as `approval.requested`) and the key stays `pending_approval` until then; rejecting the request revokes the key. If nobody else could approve, the key is active at once, but only while the company has never had two admins (the bootstrap); otherwise the answer is 409 `no_approver` and nothing is saved. Recorded in the audit log (`api_key.created`).",
+        "x-role": "brand:brand_admin",
+        "x-step-up": true,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found", "step_up_required", "bad_json", "invalid_name", "invalid_scopes", "invalid_expiry", "invalid_ip_allowlist", "no_approver"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiKeysKeyInput" } } }
+        },
+        "responses": {
+          "201": {
+            "description": "Created. Store `secret` now; it can't be shown again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["key", "secret"],
+                  "properties": {
+                    "key": { "$ref": "#/components/schemas/ApiKeysKey" },
+                    "secret": { "type": "string", "description": "The full key: the prefix, `_`, then the secret part. Send it as the Contacts API's bearer token.", "examples": ["kla_mfrggzdf_…"] }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields. `invalid_name`: the name is empty or over 80 characters. `invalid_scopes`: no scope, or an unknown one. `invalid_expiry`: `expires_in_days` isn't 1 to 90. `invalid_ip_allowlist`: more than 50 entries, one isn't an IP address or range, or a range would allow every address (`0.0.0.0/0`).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/ForbiddenOrStepUp" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "`no_approver`: a second admin has to approve new keys, and nobody else can right now.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/brands/{slug}/api-keys/{id}/revoke": {
+      "post": {
+        "operationId": "revokeApiKey",
+        "summary": "Revoke an API key",
+        "description": "Stops the key working at once, for good. A key still awaiting approval can be revoked too; approving its request afterwards fails. Recorded in the audit log (`api_key.revoked`). No body.",
+        "x-role": "brand:brand_admin",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/ID" }],
+        "responses": {
+          "200": {
+            "description": "The revoked key.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiKeysKey" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": {
+            "description": "`not_found`: no such brand or key, or the key is already revoked.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/brands/{slug}/api-calls": {
+      "get": {
+        "operationId": "listApiCalls",
+        "summary": "Recent Contacts API calls",
+        "description": "The brand's last 100 Contacts API calls, newest first, including refused ones. Calls are kept for 30 days. Email addresses are masked.",
+        "x-role": "brand:brand_admin",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }],
+        "responses": {
+          "200": {
+            "description": "The calls.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["calls"],
+                  "properties": { "calls": { "type": "array", "maxItems": 100, "items": { "$ref": "#/components/schemas/ApiKeysCall" } } }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/brands/{slug}/consent-wordings": {
+      "get": {
+        "operationId": "listConsentWordings",
+        "summary": "List consent wordings",
+        "description": "The exact sentences people agree to when they sign up through the Contacts API; each sign-up names the one it showed. Current ones first, then retired ones; newest first within each.",
+        "x-role": "brand:viewer",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }],
+        "responses": {
+          "200": {
+            "description": "The wordings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["wordings"],
+                  "properties": { "wordings": { "type": "array", "items": { "$ref": "#/components/schemas/ApiKeysConsentWording" } } }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "post": {
+        "operationId": "createConsentWording",
+        "summary": "Add a consent wording",
+        "description": "Adds a wording. Wordings can't be edited (past consent points at the exact text); to change one, add a new one and retire the old. Recorded in the audit log (`consent_wording.created`, with the label and text).",
+        "x-role": "brand:brand_admin",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found", "bad_json", "invalid_label", "invalid_text"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["label", "text"],
+                "properties": {
+                  "label": { "type": "string", "minLength": 1, "maxLength": 80, "description": "A short name; trimmed.", "examples": ["Footer signup 2026"] },
+                  "text": { "type": "string", "minLength": 10, "maxLength": 2000, "description": "The exact sentence people agree to; trimmed.", "examples": ["Yes, send me the Brightside newsletter. I can unsubscribe at any time."] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Added.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiKeysConsentWording" } } }
+          },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields. `invalid_label`: the label is empty or over 80 characters. `invalid_text`: the text isn't 10 to 2,000 characters.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/brands/{slug}/consent-wordings/{id}/retire": {
+      "post": {
+        "operationId": "retireConsentWording",
+        "summary": "Retire a consent wording",
+        "description": "New sign-ups can't use it any more; past consent keeps pointing at it. Can't be undone. Recorded in the audit log (`consent_wording.retired`). No body.",
+        "x-role": "brand:brand_admin",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/ID" }],
+        "responses": {
+          "200": {
+            "description": "The retired wording.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiKeysConsentWording" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": {
+            "description": "`not_found`: no such brand or wording, or it's already retired.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/brands/{slug}/repermission": {
+      "get": {
+        "operationId": "getRepermission",
+        "summary": "Re-permission emails",
+        "description": "Whether the brand sends re-permission emails: an hourly job asks quarantined contacts (imported without provable consent) to confirm they want email, up to a daily limit. Shows how many are quarantined and how many emails went out today (UTC).",
+        "x-role": "brand:viewer",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }],
+        "responses": {
+          "200": {
+            "description": "The state.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiKeysRepermission" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "operationId": "setRepermission",
+        "summary": "Turn re-permission emails on or off",
+        "description": "Turning them on needs a configured email sender. Recorded in the audit log (`repermission.on` or `repermission.off`).",
+        "x-role": "brand:brand_admin",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found", "bad_json", "sending_not_configured"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": { "on": { "type": "boolean", "description": "Missing counts as `false` (off)." } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The new state.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ApiKeysRepermission" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadJSON" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "`sending_not_configured`: email sending isn't set up yet, so re-permission emails can't go out.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    }
+  },
   "components": {
-    "schemas": {}
+    "schemas": {
+      "ApiKeysScope": {
+        "type": "string",
+        "enum": ["contacts:read", "contacts:write"],
+        "description": "`contacts:write`: add people (double opt-in) and unsubscribe them. `contacts:read`: look up someone's status."
+      },
+      "ApiKeysKeyInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "scopes"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 80, "description": "Where it's used; trimmed.", "examples": ["Website signup form"] },
+          "scopes": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/ApiKeysScope" }, "description": "Duplicates are dropped." },
+          "ip_allowlist": {
+            "type": "array",
+            "maxItems": 50,
+            "description": "Addresses (`203.0.113.7`) or ranges (`203.0.113.0/24`) the key may be used from; blank entries are skipped. Empty or missing: any address. A range that covers every address is refused.",
+            "items": { "type": "string" },
+            "examples": [["203.0.113.7", "198.51.100.0/24"]]
+          },
+          "expires_in_days": { "type": "integer", "minimum": 1, "maximum": 90, "default": 90, "description": "0 or missing means 90." },
+          "reason": { "type": "string", "description": "Why the key is needed, shown to whoever approves it." }
+        }
+      },
+      "ApiKeysKey": {
+        "type": "object",
+        "required": ["id", "name", "prefix", "scopes", "ip_allowlist", "created_by", "created_at", "expires_at", "approval_id", "active", "revoked_at", "revoked_by", "last_used_at", "state"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "prefix": { "type": "string", "description": "The public start of the key, enough to recognise it.", "examples": ["kla_mfrggzdf"] },
+          "scopes": { "type": "array", "items": { "$ref": "#/components/schemas/ApiKeysScope" } },
+          "ip_allowlist": { "type": "array", "items": { "type": "string" }, "description": "Normalised ranges (`203.0.113.7/32`); empty: any address." },
+          "created_by": { "type": ["string", "null"], "format": "uuid" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "expires_at": { "type": "string", "format": "date-time" },
+          "approval_id": { "type": ["string", "null"], "format": "uuid", "description": "The approval request it waited on; null if it never needed one." },
+          "active": { "type": "boolean", "description": "Approved (or never needed approval) and not revoked. Doesn't consider expiry; see `state`." },
+          "revoked_at": { "type": ["string", "null"], "format": "date-time" },
+          "revoked_by": { "type": ["string", "null"], "format": "uuid", "description": "Null if revoked by a rejected approval." },
+          "last_used_at": { "type": ["string", "null"], "format": "date-time", "description": "Updated at most once a minute." },
+          "state": { "type": "string", "enum": ["pending_approval", "active", "expired", "revoked"] },
+          "approval": { "$ref": "#/components/schemas/ApiKeysApproval", "description": "Only when just created and waiting on approval." }
+        }
+      },
+      "ApiKeysApproval": {
+        "type": "object",
+        "description": "The approval request a new key waits on.",
+        "required": ["id", "kind", "brand_id", "requested_by", "requested_at", "summary", "reason", "payload", "status", "decided_by", "decided_at", "decision_note", "result", "expires_at", "target_user_id", "target_email"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "kind": { "type": "string", "examples": ["api_key"] },
+          "brand_id": { "type": ["string", "null"], "format": "uuid" },
+          "requested_by": { "type": "string", "format": "uuid" },
+          "requested_at": { "type": "string", "format": "date-time" },
+          "summary": { "type": "string", "examples": ["Contacts API key “Website signup form” for Brightside (contacts:write, 90 days, any IP)"] },
+          "reason": { "type": "string" },
+          "payload": { "description": "`key_id`, `prefix`, `scopes`, `ip_allowlist`." },
+          "status": { "type": "string", "enum": ["pending", "approved", "rejected", "cancelled", "expired"] },
+          "decided_by": { "type": ["string", "null"], "format": "uuid" },
+          "decided_at": { "type": ["string", "null"], "format": "date-time" },
+          "decision_note": { "type": "string" },
+          "result": { "description": "Set once decided." },
+          "expires_at": { "type": "string", "format": "date-time", "description": "Undecided requests lapse then." },
+          "target_user_id": { "type": ["string", "null"], "format": "uuid" },
+          "target_email": { "type": ["string", "null"] }
+        }
+      },
+      "ApiKeysCall": {
+        "type": "object",
+        "required": ["id", "key_id", "key_name", "at", "method", "path", "status", "ip", "email_mask", "error_code"],
+        "properties": {
+          "id": { "type": "integer" },
+          "key_id": { "type": ["string", "null"], "format": "uuid", "description": "Null when no valid key was sent." },
+          "key_name": { "type": "string", "description": "Empty when there's no key." },
+          "at": { "type": "string", "format": "date-time" },
+          "method": { "type": "string", "examples": ["POST"] },
+          "path": { "type": "string", "examples": ["/api/v1/contacts"] },
+          "status": { "type": "integer", "examples": [202] },
+          "ip": { "type": "string" },
+          "email_mask": { "type": "string", "description": "The email the call was about, masked; empty if none.", "examples": ["z•••@example.com"] },
+          "error_code": { "type": "string", "description": "The Contacts API error code; empty on success." }
+        }
+      },
+      "ApiKeysConsentWording": {
+        "type": "object",
+        "required": ["id", "label", "text", "created_by", "created_at", "retired_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "label": { "type": "string" },
+          "text": { "type": "string" },
+          "created_by": { "type": ["string", "null"], "format": "uuid" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "retired_at": { "type": ["string", "null"], "format": "date-time", "description": "Null while new sign-ups may use it." }
+        }
+      },
+      "ApiKeysRepermission": {
+        "type": "object",
+        "required": ["on", "sending_ready", "quarantined", "sent_today", "per_day"],
+        "properties": {
+          "on": { "type": "boolean" },
+          "sending_ready": { "type": "boolean", "description": "False: no email sender is set up yet, so it can't be turned on." },
+          "quarantined": { "type": "integer", "minimum": 0, "description": "Contacts waiting to be asked." },
+          "sent_today": { "type": "integer", "minimum": 0, "description": "Re-permission emails sent since midnight UTC." },
+          "per_day": { "type": "integer", "minimum": 0, "description": "The daily limit (`repermission_emails_per_day`)." }
+        }
+      }
+    }
   }
 }

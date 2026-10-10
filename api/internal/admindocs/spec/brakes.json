@@ -3,14 +3,243 @@
     "name": "Brakes",
     "description": "Account and brand brakes, and recovery."
   },
-  "x-todo": [
-    "GET /admin/v1/account-brake",
-    "POST /admin/v1/account-brake/release",
-    "GET /admin/v1/brands/{slug}/recovery",
-    "POST /admin/v1/brands/{slug}/recovery/resume"
-  ],
-  "paths": {},
+  "x-todo": [],
+  "paths": {
+    "/account-brake": {
+      "get": {
+        "operationId": "getAccountBrake",
+        "summary": "The account brake",
+        "description": "Whether all sending is stopped for every brand (the account brake), why, and the resume request waiting for approval, if any.",
+        "x-role": "company:approver",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden"],
+        "responses": {
+          "200": {
+            "description": "The account brake.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BrakesAccountBrake" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/account-brake/release": {
+      "post": {
+        "operationId": "requestAccountBrakeRelease",
+        "summary": "Ask to resume sending (account brake)",
+        "description": "Files a request to lift the account brake; it doesn't lift it. Owners only. The caller ticks off the account checklist (`cause`, `brands`, `amazon`: find what caused it, pause or fix the brands involved, check the AWS console) and says what they found and fixed. A second admin (an owner or approver) then approves it as a company-level approval of kind `brand_resume`, and only then does sending resume. With a single admin there is nobody to approve it, so it's refused (`no_approver`). Lifting it here doesn't lift a pause Amazon put on the account.",
+        "x-role": "company:owner",
+        "x-step-up": true,
+        "x-error-codes": ["unauthenticated", "step_up_required", "forbidden", "bad_json", "not_stopped", "checklist_incomplete", "reason_required", "already_requested", "no_approver"],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BrakesAccountResumeInput" } } }
+        },
+        "responses": {
+          "202": {
+            "description": "Requested; waiting for a second admin.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BrakesResumeRequested" } } }
+          },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields. `checklist_incomplete`: not every step is ticked. `reason_required`: the reason is shorter than 10 characters.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/ForbiddenOrStepUp" },
+          "409": {
+            "description": "`not_stopped`: sending isn't stopped. `already_requested`: a resume request is already waiting for approval. `no_approver`: there's no second admin to approve it.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/brands/{slug}/recovery": {
+      "get": {
+        "operationId": "getBrandRecovery",
+        "summary": "A brand's recovery",
+        "description": "Everything needed to loosen a brand's brake: its level now and what an approval would loosen it to, the event that put it on, the last 7 days' delivery, bounce, complaint and unsubscribe counts, whether those rates still call for the current level (and why), the recovery checklist, the resume request waiting for approval, and the 20 most recent brake events. Brakes only tighten on their own; loosening takes this recovery.",
+        "x-role": "brand:viewer",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "not_found"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }],
+        "responses": {
+          "200": {
+            "description": "The recovery view.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BrakesRecovery" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/brands/{slug}/recovery/resume": {
+      "post": {
+        "operationId": "requestBrandResume",
+        "summary": "Ask to loosen a brand's brake",
+        "description": "Files a request to loosen the brand's brake by one step; it doesn't loosen it. The caller ticks off every step of the checklist (`cause`, `list`, `content`, `auth`, `plan`) and says what they found and fixed. A second admin (an owner or approver) then approves it as a company-level approval of kind `brand_resume`. Approved, the brake loosens one step: `paused` or `slowed` come back on `watch`, `watch` goes to `healthy` (a paused brand goes back to `ready`, or to `setup` if its DNS or SES no longer pass). Refused while the brake is off (`not_braked`), while the 7-day rates still call for the current level (`still_over_limit`; they come down as the window moves on, and the same check runs again at approval), while another request waits, or with no second admin.",
+        "x-role": "brand:brand_admin",
+        "x-step-up": true,
+        "x-error-codes": ["unauthenticated", "step_up_required", "forbidden", "not_found", "bad_json", "not_braked", "checklist_incomplete", "reason_required", "still_over_limit", "already_requested", "no_approver"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BrakesBrandResumeInput" } } }
+        },
+        "responses": {
+          "202": {
+            "description": "Requested; waiting for a second admin.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BrakesResumeRequested" } } }
+          },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields. `checklist_incomplete`: not every step is ticked. `reason_required`: the reason is shorter than 10 characters.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/ForbiddenOrStepUp" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "`not_braked`: the brand's brake is off. `still_over_limit`: the 7-day rates still call for this level. `already_requested`: a resume request is already waiting for approval. `no_approver`: there's no second admin to approve it.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    }
+  },
   "components": {
-    "schemas": {}
+    "schemas": {
+      "BrakesState": {
+        "type": "string",
+        "enum": ["healthy", "watch", "slowed", "paused"],
+        "description": "A brake level. `watch`: alert, inactive audiences blocked. `slowed`: half the send rate, every send needs approval. `paused`: all marketing stopped until recovery."
+      },
+      "BrakesSafetyEvent": {
+        "type": "object",
+        "description": "Something a brake did.",
+        "required": ["id", "at", "scope", "brand_id", "campaign_id", "action", "from_state", "to_state", "reason", "metrics"],
+        "properties": {
+          "id": { "type": "integer", "format": "int64" },
+          "at": { "type": "string", "format": "date-time" },
+          "scope": { "type": "string", "enum": ["brand", "account", "campaign"] },
+          "brand_id": { "type": ["string", "null"], "format": "uuid" },
+          "campaign_id": { "type": ["string", "null"], "format": "uuid" },
+          "action": { "type": "string", "description": "A brand brake's new level (`watch`, `slowed`, `paused`), `paused` (a campaign), `stopped` (the account), or `cleared` (loosened after recovery).", "examples": ["paused", "cleared"] },
+          "from_state": { "type": "string" },
+          "to_state": { "type": "string" },
+          "reason": { "type": "string" },
+          "metrics": { "description": "The numbers behind it (counts, rates), as recorded." }
+        }
+      },
+      "BrakesCounts": {
+        "type": "object",
+        "description": "The brand's sending in the last 7 days.",
+        "required": ["delivered", "bounces", "complaints", "unsubscribes"],
+        "properties": {
+          "delivered": { "type": "integer" },
+          "bounces": { "type": "integer", "description": "Hard bounces." },
+          "complaints": { "type": "integer" },
+          "unsubscribes": { "type": "integer" }
+        }
+      },
+      "BrakesStep": {
+        "type": "object",
+        "description": "One item on the recovery checklist.",
+        "required": ["id", "title", "help"],
+        "properties": {
+          "id": { "type": "string", "examples": ["cause"] },
+          "title": { "type": "string" },
+          "help": { "type": "string" }
+        }
+      },
+      "BrakesApproval": {
+        "type": "object",
+        "description": "An approval request. Resume requests have kind `brand_resume` and are company-level (owners and approvers decide them).",
+        "required": ["id", "kind", "brand_id", "requested_by", "requested_at", "summary", "reason", "payload", "status", "decided_by", "decided_at", "decision_note", "result", "expires_at", "target_user_id", "target_email"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "kind": { "type": "string", "examples": ["brand_resume"] },
+          "brand_id": { "type": ["string", "null"], "format": "uuid", "description": "Null for the account brake." },
+          "requested_by": { "type": "string", "format": "uuid" },
+          "requested_at": { "type": "string", "format": "date-time" },
+          "summary": { "type": "string", "examples": ["Loosen Brightside's brake: paused → watch"] },
+          "reason": { "type": "string" },
+          "payload": {
+            "description": "For `brand_resume`: the brand (absent for the account brake) and the steps the requester ticked.",
+            "type": "object",
+            "properties": {
+              "brand_id": { "type": "string", "format": "uuid" },
+              "steps": { "type": ["array", "null"], "items": { "type": "string" } }
+            }
+          },
+          "status": { "type": "string", "enum": ["pending", "approved", "rejected", "cancelled", "expired"] },
+          "decided_by": { "type": ["string", "null"], "format": "uuid" },
+          "decided_at": { "type": ["string", "null"], "format": "date-time" },
+          "decision_note": { "type": "string" },
+          "result": { "description": "What carrying it out returned; null until then." },
+          "expires_at": { "type": "string", "format": "date-time", "description": "Undecided requests expire after 7 days." },
+          "target_user_id": { "type": ["string", "null"], "format": "uuid" },
+          "target_email": { "type": ["string", "null"] }
+        }
+      },
+      "BrakesResumeRequested": {
+        "type": "object",
+        "required": ["approval"],
+        "properties": { "approval": { "$ref": "#/components/schemas/BrakesApproval" } }
+      },
+      "BrakesAccountBrake": {
+        "type": "object",
+        "required": ["stopped_at", "reason", "pending"],
+        "properties": {
+          "stopped_at": { "type": ["string", "null"], "format": "date-time", "description": "When all sending was stopped; null when it isn't." },
+          "reason": { "type": "string", "description": "Why; empty when not stopped." },
+          "pending": { "anyOf": [{ "$ref": "#/components/schemas/BrakesApproval" }, { "type": "null" }], "description": "The resume request waiting for approval, if any." }
+        }
+      },
+      "BrakesRecovery": {
+        "type": "object",
+        "required": ["brand", "paused", "braked", "current", "next", "event", "counts", "still_over", "why", "steps", "pending", "events"],
+        "properties": {
+          "brand": { "$ref": "#/components/schemas/HealthBrand" },
+          "paused": { "type": "boolean" },
+          "braked": { "type": "boolean", "description": "Any brake on (paused, slowed or watch)." },
+          "current": { "$ref": "#/components/schemas/BrakesState" },
+          "next": { "$ref": "#/components/schemas/BrakesState", "description": "What an approval would loosen it to: `watch` from paused or slowed, `healthy` from watch." },
+          "event": { "anyOf": [{ "$ref": "#/components/schemas/BrakesSafetyEvent" }, { "type": "null" }], "description": "The latest brand event that tightened the brake, among `events`." },
+          "counts": { "$ref": "#/components/schemas/BrakesCounts" },
+          "still_over": { "type": "boolean", "description": "The 7-day rates still call for the current level (or worse); asking to resume is refused until they don't." },
+          "why": { "type": "string", "description": "Which rates are over which line, `; `-joined." },
+          "steps": { "type": "array", "items": { "$ref": "#/components/schemas/BrakesStep" }, "description": "The checklist: `cause`, `list`, `content`, `auth`, `plan`." },
+          "pending": { "anyOf": [{ "$ref": "#/components/schemas/BrakesApproval" }, { "type": "null" }], "description": "The resume request waiting for approval, if any." },
+          "events": { "type": "array", "maxItems": 20, "items": { "$ref": "#/components/schemas/BrakesSafetyEvent" }, "description": "Brake events for the brand (and the account), newest first." }
+        }
+      },
+      "BrakesBrandResumeInput": {
+        "type": "object",
+        "required": ["steps", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "steps": {
+            "type": "array",
+            "description": "The checklist steps done; every one is needed.",
+            "items": { "type": "string", "enum": ["cause", "list", "content", "auth", "plan"] },
+            "uniqueItems": true
+          },
+          "reason": { "type": "string", "minLength": 10, "description": "What was found and fixed (10+ characters, not counting surrounding spaces); the approver reads it." }
+        }
+      },
+      "BrakesAccountResumeInput": {
+        "type": "object",
+        "required": ["steps", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "steps": {
+            "type": "array",
+            "description": "The checklist steps done; every one is needed.",
+            "items": { "type": "string", "enum": ["cause", "brands", "amazon"] },
+            "uniqueItems": true
+          },
+          "reason": { "type": "string", "minLength": 10, "description": "What was found and fixed (10+ characters, not counting surrounding spaces); the approver reads it." }
+        }
+      }
+    }
   }
 }

@@ -3,13 +3,286 @@
     "name": "Health",
     "description": "Brand health and the safety center."
   },
-  "x-todo": [
-    "GET /admin/v1/brands/{slug}/health",
-    "POST /admin/v1/brands/{slug}/health/recheck",
-    "GET /admin/v1/safety-center"
-  ],
-  "paths": {},
+  "x-todo": [],
+  "paths": {
+    "/safety-center": {
+      "get": {
+        "operationId": "getSafetyCenter",
+        "summary": "Safety center",
+        "description": "The company-wide safety overview. A card per brand (health score, its four parts, warm-up), the shared Amazon SES account (quota, sending rate and status, read from AWS and cached for a minute) with how many emails this app sent today across all brands, a \"Needs attention\" list (brands that are paused, can't send because of DNS, are on a blocklist or have a low score; SES problems; the account brake; approvals waiting for the caller; open alerts; for owners, Gmail Postmaster Tools or blocklist checks not set up), most serious first, and the protections that are on.",
+        "x-role": "company:approver",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden"],
+        "responses": {
+          "200": {
+            "description": "The overview.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HealthSafetyCenter" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/brands/{slug}/health": {
+      "get": {
+        "operationId": "getBrandHealth",
+        "summary": "A brand's health",
+        "description": "The brand's health score (0–100) and its four parts (authentication, reputation, list quality, engagement) with what each is made of, as last saved by the hourly job (computed now if there's none yet). Also: the warm-up, the DNS records, the latest blocklist lookups, Gmail Postmaster Tools data for the last 30 days, the brand's 10 most recent alerts and the 20 most recent brake events.",
+        "x-role": "brand:viewer",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "not_found"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }],
+        "responses": {
+          "200": {
+            "description": "The brand's health.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HealthBrandHealth" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/brands/{slug}/health/recheck": {
+      "post": {
+        "operationId": "recheckBrandHealth",
+        "summary": "Re-check a brand's health now",
+        "description": "Checks the DNS records and the Amazon SES identity again (moving the brand between `setup` and `ready`; a paused brand stays paused), looks its sending and link domains up on the blocklists (Spamhaus DBL, SURBL, URIBL), then recomputes and saves the score. Blocklist lookups run at most once an hour per brand, however often this is called: within the hour (or while another lookup is running, or when blocklist checks are off) the last results are kept, without an error. Makes outside lookups, so it needs editor or above. No body. Answers like `GET /brands/{slug}/health`.",
+        "x-role": "brand:editor",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }],
+        "responses": {
+          "200": {
+            "description": "The brand's health after the re-check.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HealthBrandHealth" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    }
+  },
   "components": {
-    "schemas": {}
+    "schemas": {
+      "HealthBrand": {
+        "type": "object",
+        "description": "A brand, as stored.",
+        "required": ["id", "slug", "name", "color", "postal_address", "sending_domain", "mail_from_domain", "link_domain", "ses_configuration_set", "ses_identity_status", "status", "dns_checked_at", "warmup_started_on", "repermission_on", "brake_state", "created_at", "updated_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "slug": { "type": "string", "examples": ["brightside"] },
+          "name": { "type": "string", "examples": ["Brightside"] },
+          "color": { "type": "string", "examples": ["#2f6fed"] },
+          "postal_address": { "type": "string", "description": "Printed in every email's footer." },
+          "sending_domain": { "type": "string", "examples": ["mail.brightside.com"] },
+          "mail_from_domain": { "type": "string", "examples": ["bounce.mail.brightside.com"] },
+          "link_domain": { "type": "string", "description": "Tracked links go through it; empty if none." },
+          "ses_configuration_set": { "type": "string" },
+          "ses_identity_status": { "type": "string", "description": "Amazon SES's verification status for the sending domain.", "examples": ["SUCCESS", "PENDING"] },
+          "status": { "type": "string", "enum": ["setup", "ready", "paused"], "description": "`setup`: DNS or SES not passing yet, can't send. `ready`: can send. `paused`: all marketing stopped by the brake until recovery." },
+          "dns_checked_at": { "type": ["string", "null"], "format": "date-time" },
+          "warmup_started_on": { "type": ["string", "null"], "format": "date-time", "description": "Null until the brand first sends." },
+          "repermission_on": { "type": "boolean", "description": "Quarantined imports get re-permission emails." },
+          "brake_state": { "type": "string", "enum": ["healthy", "watch", "slowed", "paused"], "description": "The brand brake's level." },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "HealthCheck": {
+        "type": "object",
+        "description": "One line in a part's breakdown.",
+        "required": ["label", "status", "detail"],
+        "properties": {
+          "label": { "type": "string", "examples": ["DKIM", "Blocklists", "Gmail spam rate"] },
+          "status": { "type": "string", "enum": ["ok", "warning", "failing", "unknown"] },
+          "detail": { "type": "string" }
+        }
+      },
+      "HealthComponent": {
+        "type": "object",
+        "description": "One of the score's four parts.",
+        "required": ["key", "label", "weight", "score", "summary", "checks"],
+        "properties": {
+          "key": { "type": "string", "enum": ["authentication", "reputation", "list_quality", "engagement"] },
+          "label": { "type": "string", "examples": ["Authentication"] },
+          "weight": { "type": "number", "description": "Share of the score: 0.25, 0.35, 0.20, 0.20.", "examples": [0.25] },
+          "score": { "type": ["integer", "null"], "minimum": 0, "maximum": 100, "description": "Null: no data yet; the part is left out and the others' weights scaled up." },
+          "summary": { "type": "string" },
+          "checks": { "type": ["array", "null"], "items": { "$ref": "#/components/schemas/HealthCheck" }, "description": "Null when the part has nothing to check yet." }
+        }
+      },
+      "HealthResult": {
+        "type": "object",
+        "description": "A brand's health score.",
+        "required": ["score", "level", "weakest", "components"],
+        "properties": {
+          "score": { "type": ["integer", "null"], "minimum": 0, "maximum": 100, "description": "Null when no part has data yet." },
+          "level": { "type": "string", "enum": ["healthy", "watch", "at_risk", "unknown"], "description": "80+ `healthy`, 60–79 `watch`, below 60 `at_risk`; `unknown` without a score." },
+          "weakest": { "type": "string", "description": "The lowest part under 80 and why; empty if none." },
+          "components": { "type": ["array", "null"], "items": { "$ref": "#/components/schemas/HealthComponent" } }
+        }
+      },
+      "HealthWarmup": {
+        "type": "object",
+        "description": "The brand's warm-up: a daily sending cap that grows while a new brand builds reputation.",
+        "required": ["day", "days", "cap", "sent", "complete", "started_on"],
+        "properties": {
+          "day": { "type": "integer", "minimum": 1, "description": "Day of the warm-up (1-based); past `days` it's complete." },
+          "days": { "type": "integer", "description": "Length of the warm-up." },
+          "cap": { "type": "integer", "description": "Today's cap; 9223372036854775807 (no cap) once complete." },
+          "sent": { "type": "integer", "description": "Sent today (UTC)." },
+          "complete": { "type": "boolean" },
+          "started_on": { "type": ["string", "null"], "format": "date-time", "description": "Null until the brand first sends." }
+        }
+      },
+      "HealthDNSRecord": {
+        "type": "object",
+        "description": "A DNS record the brand needs, and whether it's in place.",
+        "required": ["id", "purpose", "type", "name", "value", "status", "detail", "checked_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "purpose": { "type": "string", "enum": ["dkim", "mail_from_mx", "mail_from_spf", "dmarc"] },
+          "type": { "type": "string", "examples": ["CNAME", "MX", "TXT"] },
+          "name": { "type": "string" },
+          "value": { "type": "string" },
+          "status": { "type": "string", "enum": ["pending", "ok", "warning", "failing"] },
+          "detail": { "type": "string" },
+          "checked_at": { "type": ["string", "null"], "format": "date-time" }
+        }
+      },
+      "HealthBlocklistResult": {
+        "type": "object",
+        "description": "The latest lookup of one domain on one blocklist.",
+        "required": ["zone", "domain", "status", "detail", "checked_at"],
+        "properties": {
+          "zone": { "type": "string", "examples": ["dbl.spamhaus.org"] },
+          "domain": { "type": "string" },
+          "status": { "type": "string", "enum": ["clean", "listed", "unknown"], "description": "`unknown`: the lookup was refused, rate-limited or failed." },
+          "detail": { "type": "string" },
+          "checked_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "HealthPostmasterStat": {
+        "type": "object",
+        "description": "One day of Gmail Postmaster Tools data.",
+        "required": ["day", "spam_ratio", "domain_reputation", "fetched_at"],
+        "properties": {
+          "day": { "type": "string", "format": "date-time" },
+          "spam_ratio": { "type": ["number", "null"], "description": "Fraction (0.001 = 0.1%); null when Gmail had too little mail to say." },
+          "domain_reputation": { "type": "string", "description": "`HIGH`, `MEDIUM`, `LOW` or `BAD`; empty if Gmail gave none." },
+          "fetched_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "HealthPostmaster": {
+        "type": "object",
+        "required": ["connected", "status", "detail", "history"],
+        "properties": {
+          "connected": { "type": "boolean", "description": "Whether Gmail Postmaster Tools is configured (POSTMASTER_CREDENTIALS_FILE)." },
+          "status": { "type": "string", "enum": ["not_connected", "waiting", "ok", "domain_not_found", "error"], "description": "`waiting`: connected, nothing pulled yet." },
+          "detail": { "type": "string" },
+          "history": { "type": "array", "items": { "$ref": "#/components/schemas/HealthPostmasterStat" }, "description": "Last 30 days, oldest first; empty when not connected." }
+        }
+      },
+      "HealthBrandHealth": {
+        "type": "object",
+        "required": ["brand", "health", "computed_at", "warmup", "dns_records", "blocklists", "blocklists_on", "postmaster", "events", "safety_events"],
+        "properties": {
+          "brand": { "$ref": "#/components/schemas/HealthBrand" },
+          "health": { "$ref": "#/components/schemas/HealthResult" },
+          "computed_at": { "type": ["string", "null"], "format": "date-time", "description": "When the score was computed." },
+          "warmup": { "$ref": "#/components/schemas/HealthWarmup" },
+          "dns_records": { "type": "array", "items": { "$ref": "#/components/schemas/HealthDNSRecord" } },
+          "blocklists": { "type": "array", "items": { "$ref": "#/components/schemas/HealthBlocklistResult" } },
+          "blocklists_on": { "type": "boolean", "description": "False: blocklist checks are off (BLOCKLIST_RESOLVER)." },
+          "postmaster": { "$ref": "#/components/schemas/HealthPostmaster" },
+          "events": { "type": "array", "maxItems": 10, "items": { "$ref": "#/components/schemas/Alert" }, "description": "The brand's most recent alerts, newest first." },
+          "safety_events": { "type": "array", "maxItems": 20, "items": { "$ref": "#/components/schemas/BrakesSafetyEvent" }, "description": "What the brakes did to this brand (and the account), newest first." }
+        }
+      },
+      "HealthBrandCard": {
+        "type": "object",
+        "description": "A brand on the safety center.",
+        "required": ["slug", "name", "color", "status", "score", "level", "weakest", "components", "computed_at", "warmup"],
+        "properties": {
+          "slug": { "type": "string" },
+          "name": { "type": "string" },
+          "color": { "type": "string" },
+          "status": { "type": "string", "enum": ["setup", "ready", "paused"] },
+          "score": { "type": ["integer", "null"], "minimum": 0, "maximum": 100 },
+          "level": { "type": "string", "enum": ["healthy", "watch", "at_risk", "unknown"] },
+          "weakest": { "type": "string" },
+          "components": {
+            "type": ["array", "null"],
+            "items": {
+              "type": "object",
+              "required": ["key", "label", "score"],
+              "properties": {
+                "key": { "type": "string", "enum": ["authentication", "reputation", "list_quality", "engagement"] },
+                "label": { "type": "string" },
+                "score": { "type": ["integer", "null"], "minimum": 0, "maximum": 100 }
+              }
+            }
+          },
+          "computed_at": { "type": ["string", "null"], "format": "date-time" },
+          "warmup": { "$ref": "#/components/schemas/HealthWarmup" }
+        }
+      },
+      "HealthAccountMeters": {
+        "type": "object",
+        "description": "The shared Amazon SES account. When it can't be read, `available` is false, `error` says so and the SES numbers are zero.",
+        "required": ["available", "region", "max_24_hour_send", "max_send_rate", "sent_last_24_hours", "production_access", "sending_enabled", "enforcement_status", "marketing_sent_today"],
+        "properties": {
+          "available": { "type": "boolean" },
+          "error": { "type": "string", "description": "Only when not available." },
+          "region": { "type": "string", "examples": ["eu-west-1"] },
+          "max_24_hour_send": { "type": "number", "description": "Emails per rolling 24 hours." },
+          "max_send_rate": { "type": "number", "description": "Emails per second." },
+          "sent_last_24_hours": { "type": "number" },
+          "production_access": { "type": "boolean", "description": "False: SES sandbox, only verified addresses receive mail." },
+          "sending_enabled": { "type": "boolean" },
+          "enforcement_status": { "type": "string", "description": "`HEALTHY`, `PROBATION` or `SHUTDOWN`.", "examples": ["HEALTHY"] },
+          "marketing_sent_today": { "type": "integer", "description": "What this app sent today (UTC), all brands." }
+        }
+      },
+      "HealthAttention": {
+        "type": "object",
+        "description": "One \"Needs attention\" row.",
+        "required": ["severity", "kind", "title", "detail"],
+        "properties": {
+          "severity": { "type": "string", "enum": ["critical", "warning", "info"] },
+          "kind": {
+            "type": "string",
+            "enum": ["brand_paused", "dns_broken", "dmarc_none", "blocklist_lookups_failing", "blocklisted", "gmail_spam", "low_health",
+              "ses_unavailable", "ses_sending_disabled", "ses_probation", "ses_enforcement", "ses_sandbox", "ses_quota",
+              "account_brake", "approvals", "alert", "postmaster_not_connected", "blocklists_off"]
+          },
+          "brand": { "type": "string", "description": "The brand's slug, for brand rows." },
+          "title": { "type": "string" },
+          "detail": { "type": "string" },
+          "link": { "type": "string", "description": "Where in the app to fix it.", "examples": ["/b/brightside/health"] }
+        }
+      },
+      "HealthProtection": {
+        "type": "object",
+        "required": ["key", "label", "on", "detail"],
+        "properties": {
+          "key": { "type": "string", "enum": ["two_person", "suppression", "passkeys", "access", "blocklists", "postmaster"] },
+          "label": { "type": "string" },
+          "on": { "type": "boolean" },
+          "detail": { "type": "string" }
+        }
+      },
+      "HealthSafetyCenter": {
+        "type": "object",
+        "required": ["brands", "account", "needs_attention", "protections"],
+        "properties": {
+          "brands": { "type": "array", "items": { "$ref": "#/components/schemas/HealthBrandCard" } },
+          "account": { "$ref": "#/components/schemas/HealthAccountMeters" },
+          "needs_attention": { "type": "array", "items": { "$ref": "#/components/schemas/HealthAttention" }, "description": "Critical first, then warning, then info." },
+          "protections": { "type": "array", "items": { "$ref": "#/components/schemas/HealthProtection" } }
+        }
+      }
+    }
   }
 }
