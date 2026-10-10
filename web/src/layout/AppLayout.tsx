@@ -141,8 +141,10 @@ function UserFooter({ brand }: { brand: BrandListItem | undefined }) {
 
 function TopBar({ brandName }: { brandName: string }) {
   const { pathname } = useLocation();
-  const screen = [...brandScreens, ...companyScreens, settingsScreen].find(
-    (s) => pathname.endsWith(`/${s.path}`) || pathname.startsWith(`/${s.path}/`),
+  const segments = pathname.split("/");
+  // Brand pages live at /b/<slug>/<screen>/…, company pages at /<screen>/…
+  const screen = [...brandScreens, ...companyScreens, settingsScreen].find((s) =>
+    segments[1] === "b" ? segments[3] === s.path : segments[1] === s.path,
   );
 
   return (
