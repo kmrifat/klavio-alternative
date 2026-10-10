@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/kmrifat/klavio-alternative/api/internal/approvals"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
 )
 
@@ -26,6 +27,7 @@ type Service struct {
 	store     *store.Store
 	log       *slog.Logger
 	rebuilder Rebuilder
+	approvals *approvals.Service
 }
 
 func NewService(st *store.Store, log *slog.Logger) *Service {

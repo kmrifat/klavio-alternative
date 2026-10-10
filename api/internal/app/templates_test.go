@@ -15,6 +15,48 @@ const welcome = `<mj-section><mj-column>
   <mj-button href="https://shop.example.com/autumn">Shop the range</mj-button>
 </mj-column></mj-section>`
 
+// With a second admin, a layout change waits for their approval.
+func TestLayoutChangeNeedsSecondAdmin(t *testing.T) {
+	a, srv, _ := setup(t)
+	ctx := context.Background()
+	owner := newBrowser(t, srv.URL)
+	link, _ := a.Bootstrap(ctx, "owner@acme.test", "Olivia Owner")
+	owner.must(200, owner.acceptInvite(link))
+	owner.must(201, owner.do("POST", "/admin/v1/brands", brightside))
+	const base = "/admin/v1/brands/brightside"
+	tpl := owner.must(201, owner.do("POST", base+"/templates", map[string]any{"name": "Note", "mjml": welcome})).body["template"].(map[string]any)
+
+	inv := owner.must(201, owner.do("POST", "/admin/v1/team/invites", map[string]any{
+		"email": "ap@acme.test", "name": "Ada Approver", "company_role": "approver",
+	}))
+	approver := newBrowser(t, srv.URL)
+	approver.must(200, approver.acceptInvite(inv.body["invite_url"].(string)))
+
+	def := owner.must(200, owner.do("GET", base+"/layout", nil)).body["layout"].(map[string]any)["mjml"].(string)
+	purple := strings.ReplaceAll(def, "#f97316", "#7c3aed")
+	pending := owner.must(202, owner.do("PUT", base+"/layout", map[string]any{"mjml": purple, "version": 0}))
+	id := pending.body["approval"].(map[string]any)["id"].(string)
+	if l := owner.must(200, owner.do("GET", base+"/layout", nil)).body["layout"].(map[string]any); l["is_default"] != true {
+		t.Fatalf("the layout changed before approval: %v", l["version"])
+	}
+	if r := owner.do("POST", "/admin/v1/approvals/"+id+"/approve", map[string]any{}); r.status < 400 {
+		t.Fatalf("the requester approved their own layout change: %d", r.status)
+	}
+	approver.must(200, approver.do("POST", "/admin/v1/approvals/"+id+"/approve", map[string]any{"note": "looks right"}))
+	l := owner.must(200, owner.do("GET", base+"/layout", nil)).body["layout"].(map[string]any)
+	if num(l["version"]) != 1 || !strings.Contains(l["mjml"].(string), "#7c3aed") {
+		t.Fatalf("approved change not applied: %v", l["version"])
+	}
+	// Templates are rebuilt against it (by the job, or the sweep).
+	if err := a.Templates.RebuildStale(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := owner.must(200, owner.do("GET", base+"/templates/"+tpl["id"].(string), nil)).body["template"].(map[string]any)
+	if num(got["layout_version"]) != 1 || got["stale"] != false {
+		t.Fatalf("template not rebuilt after the approved change: %v %v", got["layout_version"], got["stale"])
+	}
+}
+
 // nopRebuilder drops rebuild requests, as if the job were lost.
 type nopRebuilder struct{}
 

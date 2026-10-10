@@ -3,6 +3,7 @@ package templates
 import (
 	"errors"
 	"io"
+	"net/url"
 	"strings"
 
 	"golang.org/x/net/html"
@@ -324,11 +325,25 @@ var compiledDenied = map[string]bool{
 // compiledStyleProblem checks one compiled style attribute.
 func compiledStyleProblem(style string) string {
 	css := strings.ToLower(style)
-	if strings.ContainsAny(css, `\`) || strings.Contains(css, "/*") || unsafeValue(css) {
-		return "CSS escapes, comments or functions"
+	if strings.ContainsAny(css, `\`) || strings.Contains(css, "/*") {
+		return "CSS escapes or comments"
 	}
 	for prop, val := range declarations(css) {
 		val = strings.TrimSpace(strings.TrimSuffix(val, "!important"))
+		// MJML writes a section's background-url as background:url(…).
+		// That one function is allowed, for a full https image address;
+		// Check applies the image rules to it as well.
+		if prop == "background" || prop == "background-image" {
+			for _, m := range cssURLRe.FindAllStringSubmatch(val, -1) {
+				if u, err := url.Parse(strings.TrimSpace(m[1])); err != nil || u.Scheme != "https" || u.Host == "" || IsShortener(u.Hostname()) {
+					return "a background image that isn't a full https address"
+				}
+			}
+			val = cssURLRe.ReplaceAllString(val, "")
+		}
+		if unsafeValue(val) {
+			return "the CSS function in " + prop
+		}
 		switch {
 		case compiledDenied[prop] || strings.HasPrefix(prop, "transform") || strings.HasPrefix(prop, "offset-") ||
 			strings.HasPrefix(prop, "mask-") || strings.HasPrefix(prop, "clip"):
