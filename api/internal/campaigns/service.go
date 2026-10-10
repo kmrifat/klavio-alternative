@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/kmrifat/klavio-alternative/api/internal/approvals"
 	"github.com/kmrifat/klavio-alternative/api/internal/sending"
 	"github.com/kmrifat/klavio-alternative/api/internal/ses"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
@@ -53,14 +54,15 @@ func (DefaultLimits) Get(_ context.Context, key string) float64 {
 	return map[string]float64{LimitApprovalAbove: 10000, LimitTestSlicePct: 5, LimitHoldMinutes: 45}[key]
 }
 
-// Approvals asks a second person to approve a send (M5's approvals engine).
-type Approvals interface {
-	// RequestSend runs inside the scheduling transaction and returns the
-	// approval's id. ErrNoApprover if nobody else could approve it.
-	RequestSend(ctx context.Context, tx *store.Store, c store.Campaign, reasons []Reason, requester store.User, audit store.AuditEntry) (uuid.UUID, error)
+// Warmup limits a new brand's daily volume (M6). Until it is wired in,
+// there is no daily cap.
+type Warmup interface {
+	// Reserve takes up to want sends from the brand's allowance for the
+	// UTC day, atomically, inside tx, and returns how many were granted.
+	Reserve(ctx context.Context, tx *store.Store, brandID uuid.UUID, day time.Time, want int) (int, error)
+	// InWarmup reports whether sends on day need a warm-up approval.
+	InWarmup(ctx context.Context, brandID uuid.UUID, day time.Time) (bool, error)
 }
-
-var ErrNoApprover = errors.New("nobody else can approve this send")
 
 // Brakes decides after the test slice whether the rest may go (M4 reads
 // bounces and complaints). Until then every campaign continues.
@@ -80,7 +82,8 @@ type Service struct {
 	signer    *unsubscribe.Signer
 	baseURL   string // PublicBaseURLOverride; "" = https://<brand link domain>
 	limits    Limits
-	approvals Approvals
+	approvals *approvals.Service
+	warmup    Warmup
 	brakes    Brakes
 	runner    Runner
 	pacer     *sending.Pacer
@@ -101,10 +104,10 @@ func NewService(st *store.Store, cfg Config, log *slog.Logger) *Service {
 	}
 }
 
-func (s *Service) SetRunner(r Runner)       { s.runner = r }
-func (s *Service) SetLimits(l Limits)       { s.limits = l }
-func (s *Service) SetApprovals(a Approvals) { s.approvals = a }
-func (s *Service) SetBrakes(b Brakes)       { s.brakes = b }
+func (s *Service) SetRunner(r Runner) { s.runner = r }
+func (s *Service) SetLimits(l Limits) { s.limits = l }
+func (s *Service) SetWarmup(w Warmup) { s.warmup = w }
+func (s *Service) SetBrakes(b Brakes) { s.brakes = b }
 
 func (s *Service) queue(ctx context.Context, id uuid.UUID, at time.Time) {
 	if s.runner == nil {
@@ -125,6 +128,7 @@ const (
 	ReasonUnusual     Reason = "unusual_size"     // over twice the brand's usual audience
 	ReasonAtRisk      Reason = "at_risk_included" // at-risk contacts opted in
 	ReasonFirstImport Reason = "first_send_to_import"
+	ReasonWarmup      Reason = "brand_warming_up" // the brand is still in its warm-up weeks
 )
 
 var reasonText = map[Reason]string{
@@ -132,6 +136,7 @@ var reasonText = map[Reason]string{
 	ReasonUnusual:     "is more than twice this brand's usual audience",
 	ReasonAtRisk:      "includes at-risk contacts",
 	ReasonFirstImport: "is the first email to recently imported contacts",
+	ReasonWarmup:      "is sent while the brand is still warming up",
 }
 
 func (r Reason) Text() string { return reasonText[r] }
@@ -195,6 +200,15 @@ func (s *Service) Review(ctx context.Context, b store.Brand, c store.Campaign) (
 		return rv, tpl, err
 	}
 	rv.ApprovalReasons = ApprovalReasons(sum, usual, s.limits.Get(ctx, LimitApprovalAbove))
+	if s.warmup != nil {
+		warming, err := s.warmup.InWarmup(ctx, b.ID, s.now())
+		if err != nil {
+			return rv, tpl, err
+		}
+		if warming {
+			rv.ApprovalReasons = append(rv.ApprovalReasons, ReasonWarmup)
+		}
+	}
 
 	sender, err := s.store.BrandSender(ctx, b.ID)
 	if err != nil {
@@ -253,7 +267,7 @@ var (
 	ErrNotEditable     = errors.New("campaign is not a draft")
 	ErrProblems        = errors.New("campaign can't be scheduled yet")
 	ErrConfirmMismatch = errors.New("confirmation doesn't match the audience")
-	ErrNeedsApproval   = errors.New("needs approval, and approvals aren't available")
+	ErrNeedsApproval   = errors.New("needs approval, and nobody else can approve it")
 )
 
 // ProblemsError carries what blocks scheduling.
@@ -325,15 +339,32 @@ func (s *Service) Schedule(ctx context.Context, b store.Brand, c store.Campaign,
 		} else {
 			sc.ReplyTo = sender.ReplyTo
 		}
+		noSecondAdmin := false
 		if len(rv.ApprovalReasons) > 0 {
-			id, err := s.approvals.RequestSend(ctx, tx, locked, rv.ApprovalReasons, by, audit)
-			if errors.Is(err, ErrNoApprover) {
-				return ErrNeedsApproval
-			}
-			if err != nil {
+			a, err := s.approvals.Request(ctx, tx, approvals.Request{
+				Kind: kindFor(rv.ApprovalReasons), BrandID: &b.ID, RequestedBy: by,
+				Summary: approvalSummary(locked, included, rv.ApprovalReasons),
+				Payload: approvalPayload{CampaignID: locked.ID, Version: locked.Version, Audience: included, Reasons: rv.ApprovalReasons},
+				Audit:   audit,
+			})
+			switch {
+			case errors.Is(err, approvals.ErrNoApprover):
+				// A company that has only ever had one admin can't get a
+				// second opinion; it may send, on the record. Once it has
+				// had two, a send waits until someone can decide.
+				ok, err := s.approvals.ShortcutAllowed(ctx, tx)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return ErrNeedsApproval
+				}
+				noSecondAdmin = true
+			case err != nil:
 				return err
+			default:
+				sc.State, sc.ApprovalID = store.CampaignNeedsApproval, &a.ID
 			}
-			sc.State, sc.ApprovalID = store.CampaignNeedsApproval, &id
 		}
 		if out, err = tx.ScheduleCampaign(ctx, c.ID, sc); err != nil {
 			return err
@@ -341,7 +372,7 @@ func (s *Service) Schedule(ctx context.Context, b store.Brand, c store.Campaign,
 		audit.Action, audit.TargetType, audit.TargetID = "campaign.scheduled", "campaign", c.ID.String()
 		return tx.Audit(ctx, audit, map[string]any{"state": locked.State}, map[string]any{
 			"state": out.State, "audience": included, "excluded": excluded, "start_at": startAt,
-			"template_id": tpl.ID, "subject": c.Subject, "approval_reasons": reasons,
+			"template_id": tpl.ID, "subject": c.Subject, "approval_reasons": reasons, "no_second_admin": noSecondAdmin,
 		})
 	})
 	if err != nil {
@@ -605,7 +636,7 @@ func (s *Service) batch(ctx context.Context, c store.Campaign, stage string) err
 		_, err := s.store.PauseCampaign(ctx, c.ID, "the brand was paused")
 		return err
 	}
-	claimed, err := s.store.ClaimSends(ctx, c, stage, Batch)
+	claimed, err := s.claim(ctx, c, stage)
 	if err != nil {
 		return err
 	}
@@ -625,6 +656,40 @@ func (s *Service) batch(ctx context.Context, c store.Campaign, stage string) err
 		}
 	}
 	return s.afterBatch(ctx, c, stage, len(claimed))
+}
+
+// claim takes the next batch of due sends. While the brand warms up, the
+// batch is reserved from its daily allowance in the same transaction, so
+// concurrent workers can't overspend it; whatever isn't granted waits for
+// the next UTC day. A reserved send that later fails for good still counts
+// against the day: conservative, and the warm-up is about volume offered.
+func (s *Service) claim(ctx context.Context, c store.Campaign, stage string) ([]store.ClaimedSend, error) {
+	var claimed []store.ClaimedSend
+	err := s.store.InTx(ctx, func(tx *store.Store) error {
+		var err error
+		if claimed, err = tx.ClaimSends(ctx, c, stage, Batch); err != nil || len(claimed) == 0 || s.warmup == nil {
+			return err
+		}
+		now := s.now()
+		granted, err := s.warmup.Reserve(ctx, tx, c.BrandID, now, len(claimed))
+		if err != nil {
+			return err
+		}
+		if granted >= len(claimed) {
+			return tx.SetCampaignWaiting(ctx, c.ID, "")
+		}
+		later := make([]int64, 0, len(claimed)-granted)
+		for _, cs := range claimed[granted:] {
+			later = append(later, cs.ID)
+		}
+		tomorrow := now.UTC().Truncate(24 * time.Hour).Add(24 * time.Hour)
+		if err := tx.DeferSends(ctx, later, tomorrow); err != nil {
+			return err
+		}
+		claimed = claimed[:granted]
+		return tx.SetCampaignWaiting(ctx, c.ID, "the brand's warm-up allowance for today is used up; sending continues tomorrow (UTC)")
+	})
+	return claimed, err
 }
 
 // sendOne re-checks one recipient, sends, and records the outcome. stop

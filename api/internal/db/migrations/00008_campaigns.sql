@@ -32,6 +32,7 @@ CREATE TABLE campaigns (
                      ('draft', 'needs_approval', 'scheduled', 'test_slice', 'holding', 'sending', 'paused', 'done', 'cancelled')),
     paused_from      text CHECK (paused_from IN ('test_slice', 'holding', 'sending')),
     pause_reason     text NOT NULL DEFAULT '',
+    waiting_reason   text NOT NULL DEFAULT '', -- why a sending campaign isn't sending right now (warm-up cap)
     version          integer NOT NULL DEFAULT 1, -- bumped on every edit, for conflicts
     -- Frozen at scheduling:
     html             text NOT NULL DEFAULT '',

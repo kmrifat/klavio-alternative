@@ -92,6 +92,7 @@ type Campaign struct {
 	State           CampaignState  `db:"state" json:"state"`
 	PausedFrom      *CampaignState `db:"paused_from" json:"paused_from"`
 	PauseReason     string         `db:"pause_reason" json:"pause_reason"`
+	WaitingReason   string         `db:"waiting_reason" json:"waiting_reason"`
 	Version         int            `db:"version" json:"version"`
 	HTML            string         `db:"html" json:"-"`
 	TextBody        string         `db:"text_body" json:"-"`
@@ -116,7 +117,7 @@ type Campaign struct {
 }
 
 const campaignCols = `id, brand_id, name, topic_id, template_id, subject, preheader, include_at_risk, state, paused_from,
-	pause_reason, version, html, text_body, from_header, reply_to, test_slice_pct::float8 AS test_slice_pct, hold_minutes,
+	pause_reason, waiting_reason, version, html, text_body, from_header, reply_to, test_slice_pct::float8 AS test_slice_pct, hold_minutes,
 	scheduled_at, start_at, confirmed_by, confirmed_at, approval_id, approval_reasons, hold_until, audience_count,
 	excluded_count, created_by, updated_by, created_at, updated_at, finished_at`
 
@@ -549,5 +550,46 @@ func (s *Store) SkipQueuedSends(ctx context.Context, campaignID uuid.UUID, reaso
 // failure wasn't the message's fault, e.g. throttling).
 func (s *Store) RequeueSendUncounted(ctx context.Context, id int64, after time.Time, msg string) error {
 	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'queued', send_after = $2, error = $3, attempts = attempts - 1 WHERE id = $1 AND status = 'sending'`, id, after, msg)
+	return err
+}
+
+// SetCampaignWaiting records why a sending campaign is waiting ("" = it isn't).
+func (s *Store) SetCampaignWaiting(ctx context.Context, id uuid.UUID, reason string) error {
+	_, err := s.db.Exec(ctx, `UPDATE campaigns SET waiting_reason = $2 WHERE id = $1 AND waiting_reason <> $2`, id, reason)
+	return err
+}
+
+// DeferSends puts claimed sends back in the queue until after, without
+// counting the attempt (the warm-up cap, not the message, held them back).
+func (s *Store) DeferSends(ctx context.Context, ids []int64, after time.Time) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE sends SET status = 'queued', send_after = $2, attempts = attempts - 1
+		WHERE id = ANY($1) AND status = 'sending'`, ids, after)
+	return err
+}
+
+// ApproveCampaign schedules a campaign whose approval came through.
+func (s *Store) ApproveCampaign(ctx context.Context, id uuid.UUID, startAt time.Time) error {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE campaigns SET state = 'scheduled', start_at = $2, updated_at = now()
+		WHERE id = $1 AND state = 'needs_approval'`, id, startAt)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = ErrStale
+	}
+	return err
+}
+
+// ResetCampaignToDraft undoes scheduling when its approval was refused,
+// cancelled or expired. A campaign that moved on (edited, cancelled) is
+// left alone.
+func (s *Store) ResetCampaignToDraft(ctx context.Context, id, approvalID uuid.UUID) error {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE campaigns SET state = 'draft', approval_id = NULL, start_at = NULL, confirmed_at = NULL,
+			confirmed_by = NULL, html = '', text_body = '', audience_count = 0, excluded_count = 0, updated_at = now()
+		WHERE id = $1 AND state = 'needs_approval' AND approval_id = $2`, id, approvalID)
+	if err != nil || tag.RowsAffected() == 0 {
+		return err
+	}
+	_, err = s.db.Exec(ctx, `DELETE FROM campaign_audience WHERE campaign_id = $1`, id)
 	return err
 }

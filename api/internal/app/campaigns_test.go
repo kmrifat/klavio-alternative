@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -275,6 +276,72 @@ func TestCampaignSendsEndToEnd(t *testing.T) {
 	}
 }
 
+// fakeWarmup allows `daily` sends per brand per UTC day.
+type fakeWarmup struct {
+	mu    sync.Mutex
+	daily int
+	used  map[string]int
+}
+
+func (f *fakeWarmup) Reserve(_ context.Context, _ *store.Store, brandID uuid.UUID, day time.Time, want int) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := brandID.String() + day.UTC().Format("2006-01-02")
+	left := f.daily - f.used[key]
+	if left < 0 {
+		left = 0
+	}
+	granted := min(want, left)
+	f.used[key] += granted
+	return granted, nil
+}
+
+func (f *fakeWarmup) InWarmup(context.Context, uuid.UUID, time.Time) (bool, error) { return true, nil }
+
+func TestCampaignWarmupCap(t *testing.T) {
+	w := newCampaignWorld(t)
+	ctx := context.Background()
+	warm := &fakeWarmup{daily: 3, used: map[string]int{}}
+	w.a.Campaigns.SetWarmup(warm)
+	for i := range 8 {
+		w.contact(fmt.Sprintf("w%d@example.com", i), store.ContactSubscribed, 24*time.Hour, true)
+	}
+	c := w.draft(nil)
+	id := c["id"].(string)
+	rv := w.owner.must(200, w.owner.do("GET", campaignBase+"/campaigns/"+id+"/review", nil))
+	if r := rv.body["approval_reasons"].([]any); len(r) != 1 || r[0].(map[string]any)["code"] != "brand_warming_up" {
+		t.Fatalf("warm-up approval reason: %s", rv.raw)
+	}
+	// The only admin: allowed on the record.
+	w.owner.must(200, w.owner.do("POST", campaignBase+"/campaigns/"+id+"/schedule", map[string]any{"version": 1, "confirm": "8"}))
+	w.runUntil(id, store.CampaignSending)
+	cid := uuid.MustParse(id)
+	for range 5 {
+		if err := w.a.Campaigns.Step(ctx, cid); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(w.sender.Messages()); n != 3 {
+		t.Fatalf("day one sent %d, want the allowance of 3", n)
+	}
+	got, _ := w.a.Store.CampaignByID(ctx, w.brand.ID, cid)
+	if got.State != store.CampaignSending || !strings.Contains(got.WaitingReason, "warm-up") {
+		t.Fatalf("waiting: %s %q", got.State, got.WaitingReason)
+	}
+	// Tomorrow brings more allowance (here: the fake's cap goes up).
+	warm.mu.Lock()
+	warm.daily = 100
+	warm.mu.Unlock()
+	w.runUntil(id, store.CampaignDone)
+	if n := len(w.sender.Messages()); n != 8 {
+		t.Fatalf("after the cap lifted: %d emails, want 8", n)
+	}
+	got, _ = w.a.Store.CampaignByID(ctx, w.brand.ID, cid)
+	if got.WaitingReason != "" {
+		t.Errorf("waiting reason not cleared: %q", got.WaitingReason)
+	}
+}
+
 func TestCampaignGuards(t *testing.T) {
 	w := newCampaignWorld(t)
 	ctx := context.Background()
@@ -298,15 +365,49 @@ func TestCampaignGuards(t *testing.T) {
 		t.Fatalf("a cancelled campaign sent %d emails", n)
 	}
 
-	// At-risk contacts need a second person's approval, which isn't wired yet: refused.
+	// At-risk contacts need a second person. A company that has only ever
+	// had one admin may send anyway, on the record.
 	risky := w.draft(map[string]any{"name": "Win-back", "include_at_risk": true})
 	rv := owner.must(200, owner.do("GET", campaignBase+"/campaigns/"+risky["id"].(string)+"/review", nil))
 	reasons := rv.body["approval_reasons"].([]any)
 	if len(reasons) != 1 || reasons[0].(map[string]any)["code"] != "at_risk_included" {
 		t.Fatalf("approval reasons: %s", rv.raw)
 	}
-	if r := owner.do("POST", campaignBase+"/campaigns/"+risky["id"].(string)+"/schedule", map[string]any{"version": 1, "confirm": "6"}); r.errCode() != "approval_required" {
-		t.Fatalf("risky send: %d %s", r.status, r.raw)
+	solo := owner.must(200, owner.do("POST", campaignBase+"/campaigns/"+risky["id"].(string)+"/schedule", map[string]any{"version": 1, "confirm": "6"}))
+	if solo.body["campaign"].(map[string]any)["state"] != "scheduled" {
+		t.Fatalf("lone admin's risky send: %s", solo.raw)
+	}
+	owner.must(200, owner.do("POST", campaignBase+"/campaigns/"+risky["id"].(string)+"/cancel", nil))
+
+	// With a second admin, the send waits for them, then runs.
+	apInv := owner.must(201, owner.do("POST", "/admin/v1/team/invites", map[string]any{
+		"email": "ap@acme.test", "name": "Ada Approver", "company_role": "approver",
+	}))
+	{
+		inv, _ := apInv.body["invite_url"].(string)
+		approver := newBrowser(t, owner.base)
+		approver.must(200, approver.acceptInvite(inv))
+		second := w.draft(map[string]any{"name": "Win-back 2", "include_at_risk": true})
+		sid := second["id"].(string)
+		pending := owner.must(200, owner.do("POST", campaignBase+"/campaigns/"+sid+"/schedule", map[string]any{"version": 1, "confirm": "6"}))
+		pc := pending.body["campaign"].(map[string]any)
+		if pc["state"] != "needs_approval" || pc["approval_id"] == nil {
+			t.Fatalf("with a second admin: %s", pending.raw)
+		}
+		// Nobody approves their own request.
+		if r := owner.do("POST", "/admin/v1/approvals/"+pc["approval_id"].(string)+"/approve", map[string]any{}); r.status < 400 {
+			t.Fatalf("self-approval allowed: %d %s", r.status, r.raw)
+		}
+		approver.must(200, approver.do("POST", "/admin/v1/approvals/"+pc["approval_id"].(string)+"/approve", map[string]any{"note": "ok"}))
+		c, _ := w.a.Store.CampaignByID(ctx, w.brand.ID, uuid.MustParse(sid))
+		if c.State != store.CampaignScheduled || c.StartAt == nil || time.Until(*c.StartAt) < 9*time.Minute {
+			t.Fatalf("after approval: %s, start %v", c.State, c.StartAt)
+		}
+		w.runUntil(sid, store.CampaignDone)
+		if got := len(w.sender.Messages()); got != 6 {
+			t.Fatalf("approved send: %d emails, want 6", got)
+		}
+		w.sender.Sent = nil
 	}
 
 	// Templates with errors, missing subjects and paused brands block scheduling.

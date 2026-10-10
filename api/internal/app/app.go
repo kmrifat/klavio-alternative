@@ -141,6 +141,8 @@ func New(d Deps) (*App, error) {
 	a.team.RegisterApprovals()
 	authSvc.SetSignInGuard(a.Anomaly)
 	a.Imports.SetLimits(a.Limits.Get)
+	a.Campaigns.SetLimits(a.Limits)
+	a.Campaigns.RegisterApprovals(a.Approvals)
 	a.Imports.SetSpikeCheck(a.Anomaly.CheckImport)
 	if a.deps.Limiter == nil {
 		a.deps.Limiter = &cache.MemoryLimiter{}
