@@ -501,3 +501,53 @@ func (s *Store) SendProgress(ctx context.Context, campaignID uuid.UUID) (SendPro
 	}
 	return out, rows.Err()
 }
+
+// CampaignForStep reads a campaign by id alone (the worker has no brand in hand).
+func (s *Store) CampaignForStep(ctx context.Context, id uuid.UUID) (Campaign, error) {
+	rows, err := s.db.Query(ctx, `SELECT `+campaignCols+` FROM campaigns WHERE id = $1`, id)
+	return one[Campaign](rows, err)
+}
+
+// CampaignState is a campaign's current state, read fresh.
+func (s *Store) CampaignState(ctx context.Context, id uuid.UUID) (CampaignState, error) {
+	var st CampaignState
+	err := s.db.QueryRow(ctx, `SELECT state FROM campaigns WHERE id = $1`, id).Scan(&st)
+	return st, translate(err)
+}
+
+// CampaignsWithWork lists campaigns whose next worker step is due.
+func (s *Store) CampaignsWithWork(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id FROM campaigns c WHERE
+			(state = 'scheduled' AND start_at <= now()) OR
+			(state = 'holding' AND hold_until <= now()) OR
+			(state IN ('test_slice', 'sending') AND (
+				EXISTS (SELECT 1 FROM sends s WHERE s.campaign_id = c.id AND s.status = 'queued' AND s.send_after <= now())
+				OR NOT EXISTS (SELECT 1 FROM sends s WHERE s.campaign_id = c.id AND s.status IN ('queued', 'sending'))))`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// SkipQueuedSends marks every not-yet-sent send of a campaign as skipped.
+func (s *Store) SkipQueuedSends(ctx context.Context, campaignID uuid.UUID, reason string) error {
+	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'skipped', skip_reason = $2 WHERE campaign_id = $1 AND status = 'queued'`, campaignID, reason)
+	return err
+}
+
+// RequeueSendUncounted is RequeueSend without counting the attempt (the
+// failure wasn't the message's fault, e.g. throttling).
+func (s *Store) RequeueSendUncounted(ctx context.Context, id int64, after time.Time, msg string) error {
+	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'queued', send_after = $2, error = $3, attempts = attempts - 1 WHERE id = $1 AND status = 'sending'`, id, after, msg)
+	return err
+}
