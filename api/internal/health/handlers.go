@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -215,12 +216,12 @@ func brandAttention(b store.Brand, r Result) []Attention {
 		out = append(out, Attention{Severity: "critical", Kind: "brand_paused", Brand: b.Slug,
 			Title: b.Name + " is paused", Detail: "All marketing email for this brand is stopped.", Link: health})
 	}
+	var broken []string
 	for _, c := range r.Components {
 		for _, ch := range c.Checks {
 			switch {
 			case c.Key == "authentication" && ch.Status == Failing:
-				out = append(out, Attention{Severity: "critical", Kind: "dns_broken", Brand: b.Slug,
-					Title: b.Name + ": " + ch.Label + " isn't set up", Detail: "Sending is blocked until DNS is right. " + ch.Detail, Link: settings})
+				broken = append(broken, ch.Label)
 			case c.Key == "authentication" && ch.Label == "DMARC" && ch.Status == Warning && b.Status == store.BrandReady:
 				out = append(out, Attention{Severity: "info", Kind: "dmarc_none", Brand: b.Slug,
 					Title: b.Name + ": tighten DMARC", Detail: ch.Detail, Link: settings})
@@ -233,7 +234,13 @@ func brandAttention(b store.Brand, r Result) []Attention {
 			}
 		}
 	}
-	if r.Level == "at_risk" {
+	if len(broken) > 0 {
+		// One row per brand, prepended: nothing else matters until it can send.
+		out = append([]Attention{{Severity: "critical", Kind: "dns_broken", Brand: b.Slug,
+			Title:  b.Name + " can't send: DNS isn't right",
+			Detail: "Not passing: " + strings.Join(broken, ", ") + ". Sending is blocked until it is.", Link: settings}}, out...)
+	}
+	if r.Level == "at_risk" && len(broken) == 0 { // broken DNS already explains it
 		out = append(out, Attention{Severity: "warning", Kind: "low_health", Brand: b.Slug,
 			Title: fmt.Sprintf("%s health is %d", b.Name, *r.Score), Detail: r.Weakest, Link: health})
 	}
