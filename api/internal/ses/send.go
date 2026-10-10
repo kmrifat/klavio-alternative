@@ -31,16 +31,28 @@ type Sender interface {
 	Send(ctx context.Context, m Message) (string, error)
 }
 
-// What can go wrong, as the sending worker needs to know it.
+// What can go wrong, as the sending worker needs to know it. Only the first
+// two mean SES certainly did not send the message. Anything else (a timeout,
+// a reset connection, an unexpected server error) might have come after SES
+// accepted it, so it must never be retried: an unknown outcome is better
+// than an email sent twice.
 var (
 	// ErrThrottled: over the account's send rate. Wait and try again.
 	ErrThrottled = errors.New("ses: throttled")
+	// ErrUnavailable: SES answered that it couldn't take the request now
+	// (503 ServiceUnavailable). Not sent; safe to retry later.
+	ErrUnavailable = errors.New("ses: service unavailable")
 	// ErrRejected: SES refused this message for good (bad address, content).
 	ErrRejected = errors.New("ses: message rejected")
 	// ErrSendingPaused: the account or configuration set can't send at
 	// all. Stop the campaign; retrying won't help.
 	ErrSendingPaused = errors.New("ses: sending paused")
 )
+
+// Retryable reports whether err certainly means the message wasn't sent.
+func Retryable(err error) bool {
+	return errors.Is(err, ErrThrottled) || errors.Is(err, ErrUnavailable)
+}
 
 // Send uses SES v2 SendEmail with simple content, so SES builds the MIME
 // message (both parts, DKIM-signed) and adds our headers.
@@ -64,7 +76,9 @@ func (a *AWS) Send(ctx context.Context, m Message) (string, error) {
 	for k, v := range m.Tags {
 		in.EmailTags = append(in.EmailTags, types.MessageTag{Name: aws.String(k), Value: aws.String(v)})
 	}
-	out, err := a.client.SendEmail(ctx, in)
+	// No SDK retries: it would re-send after a timeout, behind our back, when
+	// SES may already have accepted the first attempt.
+	out, err := a.client.SendEmail(ctx, in, func(o *sesv2.Options) { o.Retryer = aws.NopRetryer{} })
 	if err != nil {
 		return "", classify(err)
 	}
@@ -82,11 +96,13 @@ func headers(h map[string]string) []types.MessageHeader {
 func classify(err error) error {
 	var apiErr smithy.APIError
 	if !errors.As(err, &apiErr) {
-		return err // network and the like: worth retrying
+		return err // network, timeout, cancelled: the outcome is unknown
 	}
 	switch apiErr.ErrorCode() {
 	case "TooManyRequestsException", "Throttling", "ThrottlingException", "LimitExceededException":
 		return fmt.Errorf("%w: %s", ErrThrottled, apiErr.ErrorMessage())
+	case "ServiceUnavailable", "ServiceUnavailableException":
+		return fmt.Errorf("%w: %s", ErrUnavailable, apiErr.ErrorMessage())
 	case "MessageRejected", "BadRequestException", "NotFoundException":
 		return fmt.Errorf("%w: %s", ErrRejected, apiErr.ErrorMessage())
 	case "AccountSuspendedException", "SendingPausedException", "MailFromDomainNotVerifiedException":
@@ -100,7 +116,8 @@ func classify(err error) error {
 // FakeSender records messages instead of sending them. Addresses at the SES
 // mailbox simulator behave like SES accepting them (the bounce or complaint
 // arrives later as an event, which M4 handles); a To containing
-// "reject@" is refused, and "throttle@" is throttled on the first try.
+// "reject@" is refused, "throttle@" is throttled on the first try, and
+// "flaky@" is accepted but answered with a timeout (an ambiguous outcome).
 type FakeSender struct {
 	mu        sync.Mutex
 	Sent      []Message
@@ -114,6 +131,10 @@ func (f *FakeSender) Send(_ context.Context, m Message) (string, error) {
 	switch {
 	case strings.Contains(m.To, "reject@"):
 		return "", fmt.Errorf("%w: fake rejection", ErrRejected)
+	case strings.Contains(m.To, "flaky@"):
+		f.n++
+		f.Sent = append(f.Sent, m)          // SES took it…
+		return "", context.DeadlineExceeded // …but the answer never came
 	case strings.Contains(m.To, "throttle@") && !f.throttled[m.To]:
 		if f.throttled == nil {
 			f.throttled = map[string]bool{}

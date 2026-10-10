@@ -97,6 +97,7 @@ type Service struct {
 	brakes    Brakes
 	runner    Runner
 	pacer     *sending.Pacer
+	rate      float64 // sends per second
 	now       func() time.Time
 }
 
@@ -110,7 +111,7 @@ type Config struct {
 func NewService(st *store.Store, cfg Config, log *slog.Logger) *Service {
 	return &Service{
 		store: st, log: log, sender: cfg.Sender, signer: cfg.Signer, baseURL: cfg.PublicBaseURL,
-		limits: DefaultLimits{}, pacer: sending.NewPacer(cfg.SendsPerSecond), now: time.Now,
+		limits: DefaultLimits{}, pacer: sending.NewPacer(cfg.SendsPerSecond), rate: max(cfg.SendsPerSecond, 1), now: time.Now,
 	}
 }
 
@@ -521,32 +522,78 @@ func (s *Service) Resume(ctx context.Context, c store.Campaign, audit store.Audi
 
 // --- the worker ---
 
-// Step does whatever the campaign needs next. It's safe to call any number
-// of times, from any number of workers: every transition checks the state
-// it starts from, and sends are claimed with row locks.
-func (s *Service) Step(ctx context.Context, campaignID uuid.UUID) error {
-	c, err := s.store.CampaignForStep(ctx, campaignID)
-	if errors.Is(err, store.ErrNotFound) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	switch c.State {
-	case store.CampaignScheduled:
-		return s.start(ctx, c)
-	case store.CampaignTestSlice:
-		return s.batch(ctx, c, "test")
-	case store.CampaignHolding:
-		return s.holdEnd(ctx, c)
-	case store.CampaignSending:
-		return s.batch(ctx, c, "rest")
-	}
-	return nil // draft, needs approval, paused, done, cancelled: nothing to do
+// StepTimeout bounds one worker step (the river job's timeout is longer).
+// Batches are sized to finish well inside it at the configured send rate.
+const StepTimeout = 2 * time.Minute
+
+// stuckAfter: a send left in 'sending' longer than this belongs to a worker
+// that died (it is longer than any step can run).
+const stuckAfter = StepTimeout + 3*time.Minute
+
+// batchSize is how many sends one step claims: at most Batch, and no more
+// than a minute of sending at the configured rate.
+func (s *Service) batchSize() int {
+	n := int(s.rate * 60)
+	return max(1, min(Batch, n))
 }
 
-// Sweep runs a step for every campaign that may have work, in case a queued
-// step was lost. A periodic job calls it.
+// step collects when the campaign's next step should run. It is queued
+// only after this step has given up its lease, so the next one can take it.
+type step struct {
+	next *time.Time
+}
+
+func (st *step) then(at time.Time) {
+	if st.next == nil || at.Before(*st.next) {
+		st.next = &at
+	}
+}
+
+// Step does whatever the campaign needs next. One worker at a time holds a
+// campaign's lease; any other step for it returns at once. Every transition
+// also checks the state it starts from, and sends are claimed with row
+// locks, so even a lease that expired early can't send anything twice.
+func (s *Service) Step(ctx context.Context, campaignID uuid.UUID) error {
+	ok, err := s.store.AcquireStepLease(ctx, campaignID, StepTimeout+time.Minute)
+	if err != nil || !ok {
+		return err // someone else is on it
+	}
+	var st step
+	err = func() error {
+		ctx, cancel := context.WithTimeout(ctx, StepTimeout)
+		defer cancel()
+		c, err := s.store.CampaignForStep(ctx, campaignID)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		switch c.State {
+		case store.CampaignScheduled:
+			return s.start(ctx, c, &st)
+		case store.CampaignTestSlice:
+			return s.batch(ctx, c, "test", &st)
+		case store.CampaignHolding:
+			return s.holdEnd(ctx, c, &st)
+		case store.CampaignSending:
+			return s.batch(ctx, c, "rest", &st)
+		}
+		return nil // draft, needs approval, paused, done, cancelled: nothing to do
+	}()
+	bg := context.WithoutCancel(ctx)
+	if rerr := s.store.ReleaseStepLease(bg, campaignID); rerr != nil && err == nil {
+		err = rerr
+	}
+	if st.next != nil {
+		s.queue(bg, campaignID, *st.next)
+	}
+	return err
+}
+
+// Sweep restarts campaigns whose chain of steps was lost (a crash, a failed
+// queue). One with a step already waiting or running is left alone, so
+// there is never more than one chain per campaign.
 func (s *Service) Sweep(ctx context.Context) error {
 	ids, err := s.store.CampaignsWithWork(ctx)
 	if err != nil {
@@ -554,6 +601,14 @@ func (s *Service) Sweep(ctx context.Context) error {
 	}
 	var errs []error
 	for _, id := range ids {
+		queued, err := s.store.StepQueued(ctx, id)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if queued && s.runner != nil {
+			continue
+		}
 		if err := s.Step(ctx, id); err != nil {
 			errs = append(errs, fmt.Errorf("campaign %s: %w", id, err))
 		}
@@ -561,24 +616,40 @@ func (s *Service) Sweep(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-func (s *Service) start(ctx context.Context, c store.Campaign) error {
+// brandCanSend reports whether the brand may send right now: ready (DNS
+// and SES verified) and not paused. The daily DNS check can move a ready
+// brand back to setup at any time.
+func brandCanSend(b store.Brand) bool { return b.Status == store.BrandReady }
+
+// WaitingBrandNotReady marks a campaign paused because its brand stopped
+// being able to send.
+const WaitingBrandNotReady = "brand_not_ready"
+
+// pauseForBrand pauses a running campaign because the brand can't send.
+func (s *Service) pauseForBrand(ctx context.Context, c store.Campaign, b store.Brand) error {
+	why := "the brand's DNS or SES setup stopped checking out; fix it on the brand's page, then resume"
+	if b.Status == store.BrandPaused {
+		why = "the brand was paused"
+	}
+	if _, err := s.store.PauseCampaign(ctx, c.ID, why); err != nil {
+		return err
+	}
+	s.log.WarnContext(ctx, "campaign paused: brand can't send", "campaign_id", c.ID, "brand_status", b.Status)
+	return s.store.SetCampaignWaiting(ctx, c.ID, WaitingBrandNotReady)
+}
+
+func (s *Service) start(ctx context.Context, c store.Campaign, st *step) error {
 	now := s.now()
 	if c.StartAt != nil && now.Before(*c.StartAt) {
-		s.queue(ctx, c.ID, *c.StartAt)
+		st.then(*c.StartAt)
 		return nil
 	}
 	b, err := s.store.BrandByID(ctx, c.BrandID)
 	if err != nil {
 		return err
 	}
-	if b.Status != store.BrandReady {
-		// Start anyway in a paused state, so it's visible and resumable.
-		if _, err := s.store.SetCampaignState(ctx, c.ID, []store.CampaignState{store.CampaignScheduled}, store.CampaignTestSlice); err != nil {
-			return err
-		}
-		_, err := s.store.PauseCampaign(ctx, c.ID, fmt.Sprintf("the brand is %s, so sending didn't start", b.Status))
-		return err
-	}
+	// The test stage is queued whatever happens next, so a campaign that
+	// starts paused still begins with its test slice when resumed.
 	if err := s.queueStage(ctx, c, "test"); err != nil {
 		return err
 	}
@@ -586,16 +657,19 @@ func (s *Service) start(ctx context.Context, c store.Campaign) error {
 	if err != nil || !ok {
 		return err
 	}
+	if !brandCanSend(b) {
+		return s.pauseForBrand(ctx, c, b)
+	}
 	s.log.InfoContext(ctx, "campaign started", "campaign_id", c.ID, "brand", b.Slug, "audience", c.AudienceCount)
-	s.queue(ctx, c.ID, s.now())
+	st.then(s.now())
 	return nil
 }
 
-// queueStage creates the stage's send rows, each due when the recipient is
-// outside quiet hours.
+// queueStage creates the stage's missing send rows, each due when the
+// recipient is outside quiet hours. Safe to repeat.
 func (s *Service) queueStage(ctx context.Context, c store.Campaign, stage string) error {
 	recips, err := s.store.StageRecipients(ctx, c.ID, stage)
-	if err != nil {
+	if err != nil || len(recips) == 0 {
 		return err
 	}
 	now := s.now()
@@ -607,11 +681,18 @@ func (s *Service) queueStage(ctx context.Context, c store.Campaign, stage string
 	return s.store.QueueSends(ctx, c, stage, ids, after)
 }
 
-func (s *Service) holdEnd(ctx context.Context, c store.Campaign) error {
+func (s *Service) holdEnd(ctx context.Context, c store.Campaign, st *step) error {
 	now := s.now()
 	if c.HoldUntil != nil && now.Before(*c.HoldUntil) {
-		s.queue(ctx, c.ID, *c.HoldUntil)
+		st.then(*c.HoldUntil)
 		return nil
+	}
+	b, err := s.store.BrandByID(ctx, c.BrandID)
+	if err != nil {
+		return err
+	}
+	if !brandCanSend(b) {
+		return s.pauseForBrand(ctx, c, b)
 	}
 	if s.brakes != nil {
 		pause, reason, err := s.brakes.AfterTestSlice(ctx, c)
@@ -630,55 +711,67 @@ func (s *Service) holdEnd(ctx context.Context, c store.Campaign) error {
 	if err != nil || !ok {
 		return err
 	}
-	s.queue(ctx, c.ID, s.now())
+	st.then(s.now())
 	return nil
 }
 
-// batch sends up to Batch due emails of a stage, then decides what's next.
-func (s *Service) batch(ctx context.Context, c store.Campaign, stage string) error {
-	if _, err := s.store.MarkStuckSends(ctx, c.ID, 10*time.Minute); err != nil {
+// batch sends one batch of due emails of a stage, then decides what's next.
+func (s *Service) batch(ctx context.Context, c store.Campaign, stage string, st *step) error {
+	// Bookkeeping must happen even when the step's time is up.
+	bg := context.WithoutCancel(ctx)
+	if _, err := s.store.MarkStuckSends(ctx, c.ID, stuckAfter); err != nil {
 		return err
 	}
 	b, err := s.store.BrandByID(ctx, c.BrandID)
 	if err != nil {
 		return err
 	}
-	if b.Status == store.BrandPaused {
-		_, err := s.store.PauseCampaign(ctx, c.ID, "the brand was paused")
-		return err
+	if !brandCanSend(b) {
+		return s.pauseForBrand(ctx, c, b)
 	}
 	claimed, err := s.claim(ctx, c, stage)
 	if err != nil {
 		return err
 	}
 	base := unsubscribe.BaseURL(b.LinkDomain, s.baseURL)
+	release := func(rest []store.ClaimedSend) error {
+		ids := make([]int64, len(rest))
+		for i, r := range rest {
+			ids[i] = r.ID
+		}
+		return s.store.ReleaseSends(bg, ids)
+	}
 	for i, cs := range claimed {
+		// Stop claiming time we don't have: put the rest back for the next step.
+		if dl, ok := ctx.Deadline(); ok && time.Until(dl) < 10*time.Second {
+			st.then(s.now())
+			return release(claimed[i:])
+		}
 		stop, err := s.sendOne(ctx, b, c, cs, base)
 		if err != nil || stop {
-			// Put back what this batch hasn't touched.
-			rest := make([]int64, 0, len(claimed)-i-1)
-			for _, r := range claimed[i+1:] {
-				rest = append(rest, r.ID)
-			}
-			if rerr := s.store.ReleaseSends(ctx, rest); rerr != nil && err == nil {
+			if rerr := release(claimed[i+1:]); rerr != nil && err == nil {
 				err = rerr
+			}
+			if ctx.Err() != nil {
+				st.then(s.now()) // out of time, not stopped: carry on in the next step
 			}
 			return err
 		}
 	}
-	return s.afterBatch(ctx, c, stage, len(claimed))
+	return s.afterBatch(bg, c, stage, len(claimed), st)
 }
 
 // claim takes the next batch of due sends. While the brand warms up, the
 // batch is reserved from its daily allowance in the same transaction, so
 // concurrent workers can't overspend it; whatever isn't granted waits for
-// the next UTC day. A reserved send that later fails for good still counts
-// against the day: conservative, and the warm-up is about volume offered.
+// the recipient's next morning after the UTC day turns. A reserved send that
+// later fails for good still counts against the day: conservative, and the
+// warm-up is about volume offered.
 func (s *Service) claim(ctx context.Context, c store.Campaign, stage string) ([]store.ClaimedSend, error) {
 	var claimed []store.ClaimedSend
 	err := s.store.InTx(ctx, func(tx *store.Store) error {
 		var err error
-		if claimed, err = tx.ClaimSends(ctx, c, stage, Batch); err != nil || len(claimed) == 0 {
+		if claimed, err = tx.ClaimSends(ctx, c, stage, s.batchSize()); err != nil || len(claimed) == 0 {
 			return err
 		}
 		now := s.now()
@@ -689,16 +782,18 @@ func (s *Service) claim(ctx context.Context, c store.Campaign, stage string) ([]
 			}
 			waiting := ""
 			if granted < len(claimed) {
-				later := make([]int64, 0, len(claimed)-granted)
-				for _, cs := range claimed[granted:] {
-					later = append(later, cs.ID)
-				}
 				tomorrow := now.UTC().Truncate(24 * time.Hour).Add(24 * time.Hour)
-				if err := tx.DeferSends(ctx, later, tomorrow); err != nil {
+				ids := make([]int64, 0, len(claimed)-granted)
+				after := make([]time.Time, 0, len(claimed)-granted)
+				for _, cs := range claimed[granted:] {
+					ids = append(ids, cs.ID)
+					after = append(after, sending.SendAfter(tomorrow, cs.Timezone))
+				}
+				if err := tx.DeferSends(ctx, ids, after); err != nil {
 					return err
 				}
 				claimed = claimed[:granted]
-				waiting = "the brand's warm-up allowance for today is used up; sending continues tomorrow (UTC)"
+				waiting = "the brand's warm-up allowance for today is used up; sending continues tomorrow"
 			}
 			if err := tx.SetCampaignWaiting(ctx, c.ID, waiting); err != nil {
 				return err
@@ -736,53 +831,66 @@ func (s *Service) claim(ctx context.Context, c store.Campaign, stage string) ([]
 }
 
 // sendOne re-checks one recipient, sends, and records the outcome. stop
-// means the whole campaign must stop (SES can't send at all).
+// means this step must stop (paused, cancelled, brand or SES can't send).
 func (s *Service) sendOne(ctx context.Context, b store.Brand, c store.Campaign, cs store.ClaimedSend, base string) (stop bool, err error) {
+	bg := context.WithoutCancel(ctx)
 	// Re-check right before sending: people unsubscribe, bounce or get
 	// erased while a campaign is under way.
 	switch {
 	case cs.Email == nil:
-		return false, s.store.MarkSendSkipped(ctx, cs.ID, "erased")
+		return false, s.store.MarkSendSkipped(bg, cs.ID, "erased")
 	case cs.Suppressed:
-		return false, s.store.MarkSendSkipped(ctx, cs.ID, "suppressed")
+		return false, s.store.MarkSendSkipped(bg, cs.ID, "suppressed")
 	case cs.Status == nil || *cs.Status != string(store.ContactSubscribed):
-		return false, s.store.MarkSendSkipped(ctx, cs.ID, "no_longer_subscribed")
+		return false, s.store.MarkSendSkipped(bg, cs.ID, "no_longer_subscribed")
 	case !cs.InTopic:
-		return false, s.store.MarkSendSkipped(ctx, cs.ID, "topic_unsubscribed")
+		return false, s.store.MarkSendSkipped(bg, cs.ID, "topic_unsubscribed")
 	}
-	// Re-read the state before every send, so pausing stops within one email.
-	if st, err := s.store.CampaignState(ctx, c.ID); err != nil || st != c.State {
-		if err == nil {
-			err = s.store.ReleaseSends(ctx, []int64{cs.ID})
-		}
-		return true, err
-	}
-
 	msg := s.message(b, c, cs, base)
 	if err := s.pacer.Wait(ctx); err != nil {
-		return true, s.store.ReleaseSends(ctx, []int64{cs.ID})
+		return true, s.store.ReleaseSends(bg, []int64{cs.ID})
+	}
+	// Re-read campaign and brand after the wait, right before sending, so a
+	// pause, a cancel or a failing DNS check stops it within one email.
+	state, err := s.store.CampaignState(ctx, c.ID)
+	if err != nil || state != c.State {
+		return true, errors.Join(err, s.store.ReleaseSends(bg, []int64{cs.ID}))
+	}
+	now, err := s.store.BrandByID(ctx, b.ID)
+	if err != nil {
+		return true, errors.Join(err, s.store.ReleaseSends(bg, []int64{cs.ID}))
+	}
+	if !brandCanSend(now) {
+		return true, errors.Join(s.store.ReleaseSends(bg, []int64{cs.ID}), s.pauseForBrand(bg, c, now))
+	}
+
+	if err := s.store.MarkCalling(bg, cs.ID); err != nil {
+		return true, errors.Join(err, s.store.ReleaseSends(bg, []int64{cs.ID}))
 	}
 	id, err := s.sender.Send(ctx, msg)
 	switch {
 	case err == nil:
-		return false, s.store.MarkSent(ctx, cs.ID, id)
+		return false, s.store.MarkSent(bg, cs.ID, id)
 	case errors.Is(err, ses.ErrThrottled):
 		s.pacer.Slow(time.Second)
-		// Throttling isn't the recipient's fault: don't count the attempt.
-		return false, s.store.RequeueSendUncounted(ctx, cs.ID, s.now().Add(2*time.Second), err.Error())
-	case errors.Is(err, ses.ErrRejected):
-		return false, s.store.MarkSendFailed(ctx, cs.ID, err.Error())
+		// Not sent, and not the recipient's fault: don't count the attempt.
+		return false, s.store.RequeueSendUncounted(bg, cs.ID, sending.SendAfter(s.now().Add(2*time.Second), cs.Timezone), err.Error())
+	case errors.Is(err, ses.ErrUnavailable) && cs.Attempts < MaxAttempts:
+		backoff := time.Duration(math.Pow(4, float64(cs.Attempts))) * 15 * time.Second
+		return false, s.store.RequeueSend(bg, cs.ID, sending.SendAfter(s.now().Add(backoff), cs.Timezone), err.Error())
+	case errors.Is(err, ses.ErrUnavailable), errors.Is(err, ses.ErrRejected):
+		return false, s.store.MarkSendFailed(bg, cs.ID, err.Error())
 	case errors.Is(err, ses.ErrSendingPaused):
-		if rerr := s.store.ReleaseSends(ctx, []int64{cs.ID}); rerr != nil {
+		if rerr := s.store.ReleaseSends(bg, []int64{cs.ID}); rerr != nil {
 			return true, rerr
 		}
-		_, perr := s.store.PauseCampaign(ctx, c.ID, "Amazon SES stopped sending: "+err.Error())
+		_, perr := s.store.PauseCampaign(bg, c.ID, "Amazon SES stopped sending: "+err.Error())
 		return true, perr
-	case cs.Attempts >= MaxAttempts:
-		return false, s.store.MarkSendFailed(ctx, cs.ID, err.Error())
 	default:
-		backoff := time.Duration(math.Pow(4, float64(cs.Attempts))) * 15 * time.Second
-		return false, s.store.RequeueSend(ctx, cs.ID, s.now().Add(backoff), err.Error())
+		// A timeout, a dropped connection, an unexpected error: SES may have
+		// accepted it. Never retried, so nobody gets it twice.
+		s.log.WarnContext(ctx, "send outcome unknown", "campaign_id", c.ID, "send_id", cs.ID, "err", err)
+		return ctx.Err() != nil, s.store.MarkSendUnknown(bg, cs.ID, "outcome unknown, not retried: "+err.Error())
 	}
 }
 
@@ -810,9 +918,9 @@ func oneLine(s string) string {
 	return strings.Join(strings.Fields(strings.NewReplacer("\r", " ", "\n", " ").Replace(s)), " ")
 }
 
-// afterBatch queues the next batch, or moves the campaign on when the
+// afterBatch schedules the next batch, or moves the campaign on when the
 // stage has nothing left.
-func (s *Service) afterBatch(ctx context.Context, c store.Campaign, stage string, sent int) error {
+func (s *Service) afterBatch(ctx context.Context, c store.Campaign, stage string, sent int, st *step) error {
 	next, err := s.store.NextSendAt(ctx, c.ID, stage)
 	if err != nil {
 		return err
@@ -820,7 +928,7 @@ func (s *Service) afterBatch(ctx context.Context, c store.Campaign, stage string
 	now := s.now()
 	switch {
 	case next != nil && !next.After(now) && sent > 0:
-		s.queue(ctx, c.ID, now)
+		st.then(now)
 		return nil
 	case next != nil:
 		// Waiting for quiet hours to end or a retry to come due.
@@ -828,10 +936,28 @@ func (s *Service) afterBatch(ctx context.Context, c store.Campaign, stage string
 		if !at.After(now) {
 			at = now.Add(time.Second) // claimed by another worker; check back
 		}
-		s.queue(ctx, c.ID, at)
+		st.then(at)
 		return nil
 	}
 	if stage == "test" {
+		// Never watch a test slice that wasn't sent: if the test stage has
+		// no sends yet (it was never queued), queue it and send it first.
+		n, err := s.store.CountStageSends(ctx, c.ID, "test")
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			if err := s.queueStage(ctx, c, "test"); err != nil {
+				return err
+			}
+			if n, err = s.store.CountStageSends(ctx, c.ID, "test"); err != nil {
+				return err
+			}
+			if n > 0 {
+				st.then(s.now())
+				return nil
+			}
+		}
 		until := now.Add(time.Duration(*c.HoldMinutes) * time.Minute)
 		if err := s.store.SetCampaignHold(ctx, c.ID, until); err != nil {
 			return err
@@ -841,7 +967,7 @@ func (s *Service) afterBatch(ctx context.Context, c store.Campaign, stage string
 			return err
 		}
 		s.log.InfoContext(ctx, "campaign test slice sent; holding", "campaign_id", c.ID, "until", until)
-		s.queue(ctx, c.ID, until)
+		st.then(until)
 		return nil
 	}
 	ok, err := s.store.SetCampaignState(ctx, c.ID, []store.CampaignState{store.CampaignSending}, store.CampaignDone)
@@ -866,8 +992,11 @@ func (s *Service) SendTest(ctx context.Context, b store.Brand, c store.Campaign,
 	if err != nil {
 		return 0, err
 	}
-	if tpl.ErrorCount > 0 {
+	switch {
+	case tpl.ErrorCount > 0:
 		return 0, &ProblemsError{[]string{fmt.Sprintf("the template has %d error(s) to fix first", tpl.ErrorCount)}}
+	case tpl.Stale:
+		return 0, &ProblemsError{[]string{"the template is being re-checked after a layout change; try again in a minute"}}
 	}
 	sender, err := s.store.BrandSender(ctx, b.ID)
 	if err != nil {

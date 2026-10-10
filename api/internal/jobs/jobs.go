@@ -238,6 +238,12 @@ func (w *CampaignStepWorker) Work(ctx context.Context, j *river.Job[CampaignStep
 	return w.Deps.Campaigns.Step(ctx, j.Args.CampaignID)
 }
 
+// Timeout: a step bounds itself to campaigns.StepTimeout (2 minutes) and
+// sizes its batch to fit; this is the backstop, above river's 1-minute default.
+func (w *CampaignStepWorker) Timeout(*river.Job[CampaignStepArgs]) time.Duration {
+	return 4 * time.Minute
+}
+
 // CampaignSweepArgs runs any campaign step that is due, in case a queued
 // step was lost.
 type CampaignSweepArgs struct{}

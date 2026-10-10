@@ -33,6 +33,8 @@ CREATE TABLE campaigns (
     paused_from      text CHECK (paused_from IN ('test_slice', 'holding', 'sending')),
     pause_reason     text NOT NULL DEFAULT '',
     waiting_reason   text NOT NULL DEFAULT '', -- why a sending campaign isn't sending right now (warm-up cap)
+    -- One worker at a time: a step takes the lease, and others back off.
+    step_lease_until timestamptz,
     version          integer NOT NULL DEFAULT 1, -- bumped on every edit, for conflicts
     -- Frozen at scheduling:
     html             text NOT NULL DEFAULT '',
@@ -80,8 +82,9 @@ CREATE TABLE campaign_audience (
 CREATE INDEX campaign_audience_reason ON campaign_audience (campaign_id, excluded_reason);
 
 -- One email to one person. UNIQUE (campaign_id, contact_id): never twice.
--- A send is marked 'sending' before SES is called; if the worker dies there
--- it becomes 'unknown' and is never retried, because it may have gone out.
+-- A send is marked 'sending' when claimed and stamped called_at just before
+-- SES is called; if the worker dies after that it becomes 'unknown' and is
+-- never retried, because it may have gone out.
 CREATE TABLE sends (
     id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     campaign_id    uuid NOT NULL REFERENCES campaigns ON DELETE CASCADE,
@@ -95,6 +98,10 @@ CREATE TABLE sends (
     error          text NOT NULL DEFAULT '',
     ses_message_id text UNIQUE,
     claimed_at     timestamptz,
+    -- Set right before SES is called. A send stuck in 'sending' without it
+    -- never reached SES and can safely go back to the queue; with it, the
+    -- outcome is unknown and it is never retried.
+    called_at      timestamptz,
     sent_at        timestamptz,
     UNIQUE (campaign_id, contact_id)
 );

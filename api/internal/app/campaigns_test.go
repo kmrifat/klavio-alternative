@@ -20,11 +20,38 @@ type nopCampaignRunner struct{}
 
 func (nopCampaignRunner) QueueCampaignStep(context.Context, uuid.UUID, time.Time) error { return nil }
 
+// hookSender runs a test's hook before each send: a non-nil error is
+// returned instead of sending.
+type hookSender struct {
+	*ses.FakeSender
+	mu   sync.Mutex
+	hook func(ses.Message) error
+}
+
+func (h *hookSender) Send(ctx context.Context, m ses.Message) (string, error) {
+	h.mu.Lock()
+	hook := h.hook
+	h.mu.Unlock()
+	if hook != nil {
+		if err := hook(m); err != nil {
+			return "", err
+		}
+	}
+	return h.FakeSender.Send(ctx, m)
+}
+
+func (h *hookSender) set(f func(ses.Message) error) {
+	h.mu.Lock()
+	h.hook = f
+	h.mu.Unlock()
+}
+
 type campaignWorld struct {
 	t      *testing.T
 	a      *app.App
 	owner  *browser
 	sender *ses.FakeSender
+	hooks  *hookSender
 	brand  store.Brand
 	topic  string
 	tpl    string
@@ -36,8 +63,9 @@ const campaignBase = "/admin/v1/brands/brightside"
 // every state the audience rules care about.
 func newCampaignWorld(t *testing.T) *campaignWorld {
 	sender := &ses.FakeSender{}
+	hooks := &hookSender{FakeSender: sender}
 	a, srv, dns := setupDeps(t, func(d *app.Deps) {
-		d.Sender = sender
+		d.Sender = hooks
 		d.CampaignRunner = nopCampaignRunner{}
 	})
 	ctx := context.Background()
@@ -67,7 +95,7 @@ func newCampaignWorld(t *testing.T) *campaignWorld {
 
 	owner.must(201, owner.do("POST", campaignBase+"/link-allowlist", map[string]any{"domain": "shop.example.com"}))
 	tpl := owner.must(201, owner.do("POST", campaignBase+"/templates", map[string]any{"name": "Autumn", "mjml": welcome}))
-	return &campaignWorld{t: t, a: a, owner: owner, sender: sender, brand: b, topic: topic,
+	return &campaignWorld{t: t, a: a, owner: owner, sender: sender, hooks: hooks, brand: b, topic: topic,
 		tpl: tpl.body["template"].(map[string]any)["id"].(string)}
 }
 
