@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -189,25 +190,145 @@ func sourceAdminRoutes(t *testing.T) []adminRoute {
 	return out
 }
 
-// sourceErrorCodes: every error code the handlers can return.
+// sourceErrorCodes: every error code the handlers can return. A code is a
+// string literal given as httpx.Errorf's code, as an httpx.Error's Code, or
+// as the code argument of a wrapper: a function that passes one of its own
+// parameters on as the code (bad(code, …) → Errorf(…, code, …)), found
+// transitively within its package.
 func sourceErrorCodes(t *testing.T) map[string]bool {
 	t.Helper()
 	codes := map[string]bool{"internal": true} // httpx.Handle's 500
-	re := regexp.MustCompile(`(?:Errorf\(\s*http\.Status\w+,\s*|\b(?:bad|errBad)\(\s*|Code:\s*)"([a-z][a-z0-9_]*)"`)
+	fset := token.NewFileSet()
+	pkgs := map[string][]*ast.File{}
 	err := filepath.WalkDir("..", func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return err
 		}
-		b, err := os.ReadFile(path)
-		for _, m := range re.FindAllStringSubmatch(string(b), -1) {
-			codes[m[1]] = true
-		}
+		f, err := parser.ParseFile(fset, path, nil, 0)
+		pkgs[filepath.Dir(path)] = append(pkgs[filepath.Dir(path)], f)
 		return err
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	literal := func(e ast.Expr) (string, bool) {
+		if lit, ok := e.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+			s, err := strconv.Unquote(lit.Value)
+			return s, err == nil
+		}
+		return "", false
+	}
+	callee := func(c *ast.CallExpr) string {
+		switch f := c.Fun.(type) {
+		case *ast.Ident:
+			return f.Name
+		case *ast.SelectorExpr:
+			if x, ok := f.X.(*ast.Ident); ok && x.Name == "httpx" {
+				return "httpx." + f.Sel.Name
+			}
+		}
+		return ""
+	}
+	for _, files := range pkgs {
+		// Which argument carries the code: httpx.Errorf's second, and each
+		// wrapper's parameter that reaches one (repeat until nothing new).
+		codeArg := map[string]int{"httpx.Errorf": 1, "Errorf": 1}
+		for changed := true; changed; {
+			changed = false
+			for _, f := range files {
+				// Package-level functions: func bad(…) {…} and var errBad = func(…) {…}.
+				type function struct {
+					name string
+					typ  *ast.FuncType
+					body *ast.BlockStmt
+				}
+				var funcs []function
+				for _, decl := range f.Decls {
+					switch d := decl.(type) {
+					case *ast.FuncDecl:
+						if d.Body != nil && d.Recv == nil {
+							funcs = append(funcs, function{d.Name.Name, d.Type, d.Body})
+						}
+					case *ast.GenDecl:
+						for _, spec := range d.Specs {
+							if vs, ok := spec.(*ast.ValueSpec); ok {
+								for i, name := range vs.Names {
+									if i < len(vs.Values) {
+										if lit, ok := vs.Values[i].(*ast.FuncLit); ok {
+											funcs = append(funcs, function{name.Name, lit.Type, lit.Body})
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+				for _, fn := range funcs {
+					if _, known := codeArg[fn.name]; known {
+						continue
+					}
+					var params []string
+					for _, field := range fn.typ.Params.List {
+						for _, n := range field.Names {
+							params = append(params, n.Name)
+						}
+					}
+					ast.Inspect(fn.body, func(n ast.Node) bool {
+						var arg ast.Expr
+						switch n := n.(type) {
+						case *ast.CallExpr:
+							if k, ok := codeArg[callee(n)]; ok && k < len(n.Args) {
+								arg = n.Args[k]
+							}
+						case *ast.KeyValueExpr: // writes the error body itself: {"code": code}
+							if codeKey(n.Key) {
+								arg = n.Value
+							}
+						}
+						if id, ok := arg.(*ast.Ident); ok {
+							if i := slices.Index(params, id.Name); i >= 0 {
+								codeArg[fn.name] = i
+								changed = true
+								return false
+							}
+						}
+						return true
+					})
+				}
+			}
+		}
+		for _, f := range files {
+			ast.Inspect(f, func(n ast.Node) bool {
+				switch n := n.(type) {
+				case *ast.CallExpr:
+					if k, ok := codeArg[callee(n)]; ok && k < len(n.Args) {
+						if s, ok := literal(n.Args[k]); ok {
+							codes[s] = true
+						}
+					}
+				case *ast.KeyValueExpr:
+					if codeKey(n.Key) {
+						if s, ok := literal(n.Value); ok {
+							codes[s] = true
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
 	return codes
+}
+
+// codeKey: an error's code field, as httpx.Error{Code: …} or {"code": …}.
+func codeKey(k ast.Expr) bool {
+	switch k := k.(type) {
+	case *ast.Ident:
+		return k.Name == "Code"
+	case *ast.BasicLit:
+		return k.Value == `"code"`
+	}
+	return false
 }
 
 // served is the pattern the mux routes pattern's own path to ("" if none).

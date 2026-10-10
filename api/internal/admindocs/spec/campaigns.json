@@ -3,27 +3,1966 @@
     "name": "Campaigns",
     "description": "Campaigns, seed addresses and the brand's sender."
   },
-  "x-todo": [
-    "GET /admin/v1/brands/{slug}/campaigns",
-    "POST /admin/v1/brands/{slug}/campaigns",
-    "GET /admin/v1/brands/{slug}/campaigns/{id}",
-    "PUT /admin/v1/brands/{slug}/campaigns/{id}",
-    "POST /admin/v1/brands/{slug}/campaigns/{id}/cancel",
-    "GET /admin/v1/brands/{slug}/campaigns/{id}/monitor",
-    "POST /admin/v1/brands/{slug}/campaigns/{id}/pause",
-    "GET /admin/v1/brands/{slug}/campaigns/{id}/report",
-    "POST /admin/v1/brands/{slug}/campaigns/{id}/resume",
-    "GET /admin/v1/brands/{slug}/campaigns/{id}/review",
-    "POST /admin/v1/brands/{slug}/campaigns/{id}/schedule",
-    "POST /admin/v1/brands/{slug}/campaigns/{id}/test",
-    "GET /admin/v1/brands/{slug}/seeds",
-    "POST /admin/v1/brands/{slug}/seeds",
-    "DELETE /admin/v1/brands/{slug}/seeds/{email}",
-    "GET /admin/v1/brands/{slug}/sender",
-    "PUT /admin/v1/brands/{slug}/sender"
-  ],
-  "paths": {},
+  "x-todo": [],
+  "paths": {
+    "/brands/{slug}/campaigns": {
+      "get": {
+        "operationId": "listCampaigns",
+        "summary": "List campaigns",
+        "description": "The brand's campaigns, most recently updated first, at most 200 (no paging). Anyone who can see the brand may list them, approvers included.",
+        "x-role": "brand:viewer",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "not_found"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The campaigns.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "campaigns"
+                  ],
+                  "properties": {
+                    "campaigns": {
+                      "type": "array",
+                      "maxItems": 200,
+                      "items": {
+                        "$ref": "#/components/schemas/CampaignsCampaign"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createCampaign",
+        "summary": "Create a draft",
+        "description": "Creates a campaign in `draft`. The topic and template must be the brand's; only personal and brand merge tags (no URL tags) may appear in the subject. `version` is ignored here. Recorded in the audit log (`campaign.created`).",
+        "x-role": "brand:editor",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "not_found",
+          "bad_json",
+          "invalid_name",
+          "too_long",
+          "invalid_subject",
+          "invalid_topic",
+          "invalid_template"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignsDraftInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The new draft, with its live audience count.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignsCampaignView"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/CampaignsDraftInvalid"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/brands/{slug}/campaigns/{id}": {
+      "get": {
+        "operationId": "getCampaign",
+        "summary": "Get a campaign",
+        "description": "The campaign and what's known about its audience: a live count while it is a draft or awaiting approval, the frozen snapshot and send progress once scheduled. Needs a viewer role on the brand: an approver without one gets 403 `forbidden`.",
+        "x-role": "brand:viewer",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "not_found"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          },
+          {
+            "$ref": "#/components/parameters/ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The campaign.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignsCampaignView"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateCampaign",
+        "summary": "Edit a draft",
+        "description": "Replaces the draft's fields (send them all). `version` must be the campaign's current version; it goes up by one. Any edit puts a campaign awaiting approval back to `draft` and drops its approval reasons, so it has to be confirmed again. Only `draft` and `needs_approval` campaigns can be edited. Recorded in the audit log (`campaign.updated`).",
+        "x-role": "brand:editor",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "not_found",
+          "bad_json",
+          "invalid_name",
+          "too_long",
+          "invalid_subject",
+          "invalid_topic",
+          "invalid_template",
+          "stale",
+          "not_editable"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          },
+          {
+            "$ref": "#/components/parameters/ID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignsDraftInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The edited draft, with its live audience count.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignsCampaignView"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/CampaignsDraftInvalid"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "`stale`: someone else changed the campaign since `version`; reload it. `not_editable`: it has been scheduled (cancel it to make changes).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/brands/{slug}/campaigns/{id}/review": {
+      "get": {
+        "operationId": "reviewCampaign",
+        "summary": "Review before sending",
+        "description": "The confirmation screen: the audience as it would be now (frequency cap included), why the send would need a second person's approval, anything that blocks scheduling, the test slice and hold, the From header, and the text the sender must type to confirm (the number of people). Changes nothing. Needs a viewer role on the brand: an approver without one gets 403 `forbidden`.",
+        "x-role": "brand:viewer",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "not_found"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          },
+          {
+            "$ref": "#/components/parameters/ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The review.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignsReview"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/brands/{slug}/campaigns/{id}/schedule": {
+      "post": {
+        "operationId": "scheduleCampaign",
+        "summary": "Confirm and schedule",
+        "description": "Runs the review again, then freezes the campaign (content, sender, audience snapshot with a random test slice) and either schedules it or, when there are approval reasons, files an approval and leaves it in `needs_approval`. `confirm` must be the review's `confirm_text` (the number of people; `2,431`, `2 431` and `2.431` are accepted) and still match the audience at the moment of scheduling. Nothing goes out for 10 minutes after confirming (the cancel window), or before `scheduled_at` if that is later. A company that has only ever had one admin may send without a second approval, on the record. Recorded in the audit log (`campaign.scheduled`, and `approval.requested` when an approval is filed).",
+        "x-role": "brand:sender",
+        "x-step-up": true,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "step_up_required",
+          "not_found",
+          "bad_json",
+          "not_ready",
+          "confirm_mismatch",
+          "approval_required",
+          "stale",
+          "not_editable"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          },
+          {
+            "$ref": "#/components/parameters/ID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignsScheduleInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The campaign, now `scheduled` (with its snapshot and progress) or `needs_approval` (with its live audience count).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignsCampaignView"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadJSON"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenOrStepUp"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "`confirm_mismatch`: `confirm` isn't the audience size, or the audience changed since the review (the message gives the new number). `stale`: the campaign changed since `version`. `not_editable`: it is already scheduled. `approval_required`: the send needs a second person's approval and nobody else can approve it yet; `reasons` says why.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignsApprovalRequiredError"
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/CampaignsNotReady"
+          }
+        }
+      }
+    },
+    "/brands/{slug}/campaigns/{id}/cancel": {
+      "post": {
+        "operationId": "cancelCampaign",
+        "summary": "Cancel a campaign",
+        "description": "Stops a campaign in any state but `done` and `cancelled` (a draft too). Sends still queued are skipped, and their warm-up and frequency-cap room is given back. No body. Recorded in the audit log (`campaign.cancelled`).",
+        "x-role": "brand:sender",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "not_found",
+          "finished"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          },
+          {
+            "$ref": "#/components/parameters/ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The campaign, now `cancelled`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignsCampaignView"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "`finished`: the campaign is already `done` or `cancelled`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/brands/{slug}/campaigns/{id}/pause": {
+      "post": {
+        "operationId": "pauseCampaign",
+        "summary": "Pause sending",
+        "description": "Holds a campaign that is sending (`test_slice`, `holding` or `sending`), remembering where to resume (`paused_from`); the pause reason is \"paused by\" and the caller's name. No body. Recorded in the audit log (`campaign.paused`).",
+        "x-role": "brand:sender",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "not_found",
+          "not_running"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          },
+          {
+            "$ref": "#/components/parameters/ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The campaign, now `paused`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignsCampaignView"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "`not_running`: the campaign isn't sending.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/brands/{slug}/campaigns/{id}/resume": {
+      "post": {
+        "operationId": "resumeCampaign",
+        "summary": "Resume sending",
+        "description": "Puts a paused campaign back in the state it was paused from and queues its next step. Refused while the brand isn't `ready`, when the campaign's own brake paused it (its results would pause it again: cancel it and send a new one), and while the brand's brake has it slowed unless the campaign went through approval for that. No body. Recorded in the audit log (`campaign.resumed`).",
+        "x-role": "brand:sender",
+        "x-step-up": true,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "step_up_required",
+          "not_found",
+          "brand_not_ready",
+          "campaign_brake",
+          "brand_slowed",
+          "not_running"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          },
+          {
+            "$ref": "#/components/parameters/ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The campaign, back in `test_slice`, `holding` or `sending`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignsCampaignView"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenOrStepUp"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "`brand_not_ready`: the brand is in setup or paused. `campaign_brake`: the campaign's own brake paused it. `brand_slowed`: the brand's brake has it slowed and this send wasn't approved for that. `not_running`: the campaign isn't paused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/brands/{slug}/campaigns/{id}/test": {
+      "post": {
+        "operationId": "sendCampaignTest",
+        "summary": "Send a test",
+        "description": "Sends the campaign's current template to addresses on the brand's seed list, with `[Test]` before the subject and sample merge values; its unsubscribe links don't unsubscribe anyone. Works in any state. Addresses are matched exactly against the (lowercase) seed list. If sending fails part-way the answer is 500 `internal`, and the audit entry lists those already sent. Recorded in the audit log (`campaign.test_sent`).",
+        "x-role": "brand:editor",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "not_found",
+          "bad_json",
+          "no_seeds",
+          "not_a_seed",
+          "too_many",
+          "not_ready"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          },
+          {
+            "$ref": "#/components/parameters/ID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "emails": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "email"
+                    },
+                    "description": "Seed addresses to send to; empty or left out: the whole seed list. Send `{}` at least: an empty body is `bad_json`."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "sent",
+                    "to"
+                  ],
+                  "properties": {
+                    "sent": {
+                      "type": "integer",
+                      "description": "How many went out."
+                    },
+                    "to": {
+                      "type": "array",
+                      "maxItems": 10,
+                      "items": {
+                        "type": "string",
+                        "format": "email"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields. `no_seeds`: the seed list is empty (or none of `emails` is on it). `not_a_seed`: some of `emails` aren't on the seed list. `too_many`: more than 10 addresses at once.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/CampaignsNotReady"
+          }
+        }
+      }
+    },
+    "/brands/{slug}/campaigns/{id}/monitor": {
+      "get": {
+        "operationId": "monitorCampaign",
+        "summary": "Live monitor",
+        "description": "Polled every few seconds while a campaign sends: sends by status, delivery feedback and its rates next to the campaign brake's limits, engagement, whether the brand may send now, and what the brakes did. Answered with `Cache-Control: no-store`. Needs a viewer role on the brand: an approver without one gets 403 `forbidden`.",
+        "x-role": "brand:viewer",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "not_found"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          },
+          {
+            "$ref": "#/components/parameters/ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The monitor.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignsMonitor"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/brands/{slug}/campaigns/{id}/report": {
+      "get": {
+        "operationId": "getCampaignReport",
+        "summary": "Campaign report",
+        "description": "The monitor plus the top 20 links by human clicks and results by mailbox provider. Needs a viewer role on the brand: an approver without one gets 403 `forbidden`.",
+        "x-role": "brand:viewer",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "not_found"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          },
+          {
+            "$ref": "#/components/parameters/ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The report.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignsReport"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/brands/{slug}/seeds": {
+      "get": {
+        "operationId": "listSeeds",
+        "summary": "List seed addresses",
+        "description": "The brand's internal test list, by address. Anyone who can see the brand may read it, approvers included.",
+        "x-role": "brand:viewer",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "not_found"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The seed list.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignsSeedList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "post": {
+        "operationId": "addSeed",
+        "summary": "Add a seed address",
+        "description": "Adds a bare address (no display name; stored lowercase) to the seed list, which holds at most 25. Recorded in the audit log (`seed.added`).",
+        "x-role": "brand:brand_admin",
+        "x-step-up": true,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "step_up_required",
+          "not_found",
+          "bad_json",
+          "invalid_email",
+          "too_many",
+          "already_seed"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "email"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "examples": [
+                      "qa@brightside.com"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The seed list, with the new address.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignsSeedList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields. `invalid_email`: not a bare email address. `too_many`: the list already holds 25.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenOrStepUp"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "`already_seed`: the address is already on the list.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/brands/{slug}/seeds/{email}": {
+      "delete": {
+        "operationId": "removeSeed",
+        "summary": "Remove a seed address",
+        "description": "Recorded in the audit log (`seed.removed`).",
+        "x-role": "brand:brand_admin",
+        "x-step-up": true,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "step_up_required",
+          "not_found"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          },
+          {
+            "name": "email",
+            "in": "path",
+            "required": true,
+            "description": "The seed address (matched case-insensitively).",
+            "schema": {
+              "type": "string",
+              "format": "email"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The seed list, without the address.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignsSeedList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenOrStepUp"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/brands/{slug}/sender": {
+      "get": {
+        "operationId": "getSender",
+        "summary": "Who email comes from",
+        "description": "The brand's sender settings and the From header they make. Anyone who can see the brand may read them, approvers included.",
+        "x-role": "brand:viewer",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "not_found"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The sender.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignsSenderView"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "put": {
+        "operationId": "setSender",
+        "summary": "Set who email comes from",
+        "description": "Replaces the sender settings (send all three fields). `from_local` is lowercased and must be 1–63 of letters, digits, `.`, `_`, `-`, starting with a letter or digit; `from_name` is kept on one line, at most 100 characters (empty: the brand's name); `reply_to` must be a bare address or empty. Campaigns already scheduled keep the From header they were confirmed with. Recorded in the audit log (`brand.sender_updated`).",
+        "x-role": "brand:brand_admin",
+        "x-step-up": true,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "step_up_required",
+          "not_found",
+          "bad_json",
+          "invalid_from",
+          "invalid_from_name",
+          "invalid_reply_to"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignsSender"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The saved sender.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignsSenderView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields. `invalid_from`: `from_local` has characters that aren't allowed. `invalid_from_name`: the name is over 100 characters. `invalid_reply_to`: not a bare email address.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenOrStepUp"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    }
+  },
   "components": {
-    "schemas": {}
+    "responses": {
+      "CampaignsDraftInvalid": {
+        "description": "`bad_json`: the body isn't valid JSON for this call (a malformed ID too), or has unknown fields. `invalid_name`: the name is empty or over 200 characters. `too_long`: the subject or preview text is over 250 characters. `invalid_subject`: the subject uses a merge tag that doesn't belong there (a URL tag, or an unknown one). `invalid_topic`: not one of the brand's topics. `invalid_template`: not one of the brand's templates.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "CampaignsNotReady": {
+        "description": "`not_ready`: something blocks this; `problems` lists what, for people.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/CampaignsNotReadyError"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "CampaignsState": {
+        "type": "string",
+        "enum": [
+          "draft",
+          "needs_approval",
+          "scheduled",
+          "test_slice",
+          "holding",
+          "sending",
+          "paused",
+          "done",
+          "cancelled"
+        ],
+        "description": "`draft` and `needs_approval` can be edited. After scheduling: `test_slice` (a small random share goes first), `holding` (waiting to see how it did), `sending` (the rest), `paused`, then `done` or `cancelled`."
+      },
+      "CampaignsApprovalReason": {
+        "type": "string",
+        "enum": [
+          "large_audience",
+          "unusual_size",
+          "at_risk_included",
+          "first_send_to_import",
+          "brand_warming_up",
+          "brand_slowed"
+        ]
+      },
+      "CampaignsExclusionReason": {
+        "type": "string",
+        "enum": [
+          "suppressed",
+          "unsubscribed",
+          "quarantined",
+          "pending_confirmation",
+          "sunset",
+          "at_risk",
+          "frequency_cap"
+        ]
+      },
+      "CampaignsCampaign": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "topic_id",
+          "template_id",
+          "subject",
+          "preheader",
+          "include_at_risk",
+          "state",
+          "paused_from",
+          "pause_reason",
+          "waiting_reason",
+          "version",
+          "from_header",
+          "reply_to",
+          "test_slice_pct",
+          "hold_minutes",
+          "scheduled_at",
+          "start_at",
+          "confirmed_by",
+          "confirmed_at",
+          "approval_id",
+          "approval_reasons",
+          "hold_until",
+          "audience_count",
+          "excluded_count",
+          "created_by",
+          "updated_by",
+          "created_at",
+          "updated_at",
+          "finished_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "topic_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Who it goes to: the topic's members."
+          },
+          "template_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "preheader": {
+            "type": "string",
+            "description": "Preview text shown next to the subject."
+          },
+          "include_at_risk": {
+            "type": "boolean",
+            "description": "Whether contacts in the at-risk tier are included."
+          },
+          "state": {
+            "$ref": "#/components/schemas/CampaignsState"
+          },
+          "paused_from": {
+            "description": "The state a paused campaign resumes to; null otherwise.",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CampaignsState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pause_reason": {
+            "type": "string"
+          },
+          "waiting_reason": {
+            "type": "string",
+            "description": "Why sending is waiting (a daily limit, say); empty if it isn't."
+          },
+          "version": {
+            "type": "integer",
+            "description": "Goes up with each edit; send it back to edit or schedule."
+          },
+          "from_header": {
+            "type": "string",
+            "description": "Frozen at scheduling; empty before."
+          },
+          "reply_to": {
+            "type": "string",
+            "description": "Frozen at scheduling; empty before."
+          },
+          "test_slice_pct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Set at scheduling."
+          },
+          "hold_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Set at scheduling."
+          },
+          "scheduled_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "start_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When sending starts: no earlier than the end of the cancel window."
+          },
+          "confirmed_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "confirmed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "approval_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "approval_reasons": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CampaignsApprovalReason"
+            }
+          },
+          "hold_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "audience_count": {
+            "type": "integer",
+            "description": "People included in the snapshot; 0 before scheduling."
+          },
+          "excluded_count": {
+            "type": "integer"
+          },
+          "created_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "updated_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "CampaignsAudience": {
+        "type": "object",
+        "description": "A would-be audience, counted now.",
+        "required": [
+          "included",
+          "excluded",
+          "first_time_imported",
+          "at_risk"
+        ],
+        "properties": {
+          "included": {
+            "type": "integer"
+          },
+          "excluded": {
+            "type": "object",
+            "description": "Reason → people left out for it.",
+            "propertyNames": {
+              "$ref": "#/components/schemas/CampaignsExclusionReason"
+            },
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "first_time_imported": {
+            "type": "integer",
+            "description": "Included people from an import who never got a campaign."
+          },
+          "at_risk": {
+            "type": "integer",
+            "description": "Included people in the at-risk tier (only counted when they're included)."
+          }
+        }
+      },
+      "CampaignsCampaignView": {
+        "type": "object",
+        "description": "A campaign with its audience: `audience` while it is `draft` or `needs_approval`; `breakdown` and `progress` from scheduling on.",
+        "required": [
+          "campaign"
+        ],
+        "properties": {
+          "campaign": {
+            "$ref": "#/components/schemas/CampaignsCampaign"
+          },
+          "audience": {
+            "$ref": "#/components/schemas/CampaignsAudience"
+          },
+          "breakdown": {
+            "type": "object",
+            "description": "The frozen snapshot: an exclusion reason, `included_test` or `included_rest` → people.",
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "examples": [
+              {
+                "included_test": 25,
+                "included_rest": 475,
+                "unsubscribed": 12
+              }
+            ]
+          },
+          "progress": {
+            "type": "object",
+            "description": "Sends by stage (`test`, `rest`), then by status (`queued`, `sending`, `sent`, `failed`, `unknown`, `skipped`) → count.",
+            "required": [
+              "test",
+              "rest"
+            ],
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer"
+              }
+            },
+            "examples": [
+              {
+                "test": {
+                  "sent": 25
+                },
+                "rest": {
+                  "queued": 400,
+                  "sent": 75
+                }
+              }
+            ]
+          }
+        }
+      },
+      "CampaignsDraftInput": {
+        "type": "object",
+        "required": [
+          "name",
+          "topic_id"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Trimmed; required."
+          },
+          "topic_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "One of the brand's topics."
+          },
+          "template_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "One of the brand's templates; needed before scheduling or testing."
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 250,
+            "description": "Kept on one line. May use personal and brand merge tags (`{{first_name}}`), not URL tags."
+          },
+          "preheader": {
+            "type": "string",
+            "maxLength": 250,
+            "description": "Preview text; kept on one line."
+          },
+          "include_at_risk": {
+            "type": "boolean",
+            "default": false
+          },
+          "version": {
+            "type": "integer",
+            "description": "On edit: the version you read (optimistic concurrency). Ignored on create."
+          }
+        }
+      },
+      "CampaignsReview": {
+        "type": "object",
+        "required": [
+          "audience",
+          "approval_reasons",
+          "problems",
+          "test_slice_pct",
+          "hold_minutes",
+          "from_header",
+          "confirm_text",
+          "cancel_window_minutes"
+        ],
+        "properties": {
+          "audience": {
+            "$ref": "#/components/schemas/CampaignsAudience"
+          },
+          "approval_reasons": {
+            "type": "array",
+            "description": "Why the send needs a second person's approval; empty if it doesn't.",
+            "items": {
+              "type": "object",
+              "required": [
+                "code",
+                "text"
+              ],
+              "properties": {
+                "code": {
+                  "$ref": "#/components/schemas/CampaignsApprovalReason"
+                },
+                "text": {
+                  "type": "string",
+                  "examples": [
+                    "goes to more people than the approval limit"
+                  ]
+                }
+              }
+            }
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What blocks scheduling, for people; empty when it can be scheduled.",
+            "examples": [
+              [
+                "add a subject line",
+                "choose a template"
+              ]
+            ]
+          },
+          "test_slice_pct": {
+            "type": "number",
+            "description": "Percent of the audience sent first.",
+            "examples": [
+              5
+            ]
+          },
+          "hold_minutes": {
+            "type": "integer",
+            "description": "How long to wait after the test slice.",
+            "examples": [
+              45
+            ]
+          },
+          "from_header": {
+            "type": "string",
+            "examples": [
+              "\"Brightside\" <hello@news.brightside.com>"
+            ]
+          },
+          "confirm_text": {
+            "type": "string",
+            "description": "What the sender types to confirm: the number of people included.",
+            "examples": [
+              "2431"
+            ]
+          },
+          "cancel_window_minutes": {
+            "type": "integer",
+            "description": "How long after confirming nothing goes out.",
+            "examples": [
+              10
+            ]
+          }
+        }
+      },
+      "CampaignsScheduleInput": {
+        "type": "object",
+        "required": [
+          "version",
+          "confirm"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "description": "The version you reviewed."
+          },
+          "confirm": {
+            "type": "string",
+            "description": "The review's `confirm_text`, typed by the sender. Digits with `,`, `.` or spaces between them.",
+            "examples": [
+              "2,431"
+            ]
+          },
+          "scheduled_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When to send; null or in the past: as soon as the cancel window allows."
+          }
+        }
+      },
+      "CampaignsNotReadyError": {
+        "type": "object",
+        "required": [
+          "error",
+          "problems"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/Error/properties/error"
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "examples": [
+              [
+                "choose a template first"
+              ]
+            ]
+          }
+        }
+      },
+      "CampaignsApprovalRequiredError": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/Error/properties/error"
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Only with `approval_required`: why the send needs approval, for people.",
+            "examples": [
+              [
+                "goes to more people than the approval limit"
+              ]
+            ]
+          }
+        }
+      },
+      "CampaignsRates": {
+        "type": "object",
+        "description": "Fractions (0.01 = 1%). Bounces per delivered-or-bounced; complaints and unsubscribes per delivered.",
+        "required": [
+          "bounce",
+          "complaint",
+          "unsubscribe"
+        ],
+        "properties": {
+          "bounce": {
+            "type": "number"
+          },
+          "complaint": {
+            "type": "number"
+          },
+          "unsubscribe": {
+            "type": "number"
+          }
+        }
+      },
+      "CampaignsSafetyEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "at",
+          "scope",
+          "brand_id",
+          "campaign_id",
+          "action",
+          "from_state",
+          "to_state",
+          "reason",
+          "metrics"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "campaign",
+              "brand",
+              "account"
+            ]
+          },
+          "brand_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "campaign_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "action": {
+            "type": "string",
+            "description": "What the brake did, e.g. `paused`.",
+            "examples": [
+              "paused"
+            ]
+          },
+          "from_state": {
+            "type": "string"
+          },
+          "to_state": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "metrics": {
+            "description": "The numbers the brake acted on, as recorded."
+          }
+        }
+      },
+      "CampaignsMonitor": {
+        "type": "object",
+        "required": [
+          "campaign",
+          "sends",
+          "feedback",
+          "rates",
+          "limits",
+          "engagement",
+          "gate",
+          "safety_events",
+          "at"
+        ],
+        "properties": {
+          "campaign": {
+            "$ref": "#/components/schemas/CampaignsCampaign"
+          },
+          "sends": {
+            "type": "object",
+            "required": [
+              "queued",
+              "sending",
+              "sent",
+              "failed",
+              "unknown",
+              "skipped"
+            ],
+            "properties": {
+              "queued": {
+                "type": "integer"
+              },
+              "sending": {
+                "type": "integer"
+              },
+              "sent": {
+                "type": "integer"
+              },
+              "failed": {
+                "type": "integer"
+              },
+              "unknown": {
+                "type": "integer"
+              },
+              "skipped": {
+                "type": "object",
+                "description": "Skip reason → count.",
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "examples": [
+                  {
+                    "unsubscribed": 3,
+                    "cancelled": 120
+                  }
+                ]
+              }
+            }
+          },
+          "feedback": {
+            "type": "object",
+            "required": [
+              "delivered",
+              "bounces",
+              "complaints",
+              "unsubscribes"
+            ],
+            "properties": {
+              "delivered": {
+                "type": "integer"
+              },
+              "bounces": {
+                "type": "integer",
+                "description": "Hard bounces."
+              },
+              "complaints": {
+                "type": "integer"
+              },
+              "unsubscribes": {
+                "type": "integer"
+              }
+            }
+          },
+          "rates": {
+            "$ref": "#/components/schemas/CampaignsRates"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/CampaignsRates",
+            "description": "The campaign brake's limits: at or over one, the campaign pauses."
+          },
+          "engagement": {
+            "type": "object",
+            "description": "Clicks and opens, bots filtered out.",
+            "required": [
+              "human_clicks",
+              "unique_clickers",
+              "bot_clicks",
+              "bot_reasons",
+              "human_opens_est",
+              "machine_opens",
+              "soft_bounces",
+              "delivery_delays"
+            ],
+            "properties": {
+              "human_clicks": {
+                "type": "integer"
+              },
+              "unique_clickers": {
+                "type": "integer"
+              },
+              "bot_clicks": {
+                "type": "integer"
+              },
+              "bot_reasons": {
+                "type": "object",
+                "description": "Why clicks were judged bots → count.",
+                "additionalProperties": {
+                  "type": "integer"
+                }
+              },
+              "human_opens_est": {
+                "type": "integer",
+                "description": "Unique people who opened; an estimate."
+              },
+              "machine_opens": {
+                "type": "integer"
+              },
+              "soft_bounces": {
+                "type": "integer"
+              },
+              "delivery_delays": {
+                "type": "integer"
+              }
+            }
+          },
+          "gate": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Whether the brand may send right now, and how (its brake and the account brake). Null when the brakes aren't wired in.",
+            "required": [
+              "allowed",
+              "rate_factor",
+              "needs_approval",
+              "block_inactive",
+              "reason"
+            ],
+            "properties": {
+              "allowed": {
+                "type": "boolean"
+              },
+              "rate_factor": {
+                "type": "number",
+                "description": "Scales the send rate: 0.5 while the brand is slowed."
+              },
+              "needs_approval": {
+                "type": "boolean",
+                "description": "Every send needs a second admin (slowed)."
+              },
+              "block_inactive": {
+                "type": "boolean",
+                "description": "At-risk contacts are left out even if the campaign included them."
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          },
+          "safety_events": {
+            "type": "array",
+            "maxItems": 20,
+            "description": "What the brakes did to this campaign, newest first.",
+            "items": {
+              "$ref": "#/components/schemas/CampaignsSafetyEvent"
+            }
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When these numbers were read."
+          }
+        }
+      },
+      "CampaignsReport": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/CampaignsMonitor"
+          },
+          {
+            "type": "object",
+            "required": [
+              "links",
+              "providers"
+            ],
+            "properties": {
+              "links": {
+                "type": "array",
+                "maxItems": 20,
+                "description": "The email's links, most human clicks first.",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "link_no",
+                    "url",
+                    "human_clicks",
+                    "unique_clickers",
+                    "bot_clicks"
+                  ],
+                  "properties": {
+                    "link_no": {
+                      "type": "integer",
+                      "description": "The link's position in the email, from 1."
+                    },
+                    "url": {
+                      "type": "string"
+                    },
+                    "human_clicks": {
+                      "type": "integer"
+                    },
+                    "unique_clickers": {
+                      "type": "integer"
+                    },
+                    "bot_clicks": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              },
+              "providers": {
+                "type": "array",
+                "description": "Results by mailbox provider (from the recipient's domain), most sent first.",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "provider",
+                    "sent",
+                    "delivered",
+                    "bounces",
+                    "complaints",
+                    "clickers"
+                  ],
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "enum": [
+                        "Gmail",
+                        "Microsoft",
+                        "Yahoo",
+                        "Apple",
+                        "GMX / Web.de",
+                        "Other"
+                      ]
+                    },
+                    "sent": {
+                      "type": "integer"
+                    },
+                    "delivered": {
+                      "type": "integer"
+                    },
+                    "bounces": {
+                      "type": "integer",
+                      "description": "Hard bounces."
+                    },
+                    "complaints": {
+                      "type": "integer"
+                    },
+                    "clickers": {
+                      "type": "integer",
+                      "description": "Recipients with a human click."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "CampaignsSeedList": {
+        "type": "object",
+        "required": [
+          "seeds"
+        ],
+        "properties": {
+          "seeds": {
+            "type": "array",
+            "maxItems": 25,
+            "items": {
+              "type": "object",
+              "required": [
+                "email",
+                "created_at"
+              ],
+              "properties": {
+                "email": {
+                  "type": "string",
+                  "format": "email"
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          }
+        }
+      },
+      "CampaignsSender": {
+        "type": "object",
+        "required": [
+          "from_name",
+          "from_local",
+          "reply_to"
+        ],
+        "properties": {
+          "from_name": {
+            "type": "string",
+            "maxLength": 100,
+            "description": "Display name, on one line; empty: the brand's name.",
+            "examples": [
+              "Brightside"
+            ]
+          },
+          "from_local": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,62}$",
+            "description": "The part before `@` and the brand's sending domain.",
+            "examples": [
+              "hello"
+            ]
+          },
+          "reply_to": {
+            "type": "string",
+            "description": "An email address, or empty for none.",
+            "examples": [
+              "support@brightside.com"
+            ]
+          }
+        }
+      },
+      "CampaignsSenderView": {
+        "type": "object",
+        "required": [
+          "sender",
+          "from_header"
+        ],
+        "properties": {
+          "sender": {
+            "$ref": "#/components/schemas/CampaignsSender"
+          },
+          "from_header": {
+            "type": "string",
+            "examples": [
+              "\"Brightside\" <hello@news.brightside.com>"
+            ]
+          }
+        }
+      }
+    }
   }
 }

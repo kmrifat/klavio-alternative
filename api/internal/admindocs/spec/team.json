@@ -3,14 +3,215 @@
     "name": "Team",
     "description": "Members, invites and roles."
   },
-  "x-todo": [
-    "GET /admin/v1/team",
-    "POST /admin/v1/team/invites",
-    "PUT /admin/v1/team/members/{id}/roles",
-    "POST /admin/v1/team/members/{id}/unfreeze"
-  ],
-  "paths": {},
+  "x-todo": [],
+  "paths": {
+    "/team": {
+      "get": {
+        "operationId": "listTeam",
+        "summary": "Members and open invites",
+        "description": "Every member with their company role, brand roles, passkey count and frozen state (ordered by name, then email), and every invite that is not yet accepted or expired (newest first). Invites whose approval was rejected, cancelled or expired are left out. Any signed-in member can see who has access to what.",
+        "x-role": "signed_in",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated"],
+        "responses": {
+          "200": {
+            "description": "The team.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["members", "invites"],
+                  "properties": {
+                    "members": { "type": "array", "items": { "$ref": "#/components/schemas/TeamMember" } },
+                    "invites": { "type": "array", "items": { "$ref": "#/components/schemas/TeamPendingInvite" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" }
+        }
+      }
+    },
+    "/team/invites": {
+      "post": {
+        "operationId": "createTeamInvite",
+        "summary": "Invite someone",
+        "description": "Creates a one-time invite link, valid for 7 days, for a person who has no account yet. The link is returned only here; only its hash is stored.\n\nAn invite that grants admin rights (company role `approver` or `owner`, or `brand_admin` on any brand) needs a second admin: an approval request (`admin_invite`) is filed and the link only works once it is approved (and while the inviter is still an owner). The answer is still 201, with `awaiting_approval: true` and the `approval`. If nobody else could approve, the invite goes through at once while the company has never had two admins; after that it is refused with 409 `no_approver`. If the approval is rejected the invite is deleted.\n\nRecorded in the audit log (`user.invited`, and `approval.requested` when an approval is filed).",
+        "x-role": "company:owner",
+        "x-step-up": true,
+        "x-error-codes": ["unauthenticated", "forbidden", "step_up_required", "bad_json", "invalid_email", "invalid_name", "invalid_role", "unknown_brand", "already_member", "already_invited", "no_approver"],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TeamInviteInput" } } }
+        },
+        "responses": {
+          "201": {
+            "description": "Invite created (usable now, or once approved when `awaiting_approval` is true).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TeamInviteCreated" } } }
+          },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields. `invalid_email`: not a valid email address. `invalid_name`: name is empty. `invalid_role`: unknown company or brand role. `unknown_brand`: a brand in `brand_roles` doesn't exist.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/ForbiddenOrStepUp" },
+          "409": {
+            "description": "`already_member`: that email already has an account (change their roles instead). `already_invited`: that email already has an open invite. `no_approver`: the invite grants admin rights, nobody else can approve right now (other admins may be frozen), and the company has had two admins before.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/team/members/{id}/roles": {
+      "put": {
+        "operationId": "setTeamMemberRoles",
+        "summary": "Change a member's roles",
+        "description": "Sets the member's company role and changes their brand roles. `brand_roles` is a partial change: brands left out keep their current role, and an empty string removes the member from that brand. Owners can't change their own company role, and the last owner can't be demoted.\n\nA change that grants admin rights the member didn't have (company role `approver` or `owner`, or `brand_admin` on a brand) needs a second admin, and so does removing admin rights from the last admin other than the caller. Then an approval request (`role_change`) is filed and the answer is 202 with the `approval`; nothing changes until it is approved (it is checked again then). The member being given rights can't approve it. If nobody else could approve, the change applies at once while the company has never had two admins; after that it is refused with 409 `no_approver`.\n\nRecorded in the audit log (`user.roles_changed` when applied, `approval.requested` when an approval is filed).",
+        "x-role": "company:owner",
+        "x-step-up": true,
+        "x-error-codes": ["unauthenticated", "forbidden", "step_up_required", "not_found", "bad_json", "invalid_role", "own_role", "last_owner", "unknown_brand", "no_approver"],
+        "parameters": [{ "$ref": "#/components/parameters/ID" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TeamRolesInput" } } }
+        },
+        "responses": {
+          "202": {
+            "description": "The change needs a second admin and is waiting in Approvals.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TeamApprovalPending" } } }
+          },
+          "204": { "description": "Roles changed." },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields. `invalid_role`: unknown company or brand role (`company_role` is required). `own_role`: you can't change your own company role. `last_owner`: there must always be at least one owner. `unknown_brand`: a brand in `brand_roles` doesn't exist.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/ForbiddenOrStepUp" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "`no_approver`: the change needs a second admin, nobody else can approve right now (other admins may be frozen), and the company has had two admins before.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/team/members/{id}/unfreeze": {
+      "post": {
+        "operationId": "unfreezeTeamMember",
+        "summary": "Unfreeze a member",
+        "description": "Restores a frozen account (after checking the alert that froze it) and clears its frozen reason. Recorded in the audit log (`user.unfrozen`).",
+        "x-role": "company:owner",
+        "x-step-up": true,
+        "x-error-codes": ["unauthenticated", "forbidden", "step_up_required", "not_found", "not_frozen"],
+        "parameters": [{ "$ref": "#/components/parameters/ID" }],
+        "responses": {
+          "204": { "description": "Unfrozen." },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/ForbiddenOrStepUp" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "`not_frozen`: the member isn't frozen.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    }
+  },
   "components": {
-    "schemas": {}
+    "schemas": {
+      "TeamMember": {
+        "type": "object",
+        "required": ["id", "email", "name", "company_role", "brand_roles", "passkeys", "last_active_at", "frozen_at", "frozen_reason"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "email": { "type": "string", "format": "email" },
+          "name": { "type": "string" },
+          "company_role": { "$ref": "#/components/schemas/CompanyRole" },
+          "brand_roles": { "$ref": "#/components/schemas/BrandRoles" },
+          "passkeys": { "type": "integer", "minimum": 0, "description": "How many passkeys the member has registered." },
+          "last_active_at": { "type": ["string", "null"], "format": "date-time" },
+          "frozen_at": { "type": ["string", "null"], "format": "date-time", "description": "When the account was frozen; null if it isn't." },
+          "frozen_reason": { "type": "string", "description": "Why it was frozen; empty if it isn't." }
+        }
+      },
+      "TeamPendingInvite": {
+        "type": "object",
+        "required": ["id", "email", "name", "company_role", "brand_roles", "expires_at", "awaiting_approval"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "email": { "type": "string", "format": "email" },
+          "name": { "type": "string" },
+          "company_role": { "$ref": "#/components/schemas/CompanyRole" },
+          "brand_roles": { "$ref": "#/components/schemas/BrandRoles" },
+          "expires_at": { "type": "string", "format": "date-time" },
+          "awaiting_approval": { "type": "boolean", "description": "The invite grants admin rights and its approval is still pending; the link doesn't work yet." }
+        }
+      },
+      "TeamInviteInput": {
+        "type": "object",
+        "required": ["email", "name"],
+        "properties": {
+          "email": { "type": "string", "format": "email", "description": "Trimmed and lowercased; must be a bare address." },
+          "name": { "type": "string", "description": "Trimmed; required." },
+          "company_role": { "$ref": "#/components/schemas/CompanyRole", "description": "Defaults to `member`." },
+          "brand_roles": { "$ref": "#/components/schemas/BrandRoles", "description": "Brand ID → role; each brand must exist and each role must be a valid brand role." }
+        }
+      },
+      "TeamInviteCreated": {
+        "type": "object",
+        "required": ["invite_url", "expires_at", "awaiting_approval"],
+        "properties": {
+          "invite_url": { "type": "string", "format": "uri", "description": "The one-time link (`<app URL>/invite/<token>`). Shown only once." },
+          "expires_at": { "type": "string", "format": "date-time" },
+          "awaiting_approval": { "type": "boolean", "description": "A second admin must approve before the link works." },
+          "approval": { "$ref": "#/components/schemas/TeamApproval", "description": "Present only when `awaiting_approval` is true." }
+        }
+      },
+      "TeamRolesInput": {
+        "type": "object",
+        "required": ["company_role"],
+        "properties": {
+          "company_role": { "$ref": "#/components/schemas/CompanyRole" },
+          "brand_roles": {
+            "type": "object",
+            "description": "Brand ID → new role, or `\"\"` to remove the member from that brand. Brands left out are unchanged. Each brand must exist.",
+            "propertyNames": { "format": "uuid" },
+            "additionalProperties": { "type": "string", "enum": ["viewer", "editor", "sender", "brand_admin", ""] }
+          }
+        }
+      },
+      "TeamApprovalPending": {
+        "type": "object",
+        "required": ["approval", "message"],
+        "properties": {
+          "approval": { "$ref": "#/components/schemas/TeamApproval" },
+          "message": { "type": "string", "examples": ["Giving admin rights needs a second admin. The change is waiting in Approvals."] }
+        }
+      },
+      "TeamApproval": {
+        "type": "object",
+        "description": "An approval request, as filed (pending, expires after 7 days).",
+        "required": ["id", "kind", "brand_id", "requested_by", "requested_at", "summary", "reason", "payload", "status", "decided_by", "decided_at", "decision_note", "result", "expires_at", "target_user_id", "target_email"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "kind": { "type": "string", "enum": ["admin_invite", "role_change"], "description": "Here, one of the team kinds." },
+          "brand_id": { "type": ["string", "null"], "format": "uuid", "description": "Null for company-level requests like these." },
+          "requested_by": { "type": "string", "format": "uuid" },
+          "requested_at": { "type": "string", "format": "date-time" },
+          "summary": { "type": "string", "description": "One line for the approver.", "examples": ["Invite ada@example.com as brand_admin of Brightside"] },
+          "reason": { "type": "string" },
+          "payload": { "description": "What will be applied: for `admin_invite`, `{email, company_role, brand_roles}`; for `role_change`, `{user_id, company_role, brand_roles}`." },
+          "status": { "type": "string", "enum": ["pending", "approved", "rejected", "cancelled", "expired"] },
+          "decided_by": { "type": ["string", "null"], "format": "uuid" },
+          "decided_at": { "type": ["string", "null"], "format": "date-time" },
+          "decision_note": { "type": "string" },
+          "result": { "description": "What executing it returned; null until then." },
+          "expires_at": { "type": "string", "format": "date-time" },
+          "target_user_id": { "type": ["string", "null"], "format": "uuid", "description": "The member the request is about, who can't decide it (set when rights are being granted to an existing member)." },
+          "target_email": { "type": ["string", "null"], "description": "The invited email, who can't decide it (admin invites)." }
+        }
+      }
+    }
   }
 }

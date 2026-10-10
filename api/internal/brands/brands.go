@@ -53,16 +53,16 @@ func bad(code, format string, args ...any) error {
 
 // validSubdomain requires a subdomain (news.brand.com, not brand.com), so bulk
 // mail never shares a reputation with the company's everyday email.
-func validSubdomain(field, d string) error {
+func validSubdomain(code, d string) error {
 	if !hostnameRe.MatchString(d) {
-		return bad("invalid_"+field, "%q is not a valid domain name", d)
+		return bad(code, "%q is not a valid domain name", d)
 	}
 	org, err := publicsuffix.EffectiveTLDPlusOne(d)
 	if err != nil {
-		return bad("invalid_"+field, "%q is not under a public domain", d)
+		return bad(code, "%q is not under a public domain", d)
 	}
 	if org == d {
-		return bad("invalid_"+field, "use a subdomain such as news.%s, not %s itself — bulk email must stay off the domain your team uses every day", d, d)
+		return bad(code, "use a subdomain such as news.%s, not %s itself — bulk email must stay off the domain your team uses every day", d, d)
 	}
 	return nil
 }
@@ -85,10 +85,10 @@ func (in *CreateInput) normalize() error {
 	case in.PostalAddress == "":
 		return bad("invalid_postal_address", "a postal address is required in every marketing email")
 	}
-	if err := validSubdomain("sending_domain", in.SendingDomain); err != nil {
+	if err := validSubdomain("invalid_sending_domain", in.SendingDomain); err != nil {
 		return err
 	}
-	if err := validSubdomain("link_domain", in.LinkDomain); err != nil {
+	if err := validSubdomain("invalid_link_domain", in.LinkDomain); err != nil {
 		return err
 	}
 	if in.LinkDomain == in.SendingDomain {
