@@ -458,6 +458,7 @@ type SuppressionReason string
 
 const (
 	SuppressHardBounce SuppressionReason = "hard_bounce"
+	SuppressSoftBounce SuppressionReason = "soft_bounce" // 3 in 30 days
 	SuppressComplaint  SuppressionReason = "complaint"
 	SuppressManual     SuppressionReason = "manual"
 	SuppressErasure    SuppressionReason = "erasure"
