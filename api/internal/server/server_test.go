@@ -134,6 +134,9 @@ func TestCSRF(t *testing.T) {
 		{"json without origin (curl)", "", "application/json; charset=utf-8", http.StatusNoContent},
 		{"form post", "http://localhost:5173", "application/x-www-form-urlencoded", http.StatusUnsupportedMediaType},
 		{"other site", "https://evil.example", "application/json", http.StatusForbidden},
+		{"upload from app", "http://localhost:5173", "multipart/form-data; boundary=x", http.StatusNoContent},
+		{"upload without origin", "", "multipart/form-data; boundary=x", http.StatusUnsupportedMediaType},
+		{"upload from other site", "https://evil.example", "multipart/form-data; boundary=x", http.StatusForbidden},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

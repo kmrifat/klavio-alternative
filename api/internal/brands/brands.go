@@ -125,6 +125,9 @@ func (s *Service) Create(ctx context.Context, r *http.Request, in CreateInput) (
 		if err := tx.AddDNSRecords(ctx, brand.ID, RequiredRecords(brand, setup.DKIMTokens, s.ses.Region())); err != nil {
 			return err
 		}
+		if _, err := tx.CreateTopic(ctx, brand.ID, "Newsletter"); err != nil {
+			return err
+		}
 		return tx.Audit(ctx, auditFor(r, "brand.created", brand), nil, brand)
 	})
 	return brand, err

@@ -70,6 +70,13 @@ binary, builds the Docker image and validates the OpenTofu config.
 | `POST /admin/v1/brands/{slug}/dns-check` | Re-check DNS + SES status (also runs daily) |
 | `GET /admin/v1/team`, `POST /admin/v1/team/invites`, `PUT /admin/v1/team/members/{id}/roles` | Team & access |
 | `GET /admin/v1/audit` | Recent audit log (owners, approvers) |
+| `GET /admin/v1/brands/{slug}/contacts` | Contacts with tier, consent proof; filters `tier`, `status`, `tag`, `q`, paging `after` (editor+) |
+| `GET …/contacts/stats` | Tier counts, quarantined, suppressed (every role) |
+| `POST …/contacts`, `GET …/contacts/{id}` | Add one contact with a consent source (brand admin); detail + consent history |
+| `POST …/contacts/{id}/unsubscribe`, `…/suppress` | Honour a request (editor+); block an address for every brand (brand admin) |
+| `GET/POST …/topics` | What people subscribe to; unsubscribing is per topic |
+| `POST …/imports` (multipart), `GET/PUT …/imports/{id}` | Upload CSV; save column mapping + consent answers + attestation |
+| `POST …/imports/{id}/check`, `…/commit`, `…/cancel` | Background safety check; import (passkey confirmation); cancel |
 
 Every write needs `Content-Type: application/json` from an allowed origin (CSRF guard).
 

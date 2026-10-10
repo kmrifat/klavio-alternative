@@ -9,7 +9,8 @@ export function fakeApi(routes: Record<string, Handler | { status: number; body?
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), "http://localhost");
     const method = init?.method ?? "GET";
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    let body: unknown = init?.body;
+    if (typeof body === "string") body = JSON.parse(body);
     calls.push({ method, path: url.pathname, body });
     const route = routes[`${method} ${url.pathname}`];
     if (!route) return new Response(JSON.stringify({ error: { code: "not_found", message: "no fake for " + url.pathname } }), { status: 404 });
