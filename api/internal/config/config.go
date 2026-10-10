@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"os"
 	"strings"
 )
@@ -45,6 +46,12 @@ type Config struct {
 	// PublicBaseURLOverride replaces https://<brand link domain> in public
 	// links, for local development (e.g. http://localhost:8080).
 	PublicBaseURLOverride string
+
+	// Cloudflare's CF-Connecting-IP / CF-IPCountry headers are believed only
+	// when TrustCloudflareHeaders is on and the request's socket peer is in
+	// TrustedProxies (the cloudflared sidecar). Anyone else could forge them.
+	TrustCloudflareHeaders bool
+	TrustedProxies         []netip.Prefix
 }
 
 // devUnsubscribeSecret is only for local development; production must set its own.
@@ -115,6 +122,30 @@ func Load(getenv func(string) string) (Config, error) {
 	cfg.UnsubscribeSecret = get("UNSUBSCRIBE_SECRET", "")
 	cfg.UnsubscribeSecretOld = get("UNSUBSCRIBE_SECRET_OLD", "")
 	cfg.PublicBaseURLOverride = get("PUBLIC_BASE_URL_OVERRIDE", "")
+	switch v := get("TRUST_CLOUDFLARE_HEADERS", map[Env]string{EnvDevelopment: "false", EnvProduction: "true"}[cfg.Env]); v {
+	case "true":
+		cfg.TrustCloudflareHeaders = true
+	case "false":
+	default:
+		errs = append(errs, fmt.Errorf("TRUST_CLOUDFLARE_HEADERS must be true or false, got %q", v))
+	}
+	for _, s := range strings.Split(get("TRUSTED_PROXY_CIDRS", "127.0.0.1/32,::1/128"), ",") {
+		if s = strings.TrimSpace(s); s == "" {
+			continue
+		}
+		p, err := parsePrefix(s)
+		switch {
+		case err != nil:
+			errs = append(errs, fmt.Errorf("TRUSTED_PROXY_CIDRS: %q is not an IP or CIDR", s))
+		case p.Bits() == 0:
+			errs = append(errs, fmt.Errorf("TRUSTED_PROXY_CIDRS: %s would trust every client", s))
+		default:
+			cfg.TrustedProxies = append(cfg.TrustedProxies, p)
+		}
+	}
+	if cfg.TrustCloudflareHeaders && len(cfg.TrustedProxies) == 0 {
+		errs = append(errs, errors.New("TRUST_CLOUDFLARE_HEADERS=true needs TRUSTED_PROXY_CIDRS (the cloudflared address)"))
+	}
 	if cfg.UnsubscribeSecret == "" && cfg.Env == EnvDevelopment {
 		cfg.UnsubscribeSecret = devUnsubscribeSecret
 	}
@@ -158,6 +189,26 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 
 	return cfg, errors.Join(errs...)
+}
+
+// parsePrefix accepts a CIDR or a single address (a /32 or /128).
+func parsePrefix(s string) (netip.Prefix, error) {
+	if !strings.Contains(s, "/") {
+		a, err := netip.ParseAddr(s)
+		if err != nil {
+			return netip.Prefix{}, err
+		}
+		a = a.Unmap()
+		return netip.PrefixFrom(a, a.BitLen()), nil
+	}
+	p, err := netip.ParsePrefix(s)
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+	if p.Addr().Is4In6() && p.Bits() >= 96 { // ::ffff:10.0.0.0/104 → 10.0.0.0/8
+		p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+	}
+	return p.Masked(), nil
 }
 
 // SecureCookies is true outside development (HTTPS only).
