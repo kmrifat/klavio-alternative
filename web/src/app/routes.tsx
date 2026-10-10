@@ -22,6 +22,8 @@ import { SafetyLimits } from "../routes/settings/SafetyLimits";
 import { ImportWizard } from "../routes/contacts/ImportWizard";
 import { SafetyCenter } from "../routes/safety/SafetyCenter";
 import { Home } from "../routes/Home";
+import { SegmentEditor, SegmentsPage } from "../routes/segments/SegmentsPage";
+import { ContactsApiPage } from "../routes/api/ContactsApiPage";
 import { BrandHealthPage } from "../routes/health/BrandHealthPage";
 import { brandScreens, companyScreens } from "../lib/screens";
 
@@ -41,6 +43,15 @@ const builtCompanyScreens: Record<string, RouteObject> = {
 };
 
 const builtBrandScreens: Record<string, RouteObject> = {
+  segments: {
+    path: "segments",
+    children: [
+      { index: true, element: <SegmentsPage /> },
+      { path: "new", element: <SegmentEditor /> },
+      { path: ":id", element: <SegmentEditor /> },
+    ],
+  },
+  api: { path: "api", element: <ContactsApiPage /> },
   health: { path: "health", element: <BrandHealthPage /> },
   templates: {
     path: "templates",

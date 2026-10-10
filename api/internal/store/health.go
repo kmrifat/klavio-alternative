@@ -31,6 +31,18 @@ func (s *Store) RecordSends(ctx context.Context, brandID uuid.UUID, day time.Tim
 	return total, err
 }
 
+// ReleaseSends takes back n of the day's recorded sends. A warm-up started by
+// sends that all came back is undone.
+func (s *Store) ReleaseSends(ctx context.Context, brandID uuid.UUID, day time.Time, n int) error {
+	if _, err := s.db.Exec(ctx, `UPDATE brand_daily_sends SET sent = greatest(sent - $3, 0) WHERE brand_id = $1 AND day = $2`,
+		brandID, day, n); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(ctx, `UPDATE brands SET warmup_started_on = NULL
+		WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM brand_daily_sends WHERE brand_id = $1 AND sent > 0)`, brandID)
+	return err
+}
+
 func (s *Store) SentOn(ctx context.Context, brandID uuid.UUID, day time.Time) (int, error) {
 	var n int
 	err := s.db.QueryRow(ctx, `SELECT COALESCE((SELECT sent FROM brand_daily_sends WHERE brand_id = $1 AND day = $2), 0)`, brandID, day).Scan(&n)

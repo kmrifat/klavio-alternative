@@ -43,6 +43,12 @@ type Deps struct {
 		CheckAllBlocklists(ctx context.Context) error
 		PullPostmaster(ctx context.Context) error
 	}
+	// Contacts API (M7): confirmation and re-permission emails, log cleanup.
+	Opt interface {
+		SendConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID) error
+		SendRepermissions(ctx context.Context) error
+		Housekeeping(ctx context.Context) (int64, error)
+	}
 }
 
 // HeartbeatArgs is a periodic no-op job that shows the worker is alive.
@@ -261,8 +267,61 @@ func (w *PostmasterWorker) Work(ctx context.Context, _ *river.Job[PostmasterArgs
 	return w.Deps.Health.PullPostmaster(ctx)
 }
 
-// Runner queues import jobs and template rebuilds; it satisfies
-// imports.Runner and templates.Rebuilder.
+// ConfirmationArgs sends one double opt-in email (P2).
+type ConfirmationArgs struct {
+	BrandID   uuid.UUID `json:"brand_id"`
+	ContactID uuid.UUID `json:"contact_id"`
+	RequestID uuid.UUID `json:"request_id"` // topic request; Nil for a sign-up
+}
+
+func (ConfirmationArgs) Kind() string { return "contacts.confirmation_email" }
+
+type ConfirmationWorker struct {
+	river.WorkerDefaults[ConfirmationArgs]
+	Deps Deps
+}
+
+func (w *ConfirmationWorker) Work(ctx context.Context, j *river.Job[ConfirmationArgs]) error {
+	return w.Deps.Opt.SendConfirmation(ctx, j.Args.BrandID, j.Args.ContactID, j.Args.RequestID)
+}
+
+// RepermissionArgs sends re-permission emails to quarantined imports (hourly,
+// up to the daily limit).
+type RepermissionArgs struct{}
+
+func (RepermissionArgs) Kind() string { return "contacts.repermission" }
+
+type RepermissionWorker struct {
+	river.WorkerDefaults[RepermissionArgs]
+	Deps Deps
+}
+
+func (w *RepermissionWorker) Work(ctx context.Context, _ *river.Job[RepermissionArgs]) error {
+	return w.Deps.Opt.SendRepermissions(ctx)
+}
+
+// APIHousekeepingArgs forgets old API call logs, idempotency records and
+// frequency-cap history.
+type APIHousekeepingArgs struct{}
+
+func (APIHousekeepingArgs) Kind() string { return "contacts.housekeeping" }
+
+type APIHousekeepingWorker struct {
+	river.WorkerDefaults[APIHousekeepingArgs]
+	Deps Deps
+	Log  *slog.Logger
+}
+
+func (w *APIHousekeepingWorker) Work(ctx context.Context, _ *river.Job[APIHousekeepingArgs]) error {
+	n, err := w.Deps.Opt.Housekeeping(ctx)
+	if err == nil && n > 0 {
+		w.Log.InfoContext(ctx, "contacts API housekeeping", "rows_deleted", n)
+	}
+	return err
+}
+
+// Runner queues import jobs, template rebuilds and confirmation emails; it
+// satisfies imports.Runner, templates.Rebuilder and contactsapi.ConfirmationQueue.
 type Runner struct{ Client *Client }
 
 func (r Runner) StartCheck(ctx context.Context, brandID, importID uuid.UUID) error {
@@ -272,6 +331,11 @@ func (r Runner) StartCheck(ctx context.Context, brandID, importID uuid.UUID) err
 
 func (r Runner) StartCommit(ctx context.Context, brandID, importID uuid.UUID) error {
 	_, err := r.Client.Insert(ctx, ImportCommitArgs{BrandID: brandID, ImportID: importID}, &river.InsertOpts{MaxAttempts: 3})
+	return err
+}
+
+func (r Runner) QueueConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID) error {
+	_, err := r.Client.Insert(ctx, ConfirmationArgs{BrandID: brandID, ContactID: contactID, RequestID: requestID}, &river.InsertOpts{MaxAttempts: 5})
 	return err
 }
 
@@ -328,6 +392,12 @@ func NewWorker(pool *pgxpool.Pool, log *slog.Logger, deps Deps) (*Client, error)
 			periodic(time.Hour, HealthScoreArgs{}, true),
 			periodic(time.Hour, BlocklistArgs{}, true),
 			periodic(24*time.Hour, PostmasterArgs{}, true))
+	}
+	if deps.Opt != nil {
+		river.AddWorker(workers, &ConfirmationWorker{Deps: deps})
+		river.AddWorker(workers, &RepermissionWorker{Deps: deps})
+		river.AddWorker(workers, &APIHousekeepingWorker{Deps: deps, Log: log})
+		jobs = append(jobs, periodic(time.Hour, RepermissionArgs{}, true), periodic(time.Hour, APIHousekeepingArgs{}, true))
 	}
 	if deps.Sessions != nil {
 		river.AddWorker(workers, &SessionCleanupWorker{Deps: deps, Log: log})

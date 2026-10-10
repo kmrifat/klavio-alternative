@@ -169,13 +169,21 @@ func requestLog(log *slog.Logger, next http.Handler) http.Handler {
 	})
 }
 
-// redactPath hides the signed token in public link paths (/u/<token>,
-// /p/<token>): it works like a password for that person's subscription.
+// redactPath hides what mustn't reach the logs: the signed token in public
+// link paths (/u/, /p/, /confirm/), which works like a password for that
+// person's subscription, and the email address in Contacts API paths.
 func redactPath(p string) string {
-	for _, prefix := range []string{"/u/", "/p/"} {
+	for _, prefix := range []string{"/u/", "/p/", "/confirm/"} {
 		if strings.HasPrefix(p, prefix) && len(p) > len(prefix) {
 			return prefix + "[token]"
 		}
+	}
+	const contacts = "/api/v1/contacts/"
+	if rest, ok := strings.CutPrefix(p, contacts); ok && rest != "" {
+		if _, action, found := strings.Cut(rest, "/"); found {
+			return contacts + "[email]/" + action
+		}
+		return contacts + "[email]"
 	}
 	return p
 }

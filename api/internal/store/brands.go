@@ -29,12 +29,14 @@ type Brand struct {
 	Status              BrandStatus `db:"status" json:"status"`
 	DNSCheckedAt        *time.Time  `db:"dns_checked_at" json:"dns_checked_at"`
 	WarmupStartedOn     *time.Time  `db:"warmup_started_on" json:"warmup_started_on"`
-	CreatedAt           time.Time   `db:"created_at" json:"created_at"`
-	UpdatedAt           time.Time   `db:"updated_at" json:"updated_at"`
+	// RepermissionOn: quarantined imports get re-permission emails (M7).
+	RepermissionOn bool      `db:"repermission_on" json:"repermission_on"`
+	CreatedAt      time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt      time.Time `db:"updated_at" json:"updated_at"`
 }
 
 const brandCols = `id, slug, name, color, postal_address, sending_domain, mail_from_domain, link_domain,
-	ses_configuration_set, ses_identity_status, status, dns_checked_at, warmup_started_on, created_at, updated_at`
+	ses_configuration_set, ses_identity_status, status, dns_checked_at, warmup_started_on, repermission_on, created_at, updated_at`
 
 func (s *Store) CreateBrand(ctx context.Context, b Brand) (Brand, error) {
 	rows, err := s.db.Query(ctx, `

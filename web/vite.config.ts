@@ -8,7 +8,7 @@ export default defineConfig({
   server: {
     port: 5173,
     // Same-origin API in development: cookies and passkeys just work.
-    proxy: { "/admin": "http://localhost:8080" },
+    proxy: { "/admin": "http://localhost:8080", "/api": "http://localhost:8080" },
   },
   test: {
     environment: "jsdom",

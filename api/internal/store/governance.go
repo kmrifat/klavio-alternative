@@ -155,6 +155,13 @@ func (s *Store) Lock(ctx context.Context, name string) error {
 }
 
 // LimitValue returns a limit's stored value (ok=false: still the default).
+// TryLock is Lock without waiting: false when someone else holds it.
+func (s *Store) TryLock(ctx context.Context, name string) (bool, error) {
+	var ok bool
+	err := s.db.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))`, name).Scan(&ok)
+	return ok, err
+}
+
 func (s *Store) LimitValue(ctx context.Context, key string) (float64, bool, error) {
 	var v float64
 	err := s.db.QueryRow(ctx, `SELECT value::float8 FROM safety_limits WHERE key = $1`, key).Scan(&v)

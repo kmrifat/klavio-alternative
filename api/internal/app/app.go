@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kmrifat/klavio-alternative/api/internal/anomaly"
@@ -18,15 +19,20 @@ import (
 	"github.com/kmrifat/klavio-alternative/api/internal/brands"
 	"github.com/kmrifat/klavio-alternative/api/internal/cache"
 	"github.com/kmrifat/klavio-alternative/api/internal/config"
+	"github.com/kmrifat/klavio-alternative/api/internal/confirm"
 	"github.com/kmrifat/klavio-alternative/api/internal/contacts"
+	"github.com/kmrifat/klavio-alternative/api/internal/contactsapi"
 	"github.com/kmrifat/klavio-alternative/api/internal/dnscheck"
 	"github.com/kmrifat/klavio-alternative/api/internal/exports"
+	"github.com/kmrifat/klavio-alternative/api/internal/freqcap"
 	"github.com/kmrifat/klavio-alternative/api/internal/health"
 	"github.com/kmrifat/klavio-alternative/api/internal/httpx"
 	"github.com/kmrifat/klavio-alternative/api/internal/imports"
 	"github.com/kmrifat/klavio-alternative/api/internal/jobs"
 	"github.com/kmrifat/klavio-alternative/api/internal/limits"
+	"github.com/kmrifat/klavio-alternative/api/internal/mailer"
 	"github.com/kmrifat/klavio-alternative/api/internal/postmaster"
+	"github.com/kmrifat/klavio-alternative/api/internal/segments"
 	"github.com/kmrifat/klavio-alternative/api/internal/server"
 	"github.com/kmrifat/klavio-alternative/api/internal/ses"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
@@ -52,6 +58,11 @@ type Deps struct {
 	TemplateRebuilder templates.Rebuilder
 	// Limiter rate-limits the public unsubscribe POSTs (Redis in production).
 	Limiter cache.Limiter
+	// Mailer sends confirmation and re-permission emails (tests: mailer.Memory).
+	Mailer mailer.Sender
+	// ConfirmationQueue overrides the river job that sends double opt-in
+	// emails (tests send them inline).
+	ConfirmationQueue contactsapi.ConfirmationQueue
 	// Blocklists nil = blocklist checks off; Postmaster nil = not connected.
 	Blocklists *blocklist.Checker
 	Postmaster *postmaster.Client
@@ -83,6 +94,13 @@ type App struct {
 	// Warmup paces new brands' daily volume; the sending worker reserves from it.
 	Warmup *warmup.Service
 	Health *health.Service
+	// FreqCap is the cross-brand frequency cap; the sending worker reserves from it.
+	FreqCap *freqcap.Service
+	// Confirm sends double opt-in and re-permission emails and applies the clicks.
+	Confirm     *confirm.Service
+	confirmer   *confirm.Signer
+	contactsAPI *contactsapi.API
+	contactsAdm *contactsapi.Admin
 }
 
 func New(d Deps) (*App, error) {
@@ -148,6 +166,30 @@ func New(d Deps) (*App, error) {
 		Postmaster:     d.Postmaster,
 		AccessOn:       d.Access != nil,
 	}, d.Log)
+
+	// Segments, Contacts API, frequency cap, double opt-in (M7).
+	a.FreqCap = freqcap.NewService(st)
+	if a.confirmer, err = confirm.NewSigner(d.Config.UnsubscribeSecret, d.Config.UnsubscribeSecretOld); err != nil {
+		return nil, err
+	}
+	if d.Mailer == nil {
+		d.Mailer = mailer.Unconfigured{}
+	}
+	a.Confirm = confirm.NewService(confirm.Deps{
+		Store: st, Signer: a.confirmer, Unsub: a.Unsubscribe, Sender: d.Mailer, Caps: a.FreqCap, Warmup: a.Warmup,
+		Override: d.Config.PublicBaseURLOverride, Log: d.Log,
+	})
+	queue := d.ConfirmationQueue
+	if queue == nil {
+		client, err := jobs.NewInserter(d.Pool, d.Log)
+		if err != nil {
+			return nil, err
+		}
+		queue = jobs.Runner{Client: client}
+	}
+	a.contactsAPI = &contactsapi.API{Store: st, Limiter: a.deps.Limiter, Queue: queue, Log: d.Log}
+	a.contactsAdm = &contactsapi.Admin{Store: st, Auth: authSvc, Approvals: a.Approvals, Limit: a.Limits.Get, CanSend: a.Confirm.CanSend, Log: d.Log}
+	a.contactsAdm.RegisterApprovals()
 	return a, nil
 }
 
@@ -173,6 +215,12 @@ func FromConfig(ctx context.Context, cfg config.Config, log *slog.Logger, pool *
 	}
 	if cfg.BlocklistResolver != "off" {
 		d.Blocklists = &blocklist.Checker{R: blocklist.NewResolver(cfg.BlocklistResolver), DQSKey: cfg.SpamhausDQSKey}
+	}
+	// Confirmation emails: logged in development; production needs the SES
+	// sender from the sending worker (M3 part 3).
+	d.Mailer = mailer.Unconfigured{}
+	if cfg.Env == config.EnvDevelopment {
+		d.Mailer = mailer.Log{Log: log}
 	}
 	pm, err := postmaster.New(ctx, cfg.PostmasterCredentialsFile)
 	if err != nil {
@@ -204,8 +252,14 @@ func (a *App) Handler() http.Handler {
 			contactsH.Routes(mux)
 			a.Imports.Routes(mux, a.Auth)
 			(&health.Handlers{Service: a.Health, Store: a.Store, Approvals: a.Approvals}).Routes(mux)
+			(&segments.Handlers{Store: a.Store, Limiter: a.deps.Limiter, Log: a.deps.Log}).Routes(mux)
+			a.contactsAdm.Routes(mux)
 		},
-		RegisterPublic: (&unsubscribe.Handlers{Signer: a.Unsubscribe, Service: a.unsubSvc, Limiter: a.deps.Limiter, Log: a.deps.Log}).Routes,
+		RegisterPublic: func(mux *http.ServeMux) {
+			(&unsubscribe.Handlers{Signer: a.Unsubscribe, Service: a.unsubSvc, Limiter: a.deps.Limiter, Log: a.deps.Log}).Routes(mux)
+			(&confirm.Handlers{Signer: a.confirmer, Service: a.Confirm, Limiter: a.deps.Limiter, Log: a.deps.Log}).Routes(mux)
+			a.contactsAPI.Routes(mux)
+		},
 	})
 }
 
@@ -248,7 +302,7 @@ func (a *App) ServeHTTP(ctx context.Context) error {
 // RunWorker works background jobs until ctx is cancelled.
 func (a *App) RunWorker(ctx context.Context) error {
 	log := a.deps.Log
-	client, err := jobs.NewWorker(a.deps.Pool, log, jobs.Deps{Brands: a.Brands, Sessions: a.Store, Imports: a.Imports, ImportFiles: a.Store, Templates: a.Templates, Governance: governanceJobs{a}, Health: a.Health})
+	client, err := jobs.NewWorker(a.deps.Pool, log, jobs.Deps{Brands: a.Brands, Sessions: a.Store, Imports: a.Imports, ImportFiles: a.Store, Templates: a.Templates, Governance: governanceJobs{a}, Health: a.Health, Opt: optJobs{a}})
 	if err != nil {
 		return err
 	}
@@ -303,4 +357,22 @@ func (g governanceJobs) ExpireApprovals(ctx context.Context) (int64, error) {
 }
 func (g governanceJobs) PurgeExpiredExports(ctx context.Context) (int64, error) {
 	return g.a.Store.PurgeExpiredExports(ctx)
+}
+
+// optJobs adapts the Contacts API jobs (confirmations, re-permission, cleanup).
+type optJobs struct{ a *App }
+
+func (o optJobs) SendConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID) error {
+	return o.a.Confirm.SendConfirmation(ctx, brandID, contactID, requestID)
+}
+func (o optJobs) SendRepermissions(ctx context.Context) error {
+	return o.a.Confirm.SendRepermissions(ctx)
+}
+func (o optJobs) Housekeeping(ctx context.Context) (int64, error) {
+	n, err := o.a.Store.PurgeAPIHousekeeping(ctx)
+	if err != nil {
+		return n, err
+	}
+	m, err := o.a.FreqCap.Purge(ctx)
+	return n + m, err
 }

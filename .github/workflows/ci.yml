@@ -41,7 +41,9 @@ jobs:
       - run: go vet ./...
       - run: go test -race -count=1 ./...
         env:
-          TEST_DATABASE_URL: postgres://mail:mail@localhost:5432/mail?sslmode=disable
+          # A tiny pool on purpose: code that asks for a second connection while
+          # holding a transaction (and a lock) deadlocks here, not in production.
+          TEST_DATABASE_URL: postgres://mail:mail@localhost:5432/mail?sslmode=disable&pool_max_conns=2
           TEST_REDIS_URL: redis://localhost:6379/15
       - name: Smoke test the binary
         env:

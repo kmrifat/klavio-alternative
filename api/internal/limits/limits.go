@@ -163,6 +163,24 @@ func (s *Service) All(ctx context.Context) ([]Limit, error) {
 }
 
 // Get returns a limit's current value (the default if unchanged or on error).
+// Read is Get through a given store. Code holding a transaction must read
+// limits through it: asking the pool for a second connection while holding
+// one (and a lock) deadlocks once the pool is exhausted.
+func Read(ctx context.Context, q *store.Store, key string) (float64, error) {
+	d, ok := Find(key)
+	if !ok {
+		return math.NaN(), fmt.Errorf("unknown safety limit %q", key)
+	}
+	v, ok, err := q.LimitValue(ctx, key)
+	switch {
+	case err != nil:
+		return d.Value, err
+	case ok:
+		return v, nil
+	}
+	return d.Value, nil
+}
+
 func (s *Service) Get(ctx context.Context, key string) float64 {
 	d, ok := Find(key)
 	if !ok {

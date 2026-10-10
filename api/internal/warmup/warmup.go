@@ -145,3 +145,12 @@ func (s *Service) Reserve(ctx context.Context, tx *store.Store, brandID uuid.UUI
 	}
 	return granted, nil
 }
+
+// Release gives back n sends reserved for the day that didn't go out. If
+// that leaves the brand with no sends at all, the warm-up hasn't started.
+func (s *Service) Release(ctx context.Context, tx *store.Store, brandID uuid.UUID, day time.Time, n int) error {
+	if n <= 0 {
+		return nil
+	}
+	return tx.ReleaseSends(ctx, brandID, utcDay(day), n)
+}
