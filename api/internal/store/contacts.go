@@ -32,6 +32,9 @@ func (t Tier) Valid() bool {
 	return t == TierActive || t == TierWarm || t == TierAtRisk || t == TierSunset
 }
 
+// TierSQL is the tier of contact c as SQL (for segment rules).
+const TierSQL = tierExpr
+
 // Without tracking consent there are no clicks, so nobody can prove they're
 // Active: the best such a contact reaches is Warm (from the opt-in date).
 const tierExpr = `CASE

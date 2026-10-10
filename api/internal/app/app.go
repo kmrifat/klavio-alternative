@@ -27,6 +27,7 @@ import (
 	"github.com/kmrifat/klavio-alternative/api/internal/jobs"
 	"github.com/kmrifat/klavio-alternative/api/internal/limits"
 	"github.com/kmrifat/klavio-alternative/api/internal/postmaster"
+	"github.com/kmrifat/klavio-alternative/api/internal/segments"
 	"github.com/kmrifat/klavio-alternative/api/internal/server"
 	"github.com/kmrifat/klavio-alternative/api/internal/ses"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
@@ -204,6 +205,7 @@ func (a *App) Handler() http.Handler {
 			contactsH.Routes(mux)
 			a.Imports.Routes(mux, a.Auth)
 			(&health.Handlers{Service: a.Health, Store: a.Store, Approvals: a.Approvals}).Routes(mux)
+			(&segments.Handlers{Store: a.Store, Log: a.deps.Log}).Routes(mux)
 		},
 		RegisterPublic: (&unsubscribe.Handlers{Signer: a.Unsubscribe, Service: a.unsubSvc, Limiter: a.deps.Limiter, Log: a.deps.Log}).Routes,
 	})
