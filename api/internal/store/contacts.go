@@ -89,7 +89,8 @@ type ContactFilter struct {
 	Limit      int
 }
 
-func (s *Store) ListContacts(ctx context.Context, brandID uuid.UUID, f ContactFilter) ([]Contact, error) {
+// contactWhere builds the WHERE clause for a filter (shared by list and count).
+func contactWhere(brandID uuid.UUID, f ContactFilter) ([]string, []any) {
 	where := []string{"c.brand_id = $1"}
 	args := []any{brandID}
 	arg := func(v any) string {
@@ -123,13 +124,28 @@ func (s *Store) ListContacts(ctx context.Context, brandID uuid.UUID, f ContactFi
 	if f.After != "" {
 		where = append(where, "c.email > "+arg(f.After))
 	}
+	return where, args
+}
+
+func (s *Store) ListContacts(ctx context.Context, brandID uuid.UUID, f ContactFilter) ([]Contact, error) {
+	where, args := contactWhere(brandID, f)
 	limit := f.Limit
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
+	args = append(args, limit)
 	rows, err := s.db.Query(ctx, `SELECT `+contactCols+contactFrom+
-		` WHERE `+strings.Join(where, " AND ")+` ORDER BY c.email LIMIT `+arg(limit), args...)
+		` WHERE `+strings.Join(where, " AND ")+fmt.Sprintf(` ORDER BY c.email LIMIT $%d`, len(args)), args...)
 	return all[Contact](rows, err)
+}
+
+// CountContacts counts the contacts a filter matches (After and Limit are ignored).
+func (s *Store) CountContacts(ctx context.Context, brandID uuid.UUID, f ContactFilter) (int, error) {
+	f.After = ""
+	where, args := contactWhere(brandID, f)
+	var n int
+	err := s.db.QueryRow(ctx, `SELECT count(*)`+contactFrom+` WHERE `+strings.Join(where, " AND "), args...).Scan(&n)
+	return n, err
 }
 
 func escapeLike(s string) string {

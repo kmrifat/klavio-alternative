@@ -30,6 +30,10 @@ type Deps struct {
 	ImportFiles interface {
 		PurgeAbandonedImports(ctx context.Context) (int64, error)
 	}
+	Governance interface {
+		ExpireApprovals(ctx context.Context) (int64, error)
+		PurgeExpiredExports(ctx context.Context) (int64, error)
+	}
 	Templates interface {
 		RebuildBrand(ctx context.Context, brandID uuid.UUID) error
 		RebuildStale(ctx context.Context) error
@@ -103,6 +107,29 @@ func (w *PurgeImportsWorker) Work(ctx context.Context, _ *river.Job[PurgeImports
 	n, err := w.Deps.ImportFiles.PurgeAbandonedImports(ctx)
 	if err == nil && n > 0 {
 		w.Log.InfoContext(ctx, "purged abandoned import files", "count", n)
+	}
+	return err
+}
+
+// GovernanceArgs expires overdue approval requests and deletes expired export files.
+type GovernanceArgs struct{}
+
+func (GovernanceArgs) Kind() string { return "governance.housekeeping" }
+
+type GovernanceWorker struct {
+	river.WorkerDefaults[GovernanceArgs]
+	Deps Deps
+	Log  *slog.Logger
+}
+
+func (w *GovernanceWorker) Work(ctx context.Context, _ *river.Job[GovernanceArgs]) error {
+	n, err := w.Deps.Governance.ExpireApprovals(ctx)
+	if err != nil {
+		return err
+	}
+	m, err := w.Deps.Governance.PurgeExpiredExports(ctx)
+	if n > 0 || m > 0 {
+		w.Log.InfoContext(ctx, "governance housekeeping", "approvals_expired", n, "export_files_deleted", m)
 	}
 	return err
 }
@@ -275,6 +302,10 @@ func NewWorker(pool *pgxpool.Pool, log *slog.Logger, deps Deps) (*Client, error)
 	if deps.Imports != nil {
 		river.AddWorker(workers, &ImportCheckWorker{Deps: deps})
 		river.AddWorker(workers, &ImportCommitWorker{Deps: deps})
+	}
+	if deps.Governance != nil {
+		river.AddWorker(workers, &GovernanceWorker{Deps: deps, Log: log})
+		jobs = append(jobs, periodic(15*time.Minute, GovernanceArgs{}, true))
 	}
 	if deps.ImportFiles != nil {
 		river.AddWorker(workers, &PurgeImportsWorker{Deps: deps, Log: log})

@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router";
-import { Lock, Plus, Search, Upload } from "lucide-react";
+import { Download, Lock, Plus, Search, Upload } from "lucide-react";
 import { useContacts, useContactStats, type ContactFilters } from "../../api/contacts";
 import { useBrands, useMe } from "../../api/hooks";
 import type { Contact, Tier } from "../../api/types";
 import { Badge, Button, ErrorNote, PageHeader, Spinner, inputBase } from "../../components/ui";
 import { consentBasisLabel, engagementBadge, initials, shortDate, tierInfo, timeAgo } from "../../lib/format";
-import { AddContactDialog, ContactDialog } from "./ContactDialogs";
+import { AddContactDialog, ContactDialog, ExportDialog } from "./ContactDialogs";
 
 const tierChoices: { value: string; label: string; tiers: Tier[] }[] = [
   { value: "default", label: "Tier: Active + Warm (default)", tiers: ["active", "warm"] },
@@ -40,6 +40,7 @@ export function ContactsPage() {
   if (status && status !== "subscribed") filters.tiers = [];
   const contacts = useContacts(slug, filters, canSeePeople);
   const [adding, setAdding] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
 
   const rows = contacts.data?.pages.flatMap((p) => p.contacts) ?? [];
@@ -58,6 +59,9 @@ export function ContactsPage() {
         action={
           isBrandAdmin && (
             <div className="flex gap-2">
+              <Button onClick={() => setExporting(true)}>
+                <Download className="size-4" /> Export
+              </Button>
               <Link to="import">
                 <Button>
                   <Upload className="size-4" /> Import (safety-checked)
@@ -149,6 +153,7 @@ export function ContactsPage() {
       )}
 
       <AddContactDialog slug={slug} open={adding} onClose={() => setAdding(false)} />
+      <ExportDialog slug={slug} open={exporting} filters={filters} onClose={() => setExporting(false)} />
       {openId && <ContactDialog slug={slug} id={openId} role={role} onClose={() => setOpenId(null)} />}
     </div>
   );

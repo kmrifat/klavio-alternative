@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -51,5 +53,46 @@ func (s *Store) RecentAudit(ctx context.Context, limit int) ([]AuditEntry, error
 	rows, err := s.db.Query(ctx, `
 		SELECT id, at, actor_id, actor_email, brand_id, action, target_type, target_id, before, after, ip, user_agent
 		FROM audit_log ORDER BY at DESC, id DESC LIMIT $1`, limit)
+	return all[AuditEntry](rows, err)
+}
+
+type AuditFilter struct {
+	BrandID *uuid.UUID
+	Actor   string // email prefix
+	Action  string // prefix, e.g. "import." or "approval.approved"
+	Since   *time.Time
+	Until   *time.Time
+	Before  int64 // keyset: entries with a smaller id
+	Limit   int
+}
+
+// QueryAudit lists entries newest first (S16).
+func (s *Store) QueryAudit(ctx context.Context, f AuditFilter) ([]AuditEntry, error) {
+	where, args := []string{"true"}, []any{}
+	arg := func(v any) string { args = append(args, v); return fmt.Sprintf("$%d", len(args)) }
+	if f.BrandID != nil {
+		where = append(where, "brand_id = "+arg(*f.BrandID))
+	}
+	if f.Actor != "" {
+		where = append(where, "lower(actor_email) LIKE "+arg(escapeLike(strings.ToLower(f.Actor))+"%"))
+	}
+	if f.Action != "" {
+		where = append(where, "action LIKE "+arg(escapeLike(f.Action)+"%"))
+	}
+	if f.Since != nil {
+		where = append(where, "at >= "+arg(*f.Since))
+	}
+	if f.Until != nil {
+		where = append(where, "at < "+arg(*f.Until))
+	}
+	if f.Before > 0 {
+		where = append(where, "id < "+arg(f.Before))
+	}
+	if f.Limit <= 0 || f.Limit > 200 {
+		f.Limit = 50
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id, at, actor_id, actor_email, brand_id, action, target_type, target_id, before, after, ip, user_agent
+		FROM audit_log WHERE `+strings.Join(where, " AND ")+` ORDER BY id DESC LIMIT `+arg(f.Limit), args...)
 	return all[AuditEntry](rows, err)
 }

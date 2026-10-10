@@ -40,7 +40,7 @@ func TestTemplateCannotRemoveTheLayoutFooter(t *testing.T) {
 		{"CDATA", body + `<mj-raw><![CDATA[ x ]]></mj-raw>`, "template_comment"},
 		{"unclosed hiding div", body + `<mj-raw><div style="display:none"></mj-raw>`, "template_unbalanced"},
 		{"unclosed tiny-text span", `<mj-section><mj-column><mj-text><span style="font-size:0">` + body[len(`<mj-section><mj-column><mj-text>`):], "template_unbalanced"},
-		{"raw-text element swallows the rest", body + `<mj-raw><xmp></mj-raw>`, "template_breaks_layout"},
+		{"raw-text element swallows the rest", body + `<mj-raw><xmp></mj-raw>`, "template_element"},
 		{"stray closing wrapper", body + `</mj-wrapper><mj-section><mj-column><mj-text>x</mj-text></mj-column></mj-section>`, "template_unbalanced"},
 		{"stray closing body", body + `</mj-body>`, "template_has_wrapper"},
 		{"never closed", `<mj-section><mj-column><mj-text>x</mj-text>`, "template_unbalanced"},

@@ -43,3 +43,25 @@ func (s *Store) ForceCampaignDueForTest(ctx context.Context, id uuid.UUID) error
 	_, err := s.db.Exec(ctx, `UPDATE sends SET send_after = now() - interval '1 second' WHERE campaign_id = $1 AND status = 'queued'`, id)
 	return err
 }
+
+// ExpireApprovalForTest moves an approval's deadline into the past.
+func (s *Store) ExpireApprovalForTest(ctx context.Context, id uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `UPDATE approvals SET expires_at = now() - interval '1 minute' WHERE id = $1`, id)
+	return err
+}
+
+// ExpireExportForTest ends an export's download window.
+func (s *Store) ExpireExportForTest(ctx context.Context, id uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `UPDATE exports SET expires_at = now() - interval '1 minute' WHERE id = $1`, id)
+	return err
+}
+
+// BulkInsertContactsForTest adds n subscribed contacts quickly.
+func (s *Store) BulkInsertContactsForTest(ctx context.Context, brandID uuid.UUID, n int) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO contacts (brand_id, email, email_hash, status, consent_basis, consented_at, last_engaged_at)
+		SELECT $1, 'bulk' || g || '@example.com', sha256(convert_to('bulk' || g || '@example.com', 'UTF8')),
+			'subscribed', 'single_opt_in', now(), now()
+		FROM generate_series(1, $2) g`, brandID, n)
+	return err
+}

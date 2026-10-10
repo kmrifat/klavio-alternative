@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
@@ -87,8 +86,11 @@ func Compile(ctx context.Context, layout, content string) (Compiled, []Issue, er
 		return Compiled{}, issues, nil
 	}
 	before, after, _ := strings.Cut(layout, "{{"+ContentTag+"}}")
+	// Markers on the same line as the content, so MJML's line numbers
+	// still map back to the template.
+	slotted := "<mj-raw><!--" + slotStart + "--></mj-raw>" + content + "<mj-raw><!--" + slotEnd + "--></mj-raw>"
 
-	out, err := runMJML(ctx, before+content+after)
+	out, err := runMJML(ctx, before+slotted+after)
 	var mErr mjml.Error
 	switch {
 	case errors.As(err, &mErr):
@@ -144,11 +146,6 @@ func runMJML(ctx context.Context, doc string) (string, error) {
 	}
 }
 
-var (
-	mjTagRe   = regexp.MustCompile(`<(/?)(mj-[a-z-]+|mjml)\b[^>]*?(/?)>`)
-	htmlTagRe = regexp.MustCompile(`(?i)<\s*(style|link|meta|base)\b`)
-)
-
 func layoutSourceIssues(layout string) []Issue {
 	var issues []Issue
 	switch {
@@ -167,103 +164,6 @@ func layoutSourceIssues(layout string) []Issue {
 		issues = append(issues, errorf("mj_include", "mj-include is not supported; paste the markup in instead"))
 	}
 	return issues
-}
-
-// headOnly are MJML elements that belong to the layout's <mj-head>.
-var headOnly = map[string]bool{
-	"mjml": true, "mj-body": true, "mj-head": true, "mj-attributes": true, "mj-style": true, "mj-font": true,
-	"mj-breakpoint": true, "mj-html-attributes": true, "mj-title": true, "mj-preview": true, "mj-include": true,
-}
-
-// templateSourceIssues keeps a template inside its slot in the layout: it
-// may not comment out, close, restyle or replace anything around it.
-func templateSourceIssues(content string) []Issue {
-	if len(content) > MaxTemplateBytes {
-		return []Issue{errorf("too_large", "the template is %d KB; keep it under %d KB", len(content)>>10, MaxTemplateBytes>>10)}
-	}
-	if n := countElements(content); n > MaxTemplateElements {
-		return []Issue{errorf("too_large", "the template has %d MJML elements; keep it under %d (split long emails, or combine text blocks)", n, MaxTemplateElements)}
-	}
-	var issues []Issue
-	lower := strings.ToLower(content)
-	if strings.Contains(lower, "<!--") || strings.Contains(lower, "<![") {
-		issues = append(issues, errorf("template_comment", "templates can't contain HTML comments or <![…]> blocks; remove them"))
-	}
-	if strings.Contains(lower, "{{"+ContentTag) {
-		issues = append(issues, errorf("template_has_content_tag", "{{content}} belongs in the layout, not in a template"))
-	}
-	if m := htmlTagRe.FindStringSubmatch(content); m != nil {
-		issues = append(issues, errorf("template_style", "templates can't add <%s> elements; the brand layout sets styles", strings.ToLower(m[1])))
-	}
-
-	var stack []string
-	reported := map[string]bool{}
-	for _, m := range mjTagRe.FindAllStringSubmatch(lower, -1) {
-		closing, name, selfClosing := m[1] == "/", m[2], m[3] == "/"
-		if headOnly[name] {
-			if !reported[name] {
-				reported[name] = true
-				issues = append(issues, errorf("template_has_wrapper",
-					"<%s> belongs to the brand layout; a template holds only body content (mj-section, mj-wrapper …)", name))
-			}
-			continue
-		}
-		switch {
-		case selfClosing:
-		case !closing:
-			stack = append(stack, name)
-		case len(stack) == 0 || stack[len(stack)-1] != name:
-			return append(issues, errorf("template_unbalanced", "</%s> closes something this template didn't open", name))
-		default:
-			stack = stack[:len(stack)-1]
-		}
-	}
-	if len(stack) > 0 {
-		issues = append(issues, errorf("template_unbalanced", "<%s> is never closed", stack[len(stack)-1]))
-	}
-	return append(issues, htmlBalance(lower)...)
-}
-
-// Tags that must be closed as often as they're opened. Browsers confine an
-// unclosed one to its table cell, but not every email client does, and an
-// unclosed <div style="display:none"> could then swallow the footer.
-// Tags whose closing is commonly left out (<p>, <li>) aren't counted.
-var balancedTags = []string{"a", "b", "blockquote", "center", "div", "em", "font", "h1", "h2", "h3", "h4", "h5", "h6",
-	"i", "ol", "s", "small", "span", "strong", "sub", "sup", "table", "tbody", "td", "th", "thead", "tr", "u", "ul"}
-
-var htmlOpenRe = regexp.MustCompile(`<([a-z][a-z0-9]*)\b[^>]*?(/?)>`)
-var htmlCloseRe = regexp.MustCompile(`</([a-z][a-z0-9]*)\s*>`)
-
-func htmlBalance(lower string) []Issue {
-	open := map[string]int{}
-	for _, m := range htmlOpenRe.FindAllStringSubmatch(lower, -1) {
-		if m[2] != "/" {
-			open[m[1]]++
-		}
-	}
-	for _, m := range htmlCloseRe.FindAllStringSubmatch(lower, -1) {
-		open[m[1]]--
-	}
-	var issues []Issue
-	for _, tag := range balancedTags {
-		switch n := open[tag]; {
-		case n > 0:
-			issues = append(issues, errorf("template_unbalanced", "<%s> is opened %d more time(s) than it is closed; close every tag you open", tag, n))
-		case n < 0:
-			issues = append(issues, errorf("template_unbalanced", "</%s> appears %d more time(s) than <%s>; it would close part of the layout", tag, -n, tag))
-		}
-	}
-	return issues
-}
-
-func countElements(s string) int {
-	n := 0
-	for _, m := range mjTagRe.FindAllStringSubmatch(s, -1) {
-		if m[1] != "/" {
-			n++
-		}
-	}
-	return n
 }
 
 // mjmlIssues turns MJML validation errors into issues, with line numbers

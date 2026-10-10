@@ -116,7 +116,10 @@ export function useInvite() {
   return useMutation({
     mutationFn: (i: InviteInput) =>
       withStepUp(() =>
-        apiFetch<{ invite_url: string; expires_at: string }>("/admin/v1/team/invites", { method: "POST", body: i }),
+        apiFetch<{ invite_url: string; expires_at: string; awaiting_approval: boolean }>("/admin/v1/team/invites", {
+          method: "POST",
+          body: i,
+        }),
       ),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["team"] }),
   });
@@ -127,9 +130,13 @@ export function useSetRoles() {
   return useMutation({
     // brand_roles: every brand to change; "" removes access.
     mutationFn: ({ id, ...roles }: { id: string; company_role: CompanyRole; brand_roles: Record<string, BrandRole | ""> }) =>
-      withStepUp(() => apiFetch<void>(`/admin/v1/team/members/${id}/roles`, { method: "PUT", body: roles })),
+      // 204 = applied; 202 = giving admin rights, waiting for a second admin.
+      withStepUp(() =>
+        apiFetch<{ message: string } | undefined>(`/admin/v1/team/members/${id}/roles`, { method: "PUT", body: roles }),
+      ),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["team"] });
+      void qc.invalidateQueries({ queryKey: ["approvals"] });
       void qc.invalidateQueries({ queryKey: ["audit"] });
       void qc.invalidateQueries({ queryKey: ["me"] });
     },
