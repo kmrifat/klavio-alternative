@@ -42,6 +42,7 @@ func TestLoadProductionUsesJSONLogs(t *testing.T) {
 		"CF_ACCESS_TEAM_DOMAIN": "acme.cloudflareaccess.com",
 		"CF_ACCESS_AUD":         "aud123",
 		"SES_EVENT_BUS_ARN":     "arn:aws:events:us-east-1:123:event-bus/default",
+		"SES_EVENTS_QUEUE_URL":  "https://sqs.us-east-1.amazonaws.com/123/mail-ses-events",
 		"WEBAUTHN_RP_ID":        "example.com",
 		"UNSUBSCRIBE_SECRET":    "prod-secret-0123456789abcdef0123456789",
 	}))
@@ -144,6 +145,7 @@ func TestProxyTrustDefaults(t *testing.T) {
 		"APP_ENV": "production", "DATABASE_URL": "postgres://x", "REDIS_URL": "redis://x",
 		"CF_ACCESS_TEAM_DOMAIN": "a.cloudflareaccess.com", "CF_ACCESS_AUD": "x", "WEBAUTHN_RP_ID": "example.com",
 		"SES_EVENT_BUS_ARN": "arn:x", "UNSUBSCRIBE_SECRET": "prod-secret-0123456789abcdef0123456789",
+		"SES_EVENTS_QUEUE_URL": "https://sqs.example/q",
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -186,5 +188,24 @@ func TestTrustedProxyCIDRs(t *testing.T) {
 	base["TRUST_CLOUDFLARE_HEADERS"] = "yes"
 	if _, err := load("127.0.0.1"); err == nil || !strings.Contains(err.Error(), "TRUST_CLOUDFLARE_HEADERS must be") {
 		t.Errorf("bad bool: %v", err)
+	}
+}
+
+func TestProductionNeedsTheEventsQueue(t *testing.T) {
+	_, err := Load(envFrom(map[string]string{
+		"APP_ENV": "production", "DATABASE_URL": "postgres://x", "REDIS_URL": "redis://x",
+		"CF_ACCESS_TEAM_DOMAIN": "a.cloudflareaccess.com", "CF_ACCESS_AUD": "x", "WEBAUTHN_RP_ID": "example.com",
+		"SES_EVENT_BUS_ARN": "arn:x", "UNSUBSCRIBE_SECRET": "prod-secret-0123456789abcdef0123456789",
+	}))
+	if err == nil || !strings.Contains(err.Error(), "SES_EVENTS_QUEUE_URL") {
+		t.Fatalf("got %v", err)
+	}
+	cfg, err := Load(envFrom(map[string]string{"DATABASE_URL": "postgres://x", "REDIS_URL": "redis://x",
+		"TRACKING_SCANNER_CIDRS": "40.94.0.0/16, 203.0.113.9"}))
+	if err != nil || len(cfg.TrackingScannerNets) != 2 {
+		t.Fatalf("scanner nets: %v %v", cfg.TrackingScannerNets, err)
+	}
+	if _, err := Load(envFrom(map[string]string{"DATABASE_URL": "postgres://x", "REDIS_URL": "redis://x", "TRACKING_SCANNER_CIDRS": "nope"})); err == nil {
+		t.Fatal("bad CIDR accepted")
 	}
 }

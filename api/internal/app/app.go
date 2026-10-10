@@ -16,6 +16,7 @@ import (
 	"github.com/kmrifat/klavio-alternative/api/internal/approvals"
 	"github.com/kmrifat/klavio-alternative/api/internal/auth"
 	"github.com/kmrifat/klavio-alternative/api/internal/blocklist"
+	"github.com/kmrifat/klavio-alternative/api/internal/brakes"
 	"github.com/kmrifat/klavio-alternative/api/internal/brands"
 	"github.com/kmrifat/klavio-alternative/api/internal/cache"
 	"github.com/kmrifat/klavio-alternative/api/internal/campaigns"
@@ -24,6 +25,7 @@ import (
 	"github.com/kmrifat/klavio-alternative/api/internal/contacts"
 	"github.com/kmrifat/klavio-alternative/api/internal/contactsapi"
 	"github.com/kmrifat/klavio-alternative/api/internal/dnscheck"
+	"github.com/kmrifat/klavio-alternative/api/internal/events"
 	"github.com/kmrifat/klavio-alternative/api/internal/exports"
 	"github.com/kmrifat/klavio-alternative/api/internal/freqcap"
 	"github.com/kmrifat/klavio-alternative/api/internal/health"
@@ -39,6 +41,7 @@ import (
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
 	"github.com/kmrifat/klavio-alternative/api/internal/team"
 	"github.com/kmrifat/klavio-alternative/api/internal/templates"
+	"github.com/kmrifat/klavio-alternative/api/internal/tracking"
 	"github.com/kmrifat/klavio-alternative/api/internal/unsubscribe"
 	"github.com/kmrifat/klavio-alternative/api/internal/warmup"
 )
@@ -68,6 +71,9 @@ type Deps struct {
 	// ConfirmationQueue overrides the river job that sends double opt-in
 	// emails (tests send them inline).
 	ConfirmationQueue contactsapi.ConfirmationQueue
+	// EventsQueue is the SQS queue of SES events (nil = no reader, e.g. tests
+	// that feed events directly).
+	EventsQueue events.Queue
 	// Blocklists nil = blocklist checks off; Postmaster nil = not connected.
 	Blocklists *blocklist.Checker
 	Postmaster *postmaster.Client
@@ -107,6 +113,13 @@ type App struct {
 	confirmer   *confirm.Signer
 	contactsAPI *contactsapi.API
 	contactsAdm *contactsapi.Admin
+
+	// Feedback loop (M4): SES events, click tracking, brakes.
+	Events   *events.Processor
+	Tracking *tracking.Signer // the sending worker signs links and the pixel with it
+	recorder *tracking.Recorder
+	Brakes   *brakes.Service // the sending worker checks Brakes.CheckGate between batches
+	recovery *brakes.Recovery
 }
 
 func New(d Deps) (*App, error) {
@@ -213,6 +226,20 @@ func New(d Deps) (*App, error) {
 	a.contactsAPI = &contactsapi.API{Store: st, Limiter: a.deps.Limiter, Queue: queue, Log: d.Log}
 	a.contactsAdm = &contactsapi.Admin{Store: st, Auth: authSvc, Approvals: a.Approvals, Limit: a.Limits.Get, CanSend: a.Confirm.CanSend, Log: d.Log}
 	a.contactsAdm.RegisterApprovals()
+
+	// Feedback loop and brakes (M4).
+	a.Events = &events.Processor{Store: st, Log: d.Log}
+	if a.Tracking, err = tracking.NewSigner(d.Config.UnsubscribeSecret, d.Config.UnsubscribeSecretOld); err != nil {
+		return nil, err
+	}
+	a.recorder = &tracking.Recorder{Store: st, Classifier: tracking.Classifier{ScannerNets: d.Config.TrackingScannerNets}, Log: d.Log}
+	a.Brakes = brakes.NewService(st, d.SES, d.Log)
+	a.Health.SetReputationSource(a.Brakes)
+	a.Campaigns.SetBrakes(a.Brakes)
+	a.Confirm.SetGate(a.Brakes)
+	a.Campaigns.SetTracking(a.Tracking, d.Config.TrackingHoneypot)
+	a.recovery = &brakes.Recovery{Service: a.Brakes, Store: st, Auth: authSvc, Approvals: a.Approvals, Log: d.Log}
+	a.recovery.RegisterApprovals()
 	return a, nil
 }
 
@@ -244,6 +271,13 @@ func FromConfig(ctx context.Context, cfg config.Config, log *slog.Logger, pool *
 	d.Mailer = mailer.Unconfigured{}
 	if cfg.Env == config.EnvDevelopment {
 		d.Mailer = mailer.Log{Log: log}
+	}
+	if cfg.SESEventsQueueURL != "" {
+		q, err := events.NewSQS(ctx, cfg.SESRegion, cfg.SESEventsQueueURL)
+		if err != nil {
+			return nil, err
+		}
+		d.EventsQueue = q
 	}
 	pm, err := postmaster.New(ctx, cfg.PostmasterCredentialsFile)
 	if err != nil {
@@ -285,11 +319,13 @@ func (a *App) Handler() http.Handler {
 			(&health.Handlers{Service: a.Health, Store: a.Store, Approvals: a.Approvals}).Routes(mux)
 			(&segments.Handlers{Store: a.Store, Limiter: a.deps.Limiter, Log: a.deps.Log}).Routes(mux)
 			a.contactsAdm.Routes(mux)
+			a.recovery.Routes(mux)
 		},
 		RegisterPublic: func(mux *http.ServeMux) {
 			(&unsubscribe.Handlers{Signer: a.Unsubscribe, Service: a.unsubSvc, Limiter: a.deps.Limiter, Log: a.deps.Log}).Routes(mux)
 			(&confirm.Handlers{Signer: a.confirmer, Service: a.Confirm, Limiter: a.deps.Limiter, Log: a.deps.Log}).Routes(mux)
 			a.contactsAPI.Routes(mux)
+			(&tracking.Handlers{Signer: a.Tracking, Recorder: a.recorder, Log: a.deps.Log}).Routes(mux)
 		},
 	})
 }
@@ -297,6 +333,8 @@ func (a *App) Handler() http.Handler {
 // ServeHTTP runs the HTTP server until ctx is cancelled, then shuts down gracefully.
 func (a *App) ServeHTTP(ctx context.Context) error {
 	log := a.deps.Log
+	// Clicks and opens are written in the background, after the redirect.
+	a.recorder.Start(ctx, 10_000)
 	srv := &http.Server{
 		Addr:              a.deps.Config.HTTPAddr,
 		Handler:           a.Handler(),
@@ -333,7 +371,7 @@ func (a *App) ServeHTTP(ctx context.Context) error {
 // RunWorker works background jobs until ctx is cancelled.
 func (a *App) RunWorker(ctx context.Context) error {
 	log := a.deps.Log
-	client, err := jobs.NewWorker(a.deps.Pool, log, jobs.Deps{Brands: a.Brands, Sessions: a.Store, Imports: a.Imports, ImportFiles: a.Store, Templates: a.Templates, Governance: governanceJobs{a}, Campaigns: a.Campaigns, Health: a.Health, Opt: optJobs{a}})
+	client, err := jobs.NewWorker(a.deps.Pool, log, jobs.Deps{Brands: a.Brands, Sessions: a.Store, Imports: a.Imports, ImportFiles: a.Store, Templates: a.Templates, Governance: governanceJobs{a}, Campaigns: a.Campaigns, Health: a.Health, Opt: optJobs{a}, Brakes: a.Brakes, Clicks: a.recorder})
 	if err != nil {
 		return err
 	}
@@ -344,7 +382,20 @@ func (a *App) RunWorker(ctx context.Context) error {
 	}
 	log.Info("worker started")
 
+	// SES events (bounces, complaints, deliveries) from SQS.
+	readerDone := make(chan struct{})
+	if a.deps.EventsQueue != nil {
+		go func() {
+			defer close(readerDone)
+			_ = (&events.Reader{Queue: a.deps.EventsQueue, Processor: a.Events, Log: log}).Run(ctx)
+		}()
+	} else {
+		close(readerDone)
+		log.Warn("no SES events queue configured: bounces and complaints aren't read")
+	}
+
 	<-ctx.Done()
+	<-readerDone
 
 	// Let running jobs finish, then give up after the timeout.
 	stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

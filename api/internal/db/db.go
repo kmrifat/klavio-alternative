@@ -65,3 +65,20 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) error {
 	}
 	return nil
 }
+
+// ProviderForTest returns the app's goose provider over pool, so tests can
+// step migrations down and up. close releases it.
+func ProviderForTest(pool *pgxpool.Pool) (provider *goose.Provider, close func(), err error) {
+	sqlDB := stdlib.OpenDBFromPool(pool)
+	files, err := fs.Sub(migrationFiles, "migrations")
+	if err != nil {
+		sqlDB.Close()
+		return nil, nil, err
+	}
+	provider, err = goose.NewProvider(goose.DialectPostgres, sqlDB, files)
+	if err != nil {
+		sqlDB.Close()
+		return nil, nil, err
+	}
+	return provider, func() { sqlDB.Close() }, nil
+}

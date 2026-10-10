@@ -127,6 +127,9 @@ per IP and per token; logs show `/u/[token]`.
 | `BLOCKLIST_CHECK_INTERVAL` | `6h` | how often blocklists are re-checked (at least `1h`) |
 | `SPAMHAUS_DQS_KEY` | — | optional Spamhaus Data Query Service key |
 | `POSTMASTER_CREDENTIALS_FILE` | — | Google service-account JSON for Postmaster Tools (Gmail spam rate). Mount as a secret; never commit |
+| `SES_EVENTS_QUEUE_URL` | — | required in production: the SQS queue of SES events (`ses_events_queue_url` output); bounces and complaints arrive there |
+| `TRACKING_SCANNER_CIDRS` | — | comma-separated ranges of mail security scanners; their clicks count as bots |
+| `TRACKING_HONEYPOT` | `false` | `true` adds a hidden link only scanners follow (can look spammy to filters) |
 | `PUBLIC_BASE_URL_OVERRIDE` | — | development only, e.g. `http://localhost:8080` instead of `https://<link domain>` |
 | `TRUST_CLOUDFLARE_HEADERS` | `false` (dev), `true` (prod) | believe `CF-Connecting-IP` / `CF-IPCountry` from `TRUSTED_PROXY_CIDRS` |
 | `TRUSTED_PROXY_CIDRS` | `127.0.0.1/32,::1/128` | comma-separated IPs/CIDRs of the `cloudflared` sidecar (docker-compose: `10.210.250.10/32`) |

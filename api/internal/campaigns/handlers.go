@@ -42,6 +42,8 @@ func (s *Service) Routes(mux *http.ServeMux, az authorizer) {
 	mux.HandleFunc("POST "+base+"/campaigns/{id}/pause", h(s.pause))
 	mux.HandleFunc("POST "+base+"/campaigns/{id}/resume", withAZ(s.resume))
 	mux.HandleFunc("POST "+base+"/campaigns/{id}/test", h(s.test))
+	mux.HandleFunc("GET "+base+"/campaigns/{id}/monitor", h(s.monitorHandler))
+	mux.HandleFunc("GET "+base+"/campaigns/{id}/report", h(s.reportHandler))
 
 	mux.HandleFunc("GET "+base+"/seeds", h(s.listSeeds))
 	mux.HandleFunc("POST "+base+"/seeds", withAZ(s.addSeed))
@@ -390,6 +392,22 @@ func (s *Service) resume(w http.ResponseWriter, r *http.Request, az authorizer) 
 	}
 	if b.Status != store.BrandReady {
 		return conflict("brand_not_ready", "the brand is %s; it has to be ready before sending resumes", b.Status)
+	}
+	// Paused by its own brake: its bounces and complaints are counted from
+	// the start, so it would pause again at once. It's done; send a new one.
+	evs, err := s.store.CampaignSafetyEvents(r.Context(), c.ID)
+	if err != nil {
+		return err
+	}
+	for _, e := range evs {
+		if e.Action == "paused" {
+			return conflict("campaign_brake", "this campaign was paused by its brake (%s), and its results so far would pause it again. "+
+				"Cancel it, find what went wrong (usually the list), and send a new campaign to an engaged audience", e.Reason)
+		}
+	}
+	if b.BrakeState == "slowed" && !slices.Contains(c.ApprovalReasons, string(ReasonBrandSlowed)) {
+		return conflict("brand_slowed", "the brand's brake has it slowed down: every send needs a second admin's approval. "+
+			"Resume once the brand recovers, or send a new campaign through approval")
 	}
 	out, err := s.Resume(r.Context(), c, auth.AuditEntry(r, "", "", "", &b.ID))
 	if err != nil {

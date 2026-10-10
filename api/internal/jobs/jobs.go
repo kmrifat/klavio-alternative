@@ -47,6 +47,14 @@ type Deps struct {
 		CheckAllBlocklists(ctx context.Context) error
 		PullPostmaster(ctx context.Context) error
 	}
+	// Brakes (M4): brand and account brake evaluation.
+	Brakes interface {
+		Evaluate(ctx context.Context) error
+	}
+	// Clicks (M4): settled clicks become engagement.
+	Clicks interface {
+		Settle(ctx context.Context) error
+	}
 	// Contacts API (M7): confirmation and re-permission emails, log cleanup.
 	Opt interface {
 		SendConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID) error
@@ -366,6 +374,34 @@ func (w *APIHousekeepingWorker) Work(ctx context.Context, _ *river.Job[APIHousek
 	return err
 }
 
+// SettleClicksArgs turns clicks past the settle window into engagement.
+type SettleClicksArgs struct{}
+
+func (SettleClicksArgs) Kind() string { return "tracking.settle" }
+
+type SettleClicksWorker struct {
+	river.WorkerDefaults[SettleClicksArgs]
+	Deps Deps
+}
+
+func (w *SettleClicksWorker) Work(ctx context.Context, _ *river.Job[SettleClicksArgs]) error {
+	return w.Deps.Clicks.Settle(ctx)
+}
+
+// BrakesArgs evaluates the brand and account brakes (§6.4).
+type BrakesArgs struct{}
+
+func (BrakesArgs) Kind() string { return "brakes.evaluate" }
+
+type BrakesWorker struct {
+	river.WorkerDefaults[BrakesArgs]
+	Deps Deps
+}
+
+func (w *BrakesWorker) Work(ctx context.Context, _ *river.Job[BrakesArgs]) error {
+	return w.Deps.Brakes.Evaluate(ctx)
+}
+
 // Runner queues import jobs, template rebuilds, campaign steps and
 // confirmation emails; it satisfies imports.Runner, templates.Rebuilder,
 // campaigns.Runner and contactsapi.ConfirmationQueue.
@@ -449,6 +485,14 @@ func NewWorker(pool *pgxpool.Pool, log *slog.Logger, deps Deps) (*Client, error)
 			periodic(time.Hour, HealthScoreArgs{}, true),
 			periodic(time.Hour, BlocklistArgs{}, true),
 			periodic(24*time.Hour, PostmasterArgs{}, true))
+	}
+	if deps.Clicks != nil {
+		river.AddWorker(workers, &SettleClicksWorker{Deps: deps})
+		jobs = append(jobs, periodic(time.Minute, SettleClicksArgs{}, true))
+	}
+	if deps.Brakes != nil {
+		river.AddWorker(workers, &BrakesWorker{Deps: deps})
+		jobs = append(jobs, periodic(2*time.Minute, BrakesArgs{}, true))
 	}
 	if deps.Opt != nil {
 		river.AddWorker(workers, &ConfirmationWorker{Deps: deps})

@@ -25,6 +25,7 @@ export type Brand = {
   ses_configuration_set: string;
   ses_identity_status: string;
   status: BrandStatus;
+  brake_state?: "healthy" | "watch" | "slowed" | "paused";
   dns_checked_at: string | null;
   created_at: string;
   updated_at: string;

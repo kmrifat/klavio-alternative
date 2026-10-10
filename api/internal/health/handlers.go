@@ -143,6 +143,12 @@ func (h *Handlers) safetyCenter(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	out.NeedsAttention = append(out.NeedsAttention, accountAttention(out.Account)...)
+	if at, reason, err := h.Store.AccountBrake(ctx); err != nil {
+		return err
+	} else if at != nil {
+		out.NeedsAttention = append(out.NeedsAttention, Attention{Severity: "critical", Kind: "account_brake",
+			Title: "All sending is stopped (account brake)", Detail: reason + ". An owner can ask to resume once it's fixed.", Link: "/safety/account-brake"})
+	}
 
 	// Approvals waiting for this person.
 	waiting, err := h.Store.ListApprovals(ctx, store.ApprovalFilter{DecidableBy: &p.User.ID, Limit: 200})
@@ -219,7 +225,8 @@ func brandAttention(b store.Brand, r Result) []Attention {
 	health := "/b/" + b.Slug + "/health"
 	if b.Status == store.BrandPaused {
 		out = append(out, Attention{Severity: "critical", Kind: "brand_paused", Brand: b.Slug,
-			Title: b.Name + " is paused", Detail: "All marketing email for this brand is stopped.", Link: health})
+			Title: b.Name + " is paused", Detail: "All marketing email for this brand is stopped. Work through the recovery steps to resume.",
+			Link: "/b/" + b.Slug + "/health/recovery"})
 	}
 	var broken []string
 	for _, c := range r.Components {
@@ -331,6 +338,8 @@ type brandHealth struct {
 	BlocklistsOn bool           `json:"blocklists_on"`
 	Postmaster   postmasterView `json:"postmaster"`
 	Events       []store.Alert  `json:"events"`
+	// SafetyEvents: what the brakes did (M4).
+	SafetyEvents []store.SafetyEvent `json:"safety_events"`
 }
 
 func (h *Handlers) brandHealth(w http.ResponseWriter, r *http.Request) error {
@@ -404,6 +413,12 @@ func (h *Handlers) writeHealth(w http.ResponseWriter, r *http.Request, b store.B
 	}
 	if out.Events == nil {
 		out.Events = []store.Alert{}
+	}
+	if out.SafetyEvents, err = h.Store.SafetyEvents(ctx, b.ID, 20); err != nil {
+		return err
+	}
+	if out.SafetyEvents == nil {
+		out.SafetyEvents = []store.SafetyEvent{}
 	}
 	httpx.WriteJSON(w, http.StatusOK, out)
 	return nil

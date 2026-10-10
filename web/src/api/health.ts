@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "./client";
+import type { SafetyEvent } from "./brakes";
 import type { Alert, Brand, DNSRecord } from "./types";
 
 // Brand health (S2) and the Safety center (S1). Mirrors api/internal/health.
@@ -97,6 +98,7 @@ export type BrandHealth = {
     history: PostmasterDay[];
   };
   events: Alert[];
+  safety_events: SafetyEvent[];
 };
 
 export function useSafetyCenter() {

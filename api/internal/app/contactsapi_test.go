@@ -550,3 +550,72 @@ func TestSegmentsAPI(t *testing.T) {
 		t.Fatal("70 previews in a minute weren't limited")
 	}
 }
+
+// Brakes and the emails M7 sends: confirmations (wanted, transactional) stop
+// only under the account brake or a paused brand; re-permission emails go
+// out only while the brand's brake is off.
+func TestBrakesGateConfirmationAndRepermission(t *testing.T) {
+	f := newAPIFixture(t)
+	ctx := context.Background()
+	key, _ := f.key(t, []string{"contacts:write"})
+	for i := range 4 {
+		if _, err := f.a.Store.InsertContact(ctx, store.NewContact{BrandID: f.brandID, Email: fmt.Sprintf("old%d@example.com", i), Status: store.ContactQuarantined, ConsentBasis: "single_opt_in"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.owner.must(200, f.owner.do("PUT", "/admin/v1/brands/brightside/repermission", map[string]any{"on": true}))
+	repermissions := func() int {
+		n := 0
+		for _, m := range outbox(f.a) {
+			if m.Kind == "repermission" {
+				n++
+			}
+		}
+		return n
+	}
+	set := func(brake, status string, accountBrake bool) {
+		t.Helper()
+		if err := f.a.Store.ExecForTest(ctx, `UPDATE brands SET brake_state = $2, status = $3 WHERE id = $1`, f.brandID, brake, status); err != nil {
+			t.Fatal(err)
+		}
+		q := `UPDATE company_state SET account_brake_at = NULL, account_brake_reason = ''`
+		if accountBrake {
+			q = `UPDATE company_state SET account_brake_at = now(), account_brake_reason = 'test'`
+		}
+		if err := f.a.Store.ExecForTest(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, tc := range []struct {
+		brake, status string
+		account       bool
+		confirmation  bool
+	}{
+		{"watch", "ready", false, true},
+		{"slowed", "ready", false, true},
+		{"paused", "paused", false, false},
+		{"healthy", "ready", true, false},
+	} {
+		set(tc.brake, tc.status, tc.account)
+		email := fmt.Sprintf("signup%d@example.com", i)
+		if r := apiCall(t, f.srv, "POST", "/api/v1/contacts", key, f.signup(email)); r.status != 202 {
+			t.Fatalf("%s: signup %d %s", tc.brake, r.status, r.raw)
+		}
+		if got := sentTo(f.a, email, "confirmation") == 1; got != tc.confirmation {
+			t.Errorf("brake %s, account brake %v: confirmation sent = %v", tc.brake, tc.account, got)
+		}
+		if err := f.a.Confirm.SendRepermissions(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if n := repermissions(); n != 0 {
+			t.Fatalf("brake %s, account brake %v: %d re-permission emails", tc.brake, tc.account, n)
+		}
+	}
+	set("healthy", "ready", false)
+	if err := f.a.Confirm.SendRepermissions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := repermissions(); n != 4 {
+		t.Fatalf("healthy brand: %d re-permission emails", n)
+	}
+}

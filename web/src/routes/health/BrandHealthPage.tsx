@@ -1,5 +1,7 @@
 import { AlertTriangle, CheckCircle2, CircleHelp, RefreshCw, XCircle } from "lucide-react";
-import { useParams } from "react-router";
+import { Link, useParams } from "react-router";
+import { brakeInfo } from "../../api/brakes";
+import { EventsCard } from "./RecoveryPage";
 import {
   levelInfo,
   scoreLevel,
@@ -30,6 +32,7 @@ export function BrandHealthPage() {
   const d = q.data;
   const lv = levelInfo[d.health.level];
   const st = brandStatus[d.brand.status];
+  const brake = d.brand.brake_state;
 
   return (
     <div className="max-w-5xl space-y-5">
@@ -49,6 +52,28 @@ export function BrandHealthPage() {
         }
       />
       <ErrorNote error={recheck.error} />
+      {brake === "paused" && (
+        <Link
+          to="recovery"
+          className="flex items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900 hover:bg-red-100"
+        >
+          <span>
+            <strong>{d.brand.name} is paused by its brake.</strong> No marketing email goes out until it's resumed.
+          </span>
+          <span className="font-medium whitespace-nowrap">Start recovery →</span>
+        </Link>
+      )}
+      {(brake === "slowed" || brake === "watch") && (
+        <Link
+          to="recovery"
+          className="flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 hover:bg-amber-100"
+        >
+          <span>
+            <strong>{brakeInfo[brake].label}.</strong> {brakeInfo[brake].help} It only loosens with a second admin's approval.
+          </span>
+          <span className="font-medium whitespace-nowrap">Ask to loosen →</span>
+        </Link>
+      )}
 
       <section className="flex flex-wrap items-center gap-6 rounded-xl border border-zinc-200 bg-white p-5" aria-label="Health score">
         <div>
@@ -66,6 +91,11 @@ export function BrandHealthPage() {
             <Badge tone={st.tone} dot>
               {st.label}
             </Badge>
+            {brake && brake !== "healthy" && (
+              <span title={brakeInfo[brake].help}>
+                <Badge tone={brakeInfo[brake].tone}>{brakeInfo[brake].label}</Badge>
+              </span>
+            )}
           </div>
           {d.health.weakest ? (
             <p className="text-sm text-zinc-700">
@@ -91,7 +121,9 @@ export function BrandHealthPage() {
         <GmailCard d={d} />
       </div>
 
-      <Card title="Recent safety events" description="Alerts about this brand">
+      <EventsCard events={d.safety_events} />
+
+      <Card title="Alerts" description="Alerts about this brand">
         {d.events.length === 0 ? (
           <p className="border-t border-zinc-200 px-5 py-4 text-sm text-zinc-500">Nothing yet.</p>
         ) : (

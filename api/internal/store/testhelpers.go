@@ -93,3 +93,16 @@ func (s *Store) AgeIdempotencyForTest(ctx context.Context) error {
 func (s *Store) QueryIntForTest(ctx context.Context, sql string, out *int) error {
 	return s.db.QueryRow(ctx, sql).Scan(out)
 }
+
+// CreateSendForTest makes a topic, a draft campaign and a sent send for the
+// contact, returning the send's id.
+func (s *Store) CreateSendForTest(ctx context.Context, brandID, contactID uuid.UUID) (int64, error) {
+	var id int64
+	err := s.db.QueryRow(ctx, `
+		WITH t AS (INSERT INTO topics (brand_id, name) VALUES ($1, 'Test ' || gen_random_uuid()) RETURNING id),
+		c AS (
+			INSERT INTO campaigns (brand_id, name, topic_id) SELECT $1, 'Test ' || gen_random_uuid(), t.id FROM t RETURNING id)
+		INSERT INTO sends (campaign_id, brand_id, contact_id, stage, send_after, status, sent_at)
+		SELECT c.id, $1, $2, 'rest', now(), 'sent', now() FROM c RETURNING id`, brandID, contactID).Scan(&id)
+	return id, err
+}

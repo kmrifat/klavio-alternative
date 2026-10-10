@@ -94,6 +94,7 @@ function brandHealth(extra: Partial<BrandHealth> = {}): BrandHealth {
     health: health(55, { weakest: "Reputation: On a blocklist: mail is likely going to spam." }),
     computed_at: new Date().toISOString(),
     warmup,
+    safety_events: [],
     dns_records: [],
     blocklists: [
       { zone: "Spamhaus DBL", domain: "brightside.co", status: "listed", detail: "spam domain", checked_at: new Date().toISOString() },
