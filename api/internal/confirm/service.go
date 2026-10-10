@@ -143,6 +143,12 @@ func (s *Service) SendConfirmation(ctx context.Context, brandID, contactID, requ
 		return err
 	}
 	err = s.sender.Send(ctx, mailer.Message{Brand: b, To: c.Email, Subject: subject, HTML: html, Text: text, Kind: "confirmation"})
+	if errors.Is(err, mailer.ErrOutcomeUnknown) {
+		// It may have gone out: count it as sent, don't retry. Someone who
+		// didn't get it can ask again.
+		s.log.WarnContext(ctx, "confirmation email outcome unknown; not retried", "brand", b.Slug, "contact_id", c.ID, "err", err)
+		err = nil
+	}
 	if err != nil {
 		return fmt.Errorf("sending confirmation: %w", err)
 	}
@@ -265,7 +271,13 @@ func (s *Service) repermissionBrand(ctx context.Context, b store.Brand) error {
 	var failed []uuid.UUID
 	var sendErr error
 	for _, c := range batch {
-		if err := s.sendRepermission(ctx, b, c, now); err != nil {
+		err := s.sendRepermission(ctx, b, c, now)
+		if errors.Is(err, mailer.ErrOutcomeUnknown) {
+			// May have gone out: keep it as sent (and its reservations).
+			s.log.WarnContext(ctx, "re-permission email outcome unknown; not retried", "brand", b.Slug, "contact_id", c.ID, "err", err)
+			continue
+		}
+		if err != nil {
 			s.log.WarnContext(ctx, "re-permission email", "brand", b.Slug, "err", err)
 			failed, sendErr = append(failed, c.ID), err
 		}

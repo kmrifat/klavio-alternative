@@ -256,23 +256,30 @@ func setup(t *testing.T) (*app.App, *httptest.Server, *fakeDNS) {
 	return setupWith(t, nil)
 }
 
+// setupWith lets a test change the config before the app is built.
 func setupWith(t *testing.T, edit func(*config.Config)) (*app.App, *httptest.Server, *fakeDNS) {
+	return setupDeps(t, func(d *app.Deps) {
+		if edit != nil {
+			edit(&d.Config)
+		}
+	})
+}
+
+// setupDeps lets a test change any dependency before the app is built.
+func setupDeps(t *testing.T, tweak func(*app.Deps)) (*app.App, *httptest.Server, *fakeDNS) {
 	pool := testdb.New(t)
 	var appRef *app.App
 	mem := &mailer.Memory{}
 	dns := &fakeDNS{cname: map[string]string{}, mx: map[string][]*net.MX{}, txt: map[string][]string{}, hosts: map[string]bool{}, answers: map[string][]string{}}
-	cfg := config.Config{
-		Env: config.EnvDevelopment, AllowedOrigins: []string{origin}, AppURL: origin,
-		WebAuthnRPID: "localhost", WebAuthnRPName: "Test",
-		UnsubscribeSecret:      "test-unsubscribe-secret-0123456789abcdef",
-		TrustCloudflareHeaders: true,
-		TrustedProxies:         []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32"), netip.MustParsePrefix("::1/128")},
-	}
-	if edit != nil {
-		edit(&cfg)
-	}
-	a, err := app.New(app.Deps{
-		Config:            cfg,
+	d := app.Deps{
+		Config: config.Config{
+			Env: config.EnvDevelopment, AllowedOrigins: []string{origin}, AppURL: origin,
+			WebAuthnRPID: "localhost", WebAuthnRPName: "Test",
+			UnsubscribeSecret:      "test-unsubscribe-secret-0123456789abcdef",
+			SESMaxSendRate:         1000,
+			TrustCloudflareHeaders: true,
+			TrustedProxies:         []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32"), netip.MustParsePrefix("::1/128")},
+		},
 		Log:               slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Pool:              pool,
 		Redis:             upPinger{},
@@ -285,7 +292,11 @@ func setupWith(t *testing.T, edit func(*config.Config)) (*app.App, *httptest.Ser
 		Blocklists:        &blocklist.Checker{R: dns},
 		Mailer:            mem,
 		ConfirmationQueue: inlineRunner{a: &appRef},
-	})
+	}
+	if tweak != nil {
+		tweak(&d)
+	}
+	a, err := app.New(d)
 	if err != nil {
 		t.Fatal(err)
 	}

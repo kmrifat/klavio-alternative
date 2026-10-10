@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/kmrifat/klavio-alternative/api/internal/freqcap"
 	"github.com/kmrifat/klavio-alternative/api/internal/mailer"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
@@ -102,5 +104,44 @@ func TestFailedRepermissionGivesEverythingBack(t *testing.T) {
 	}
 	if asked, sends, warm, started := counts(t, st, b); asked != 5 || sends != 5 || warm != 5 || !started {
 		t.Fatalf("after sending: asked %d, freqcap %d, warm-up %d, started %v", asked, sends, warm, started)
+	}
+}
+
+// unknown answers like an SES timeout after the request went out.
+type unknown struct{ calls int }
+
+func (u *unknown) Send(context.Context, mailer.Message) error {
+	u.calls++
+	return fmt.Errorf("%w: read tcp: i/o timeout", mailer.ErrOutcomeUnknown)
+}
+
+// An email that may have gone out counts as sent and is never retried: a
+// duplicate can't be undone, a lost one can be asked for again.
+func TestUnknownOutcomeIsNotRetried(t *testing.T) {
+	u := &unknown{}
+	svc, st, b := repermissionSetup(t, u)
+	ctx := context.Background()
+	if err := svc.SendRepermissions(ctx); err != nil {
+		t.Fatalf("an unknown outcome is not a failure to retry: %v", err)
+	}
+	if asked, sends, warm, _ := counts(t, st, b); asked != 5 || sends != 5 || warm != 5 {
+		t.Fatalf("kept as sent: asked %d, freqcap %d, warm-up %d", asked, sends, warm)
+	}
+	if err := svc.SendRepermissions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if u.calls != 5 {
+		t.Fatalf("%d send attempts, want 5 (no retry)", u.calls)
+	}
+
+	id, err := st.InsertContact(ctx, store.NewContact{BrandID: b.ID, Email: "new@example.com", Status: store.ContactPending, ConsentBasis: "double_opt_in"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.SendConfirmation(ctx, b.ID, id, uuid.Nil); err != nil {
+		t.Fatalf("confirmation with an unknown outcome should be done, not retried: %v", err)
+	}
+	if u.calls != 6 {
+		t.Fatalf("%d send attempts, want 6", u.calls)
 	}
 }

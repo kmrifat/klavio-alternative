@@ -38,6 +38,10 @@ type Deps struct {
 		RebuildBrand(ctx context.Context, brandID uuid.UUID) error
 		RebuildStale(ctx context.Context) error
 	}
+	Campaigns interface {
+		Step(ctx context.Context, campaignID uuid.UUID) error
+		Sweep(ctx context.Context) error
+	}
 	Health interface {
 		RecomputeAll(ctx context.Context) error
 		CheckAllBlocklists(ctx context.Context) error
@@ -223,6 +227,48 @@ func (w *TemplateSweepWorker) Timeout(*river.Job[TemplateSweepArgs]) time.Durati
 	return 30 * time.Minute
 }
 
+// CampaignStepArgs runs a campaign's next step: start, a send batch, or the
+// end of the test-slice hold.
+type CampaignStepArgs struct {
+	CampaignID uuid.UUID `json:"campaign_id"`
+}
+
+func (CampaignStepArgs) Kind() string { return "campaigns.step" }
+
+type CampaignStepWorker struct {
+	river.WorkerDefaults[CampaignStepArgs]
+	Deps Deps
+}
+
+func (w *CampaignStepWorker) Work(ctx context.Context, j *river.Job[CampaignStepArgs]) error {
+	return w.Deps.Campaigns.Step(ctx, j.Args.CampaignID)
+}
+
+// Timeout: a step bounds itself to campaigns.StepTimeout (2 minutes) and
+// sizes its batch to fit; this is the backstop, above river's 1-minute default.
+func (w *CampaignStepWorker) Timeout(*river.Job[CampaignStepArgs]) time.Duration {
+	return 4 * time.Minute
+}
+
+// CampaignSweepArgs runs any campaign step that is due, in case a queued
+// step was lost.
+type CampaignSweepArgs struct{}
+
+func (CampaignSweepArgs) Kind() string { return "campaigns.sweep" }
+
+type CampaignSweepWorker struct {
+	river.WorkerDefaults[CampaignSweepArgs]
+	Deps Deps
+}
+
+func (w *CampaignSweepWorker) Work(ctx context.Context, _ *river.Job[CampaignSweepArgs]) error {
+	return w.Deps.Campaigns.Sweep(ctx)
+}
+
+func (w *CampaignSweepWorker) Timeout(*river.Job[CampaignSweepArgs]) time.Duration {
+	return 10 * time.Minute
+}
+
 // HealthScoreArgs recomputes every brand's health score (hourly, S1/S2).
 type HealthScoreArgs struct{}
 
@@ -320,8 +366,9 @@ func (w *APIHousekeepingWorker) Work(ctx context.Context, _ *river.Job[APIHousek
 	return err
 }
 
-// Runner queues import jobs, template rebuilds and confirmation emails; it
-// satisfies imports.Runner, templates.Rebuilder and contactsapi.ConfirmationQueue.
+// Runner queues import jobs, template rebuilds, campaign steps and
+// confirmation emails; it satisfies imports.Runner, templates.Rebuilder,
+// campaigns.Runner and contactsapi.ConfirmationQueue.
 type Runner struct{ Client *Client }
 
 func (r Runner) StartCheck(ctx context.Context, brandID, importID uuid.UUID) error {
@@ -331,6 +378,11 @@ func (r Runner) StartCheck(ctx context.Context, brandID, importID uuid.UUID) err
 
 func (r Runner) StartCommit(ctx context.Context, brandID, importID uuid.UUID) error {
 	_, err := r.Client.Insert(ctx, ImportCommitArgs{BrandID: brandID, ImportID: importID}, &river.InsertOpts{MaxAttempts: 3})
+	return err
+}
+
+func (r Runner) QueueCampaignStep(ctx context.Context, campaignID uuid.UUID, at time.Time) error {
+	_, err := r.Client.Insert(ctx, CampaignStepArgs{CampaignID: campaignID}, &river.InsertOpts{ScheduledAt: at, MaxAttempts: 5})
 	return err
 }
 
@@ -383,6 +435,11 @@ func NewWorker(pool *pgxpool.Pool, log *slog.Logger, deps Deps) (*Client, error)
 		river.AddWorker(workers, &TemplateRebuildWorker{Deps: deps})
 		river.AddWorker(workers, &TemplateSweepWorker{Deps: deps})
 		jobs = append(jobs, periodic(10*time.Minute, TemplateSweepArgs{}, true))
+	}
+	if deps.Campaigns != nil {
+		river.AddWorker(workers, &CampaignStepWorker{Deps: deps})
+		river.AddWorker(workers, &CampaignSweepWorker{Deps: deps})
+		jobs = append(jobs, periodic(time.Minute, CampaignSweepArgs{}, true))
 	}
 	if deps.Health != nil {
 		river.AddWorker(workers, &HealthScoreWorker{Deps: deps})

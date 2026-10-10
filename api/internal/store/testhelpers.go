@@ -31,6 +31,19 @@ func (s *Store) BackdateImportForTest(ctx context.Context, id uuid.UUID, by time
 	return err
 }
 
+// ForceCampaignDueForTest makes a campaign's cancel window and test-slice
+// hold look over, and its queued sends due.
+func (s *Store) ForceCampaignDueForTest(ctx context.Context, id uuid.UUID) error {
+	if _, err := s.db.Exec(ctx, `
+		UPDATE campaigns SET start_at = now() - interval '1 second',
+			hold_until = CASE WHEN hold_until IS NULL THEN NULL ELSE now() - interval '1 second' END
+		WHERE id = $1`, id); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(ctx, `UPDATE sends SET send_after = now() - interval '1 second' WHERE campaign_id = $1 AND status = 'queued'`, id)
+	return err
+}
+
 // ExpireApprovalForTest moves an approval's deadline into the past.
 func (s *Store) ExpireApprovalForTest(ctx context.Context, id uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `UPDATE approvals SET expires_at = now() - interval '1 minute' WHERE id = $1`, id)
@@ -57,6 +70,11 @@ func (s *Store) BulkInsertContactsForTest(ctx context.Context, brandID uuid.UUID
 func (s *Store) ExecForTest(ctx context.Context, sql string, args ...any) error {
 	_, err := s.db.Exec(ctx, sql, args...)
 	return err
+}
+
+// QueryRowForTest scans one value from a query.
+func (s *Store) QueryRowForTest(ctx context.Context, sql string, dest any, args ...any) error {
+	return s.db.QueryRow(ctx, sql, args...).Scan(dest)
 }
 
 // TryEditWordingForTest attempts the UPDATE the immutability trigger must refuse.

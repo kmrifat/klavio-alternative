@@ -3,6 +3,7 @@ package templates
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/net/publicsuffix"
 
+	"github.com/kmrifat/klavio-alternative/api/internal/approvals"
 	"github.com/kmrifat/klavio-alternative/api/internal/auth"
 	"github.com/kmrifat/klavio-alternative/api/internal/httpx"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
@@ -222,27 +224,64 @@ func (s *Service) putLayout(w http.ResponseWriter, r *http.Request, az authorize
 		return rejected(w, "layout_has_errors", "the layout is used by every email this brand sends, so it must pass every check before it can be saved", issues)
 	}
 
+	// A second admin approves layout changes. Only a company that has never
+	// had two admins may skip that, and it's recorded.
+	ch := layoutChange{BrandID: b.ID, FromVersion: in.Version, MJML: in.MJML}
 	var saved store.Layout
-	queued, err := s.changeContent(r.Context(), b, func(tx *store.Store) error {
-		before, err := layoutFor(r.Context(), tx, b)
+	var pending *store.Approval
+	var queued int
+	err = s.store.InTx(r.Context(), func(tx *store.Store) error {
+		current, err := layoutFor(r.Context(), tx, b)
 		if err != nil {
 			return err
 		}
-		if saved, err = tx.SaveLayout(r.Context(), b.ID, in.MJML, in.Version, p.User.ID); err != nil {
+		if current.Version != in.Version {
+			return store.ErrStale
+		}
+		if s.approvals != nil {
+			a, err := s.approvals.Request(r.Context(), tx, approvals.Request{
+				Kind: approvals.KindLayoutChange, BrandID: &b.ID, RequestedBy: p.User,
+				Summary: fmt.Sprintf("Change %s's locked layout (version %d → %d)", b.Name, in.Version, in.Version+1),
+				Payload: ch, Audit: auth.AuditEntry(r, "", "", "", &b.ID),
+			})
+			switch {
+			case err == nil:
+				pending = &a
+				return nil
+			case !errors.Is(err, approvals.ErrNoApprover):
+				return err
+			}
+			ok, err := s.approvals.ShortcutAllowed(r.Context(), tx)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return errNoApprover
+			}
+		}
+		if saved, err = s.applyLayout(r.Context(), tx, b, ch, p.User.ID, auth.AuditEntry(r, "", "", "", &b.ID), s.approvals != nil); err != nil {
 			return err
 		}
-		return tx.Audit(r.Context(), auth.AuditEntry(r, "layout.updated", "layout", b.Slug, &b.ID),
-			map[string]any{"version": before.Version, "mjml": before.MJML},
-			map[string]any{"version": saved.Version, "mjml": saved.MJML})
-	})
-	if errors.Is(err, store.ErrStale) {
-		return errStale
-	}
-	if err != nil {
+		queued, err = tx.CountLiveTemplates(r.Context(), b.ID)
 		return err
+	})
+	switch {
+	case errors.Is(err, store.ErrStale):
+		return errStale
+	case err != nil:
+		return err
+	case pending != nil:
+		httpx.WriteJSON(w, http.StatusAccepted, map[string]any{
+			"approval": map[string]any{"id": pending.ID, "status": pending.Status, "expires_at": pending.ExpiresAt},
+		})
+		return nil
 	}
+	s.queueRebuild(r.Context(), b.ID)
 	return s.writeLayout(w, r, b, saved, map[string]any{"templates_queued": queued})
 }
+
+var errNoApprover = httpx.Errorf(http.StatusConflict, "no_approver",
+	"layout changes need a second admin, and nobody else can approve right now; ask another admin to be unfrozen or invited")
 
 // --- link allowlist ---
 

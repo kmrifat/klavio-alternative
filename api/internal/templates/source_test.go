@@ -159,3 +159,33 @@ func TestCompiledSlotStylesAreChecked(t *testing.T) {
 		t.Errorf("MJML's own output: %v", got)
 	}
 }
+
+// A section background image (MJML writes background:url(…)) is allowed when
+// it's a full https address, and nothing else rides along.
+func TestSectionBackgroundImage(t *testing.T) {
+	sec := func(u string) string {
+		return `<mj-section background-url="` + u + `" background-size="cover"><mj-column><mj-text>Hello there, a few words of real text for the checks to read.</mj-text></mj-column></mj-section>`
+	}
+	if got := buildCodes(t, body+sec("https://brightside.co/bg.png")); len(got) != 0 {
+		t.Errorf("https background: %v", got)
+	}
+	for name, u := range map[string]string{
+		"http":      "http://brightside.co/bg.png",
+		"shortener": "https://bit.ly/bg",
+		"relative":  "/bg.png",
+	} {
+		got := buildCodes(t, body+sec(u))
+		if len(got) == 0 {
+			t.Errorf("%s background passed", name)
+		}
+	}
+	page := func(slot string) string {
+		return `<html><body><div class="klv-footer"></div><!--` + slotStart + `-->` + slot + `<!--` + slotEnd + `--></body></html>`
+	}
+	if got := codes(compiledSlotIssues(page(`<div style="background:url('https://brightside.co/bg.png') center / cover;position:absolute">x</div>`))); !slices.Contains(got, "template_css") {
+		t.Errorf("position riding along with a background image: %v", got)
+	}
+	if got := codes(compiledSlotIssues(page(`<div style="background-image:url(https://brightside.co/a.png), image-set('x' 1x)">x</div>`))); !slices.Contains(got, "template_css") {
+		t.Errorf("another function next to url(): %v", got)
+	}
+}

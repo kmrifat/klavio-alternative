@@ -18,6 +18,7 @@ import (
 	"github.com/kmrifat/klavio-alternative/api/internal/blocklist"
 	"github.com/kmrifat/klavio-alternative/api/internal/brands"
 	"github.com/kmrifat/klavio-alternative/api/internal/cache"
+	"github.com/kmrifat/klavio-alternative/api/internal/campaigns"
 	"github.com/kmrifat/klavio-alternative/api/internal/config"
 	"github.com/kmrifat/klavio-alternative/api/internal/confirm"
 	"github.com/kmrifat/klavio-alternative/api/internal/contacts"
@@ -50,12 +51,16 @@ type Deps struct {
 	Ceremonies auth.CeremonyStore
 	Access     *auth.AccessVerifier // nil = Cloudflare Access off
 	SES        ses.Provisioner
-	DNS        Resolver
+	// Sender sends campaign email (SES in production, a fake otherwise).
+	Sender ses.Sender
+	DNS    Resolver
 	// ImportRunner overrides the river job runner (tests run imports inline).
 	ImportRunner imports.Runner
 	// TemplateRebuilder overrides the river job that recompiles templates
 	// after a layout or allowlist change (tests run it inline).
 	TemplateRebuilder templates.Rebuilder
+	// CampaignRunner overrides the river job that runs campaign steps.
+	CampaignRunner campaigns.Runner
 	// Limiter rate-limits the public unsubscribe POSTs (Redis in production).
 	Limiter cache.Limiter
 	// Mailer sends confirmation and re-permission emails (tests: mailer.Memory).
@@ -82,6 +87,7 @@ type App struct {
 	Brands    *brands.Service
 	Imports   *imports.Service
 	Templates *templates.Service
+	Campaigns *campaigns.Service
 	// Unsubscribe signs the unsubscribe/preferences links in every email.
 	Unsubscribe *unsubscribe.Signer
 	unsubSvc    *unsubscribe.Service
@@ -123,8 +129,8 @@ func New(d Deps) (*App, error) {
 		Imports:   imports.NewService(st, d.DNS, d.Log),
 		Templates: templates.NewService(st, d.Log),
 	}
-	runner, rebuilder := d.ImportRunner, d.TemplateRebuilder
-	if runner == nil || rebuilder == nil {
+	runner, rebuilder, campaignRunner := d.ImportRunner, d.TemplateRebuilder, d.CampaignRunner
+	if runner == nil || rebuilder == nil || campaignRunner == nil {
 		client, err := jobs.NewInserter(d.Pool, d.Log)
 		if err != nil {
 			return nil, err
@@ -135,12 +141,24 @@ func New(d Deps) (*App, error) {
 		if rebuilder == nil {
 			rebuilder = jobs.Runner{Client: client}
 		}
+		if campaignRunner == nil {
+			campaignRunner = jobs.Runner{Client: client}
+		}
 	}
 	a.Imports.SetRunner(runner)
 	a.Templates.SetRebuilder(rebuilder)
 	if a.Unsubscribe, err = unsubscribe.NewSigner(d.Config.UnsubscribeSecret, d.Config.UnsubscribeSecretOld); err != nil {
 		return nil, err
 	}
+	sender := d.Sender
+	if sender == nil {
+		sender = &ses.FakeSender{}
+	}
+	a.Campaigns = campaigns.NewService(st, campaigns.Config{
+		Sender: sender, Signer: a.Unsubscribe, PublicBaseURL: d.Config.PublicBaseURLOverride,
+		SendsPerSecond: d.Config.SESMaxSendRate,
+	}, d.Log)
+	a.Campaigns.SetRunner(campaignRunner)
 	a.unsubSvc = unsubscribe.NewService(st)
 
 	// Governance (M5): approvals, safety limits, exports, anomaly alerts.
@@ -153,6 +171,9 @@ func New(d Deps) (*App, error) {
 	a.team.RegisterApprovals()
 	authSvc.SetSignInGuard(a.Anomaly)
 	a.Imports.SetLimits(a.Limits.Get)
+	a.Campaigns.SetLimits(a.Limits)
+	a.Campaigns.RegisterApprovals(a.Approvals)
+	a.Templates.RegisterApprovals(a.Approvals)
 	a.Imports.SetSpikeCheck(a.Anomaly.CheckImport)
 	if a.deps.Limiter == nil {
 		a.deps.Limiter = &cache.MemoryLimiter{}
@@ -160,6 +181,7 @@ func New(d Deps) (*App, error) {
 
 	// Health (M6): warm-up, health score, Safety center.
 	a.Warmup = warmup.NewService(st)
+	a.Campaigns.SetWarmup(a.Warmup)
 	a.Health = health.NewService(st, d.SES, a.Brands, a.Warmup, health.Config{
 		Blocklists:     d.Blocklists,
 		BlocklistEvery: d.Config.BlocklistEvery,
@@ -169,6 +191,7 @@ func New(d Deps) (*App, error) {
 
 	// Segments, Contacts API, frequency cap, double opt-in (M7).
 	a.FreqCap = freqcap.NewService(st)
+	a.Campaigns.SetFreqCap(a.FreqCap)
 	if a.confirmer, err = confirm.NewSigner(d.Config.UnsubscribeSecret, d.Config.UnsubscribeSecretOld); err != nil {
 		return nil, err
 	}
@@ -211,13 +234,13 @@ func FromConfig(ctx context.Context, cfg config.Config, log *slog.Logger, pool *
 		if err != nil {
 			return nil, err
 		}
-		d.SES = aws
+		d.SES, d.Sender = aws, aws
 	}
 	if cfg.BlocklistResolver != "off" {
 		d.Blocklists = &blocklist.Checker{R: blocklist.NewResolver(cfg.BlocklistResolver), DQSKey: cfg.SpamhausDQSKey}
 	}
-	// Confirmation emails: logged in development; production needs the SES
-	// sender from the sending worker (M3 part 3).
+	// Confirmation emails: logged in development, refused without SES;
+	// with SES they go through the sending worker's sender (below).
 	d.Mailer = mailer.Unconfigured{}
 	if cfg.Env == config.EnvDevelopment {
 		d.Mailer = mailer.Log{Log: log}
@@ -227,7 +250,14 @@ func FromConfig(ctx context.Context, cfg config.Config, log *slog.Logger, pool *
 		return nil, err
 	}
 	d.Postmaster = pm
-	return New(d)
+	a, err := New(d)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.SESMode == "aws" {
+		a.Confirm.SetSender(a.Campaigns.Mailer())
+	}
+	return a, nil
 }
 
 func (a *App) Handler() http.Handler {
@@ -245,6 +275,7 @@ func (a *App) Handler() http.Handler {
 			a.Auth.Routes(mux)
 			a.Brands.Routes(mux, a.Auth)
 			a.Templates.Routes(mux, a.Auth)
+			a.Campaigns.Routes(mux, a.Auth)
 			a.team.Routes(mux)
 			a.Approvals.Routes(mux, a.Auth)
 			a.Limits.Routes(mux, a.Auth)
@@ -302,7 +333,7 @@ func (a *App) ServeHTTP(ctx context.Context) error {
 // RunWorker works background jobs until ctx is cancelled.
 func (a *App) RunWorker(ctx context.Context) error {
 	log := a.deps.Log
-	client, err := jobs.NewWorker(a.deps.Pool, log, jobs.Deps{Brands: a.Brands, Sessions: a.Store, Imports: a.Imports, ImportFiles: a.Store, Templates: a.Templates, Governance: governanceJobs{a}, Health: a.Health, Opt: optJobs{a}})
+	client, err := jobs.NewWorker(a.deps.Pool, log, jobs.Deps{Brands: a.Brands, Sessions: a.Store, Imports: a.Imports, ImportFiles: a.Store, Templates: a.Templates, Governance: governanceJobs{a}, Campaigns: a.Campaigns, Health: a.Health, Opt: optJobs{a}})
 	if err != nil {
 		return err
 	}

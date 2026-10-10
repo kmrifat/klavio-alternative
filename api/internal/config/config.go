@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -39,6 +40,9 @@ type Config struct {
 	SESRegion      string
 	SESEventBusARN string // EventBridge bus that receives SES events
 	DNSResolver    string // host:port of the DNS server used for brand DNS checks
+	// SESMaxSendRate is the account's send rate (emails per second). The
+	// worker never goes faster.
+	SESMaxSendRate float64
 
 	// Unsubscribe links are HMAC-signed with this (32+ chars). Rotate by moving
 	// the current value to UNSUBSCRIBE_SECRET_OLD: links in sent email keep working.
@@ -129,6 +133,11 @@ func Load(getenv func(string) string) (Config, error) {
 	cfg.SESRegion = get("SES_REGION", "us-east-1")
 	cfg.SESEventBusARN = get("SES_EVENT_BUS_ARN", "")
 	cfg.DNSResolver = get("DNS_RESOLVER", "1.1.1.1:53")
+	if rate, err := strconv.ParseFloat(get("SES_MAX_SEND_RATE", "14"), 64); err != nil || rate <= 0 {
+		errs = append(errs, fmt.Errorf("SES_MAX_SEND_RATE must be a positive number"))
+	} else {
+		cfg.SESMaxSendRate = rate
+	}
 	cfg.UnsubscribeSecret = get("UNSUBSCRIBE_SECRET", "")
 	cfg.UnsubscribeSecretOld = get("UNSUBSCRIBE_SECRET_OLD", "")
 	cfg.PublicBaseURLOverride = get("PUBLIC_BASE_URL_OVERRIDE", "")

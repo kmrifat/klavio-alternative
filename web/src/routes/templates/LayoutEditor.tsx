@@ -31,6 +31,8 @@ function Editor({ slug, saved, save }: { slug: string; saved: LayoutResponse; sa
   // A refused save carries the issues that blocked it.
   const issues: Issue[] = fresh?.issues ?? saved.issues;
   const errors = issues.some((i) => i.severity === "error");
+  const pending = save.data && "approval" in save.data ? save.data : undefined;
+  const applied = save.data && !("approval" in save.data) ? save.data : undefined;
 
   return (
     <div className="space-y-4">
@@ -63,11 +65,15 @@ function Editor({ slug, saved, save }: { slug: string; saved: LayoutResponse; sa
       ) : (
         <ErrorNote error={save.error} />
       )}
-      {save.isSuccess ? (
+      {pending ? (
+        <p role="status" className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          Sent for approval. The layout changes once another admin approves it (see Approvals); until then every email keeps the current one.
+        </p>
+      ) : applied ? (
         <p role="status" className="rounded-md bg-green-50 px-3 py-2 text-sm text-green-800">
           Saved.
-          {save.data.templates_queued
-            ? ` Recompiling ${save.data.templates_queued} ${save.data.templates_queued === 1 ? "template" : "templates"} in the background; check the list for any that now have errors.`
+          {applied.templates_queued
+            ? ` Recompiling ${applied.templates_queued} ${applied.templates_queued === 1 ? "template" : "templates"} in the background; check the list for any that now have errors.`
             : ""}
         </p>
       ) : null}

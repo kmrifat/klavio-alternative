@@ -178,6 +178,19 @@ describe("template editor", () => {
 });
 
 describe("layout editor", () => {
+  it("says when a change waits for a second admin", async () => {
+    api(ownerMe, {
+      [`POST ${base}/layout/preview`]: { status: 200, body: { ...layout, issues: [] } },
+      [`PUT ${base}/layout`]: { status: 202, body: { approval: { id: "ap1", status: "pending", expires_at: "2026-10-17T00:00:00Z" } } },
+    });
+    renderAt("/b/brightside/templates/layout");
+    await userEvent.type(await screen.findByLabelText("MJML source"), " ");
+    const save = screen.getByRole("button", { name: "Save layout" });
+    await waitFor(() => expect(save).toBeEnabled());
+    await userEvent.click(save);
+    expect(await screen.findByText(/Sent for approval/)).toBeInTheDocument();
+  });
+
   it("is read-only below brand admin", async () => {
     api(as("editor"));
     renderAt("/b/brightside/templates/layout");

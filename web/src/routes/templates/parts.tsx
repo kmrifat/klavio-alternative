@@ -14,7 +14,7 @@ export function useBrandAccess(slug: string) {
   const brand = useBrands().data?.find((b) => b.slug === slug);
   const role: BrandRole | "" = me?.user.company_role === "owner" ? "brand_admin" : brand ? (me?.brand_roles[brand.id] ?? "") : "";
   const r = role ? rank[role] : 0;
-  return { brand, canEdit: r >= rank.editor, canAdmin: r >= rank.brand_admin };
+  return { brand, canEdit: r >= rank.editor, canSend: r >= rank.sender, canAdmin: r >= rank.brand_admin };
 }
 
 export function IssueSummary({ errors, warnings }: { errors: number; warnings: number }) {
