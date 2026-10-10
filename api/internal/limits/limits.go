@@ -200,36 +200,35 @@ type ChangeResult struct {
 }
 
 // Change applies tightenings at once and files an approval per loosening.
+// Each limit is locked and re-read inside the transaction, so two people
+// saving at once can't turn a loosening into an unapproved change.
 func (s *Service) Change(ctx context.Context, r *http.Request, p *auth.Principal, changes map[string]float64, reason string) (ChangeResult, error) {
 	res := ChangeResult{Applied: []string{}, Requested: []store.Approval{}}
-	current, err := s.All(ctx)
-	if err != nil {
-		return res, err
-	}
-	byKey := map[string]Limit{}
-	for _, l := range current {
-		byKey[l.Key] = l
-	}
 	for key, to := range changes {
-		l, ok := byKey[key]
+		d, ok := Find(key)
 		if !ok {
 			return res, httpx.Errorf(http.StatusBadRequest, "unknown_limit", "unknown limit %q", key)
 		}
 		if math.IsNaN(to) || math.IsInf(to, 0) || to <= 0 {
-			return res, httpx.Errorf(http.StatusBadRequest, "bad_value", "%s must be a positive number", l.Label)
-		}
-		if l.Locked && l.Compare(l.Current, to) == Looser {
-			return res, httpx.Errorf(http.StatusBadRequest, "locked", "%s is locked: it can only be made stricter", l.Label)
-		}
-		if !l.WithinHard(to) {
-			return res, httpx.Errorf(http.StatusBadRequest, "past_hard_limit", "%s can't go past the hard limit of %s", l.Label, fmtValue(l.Def, l.Hard))
+			return res, httpx.Errorf(http.StatusBadRequest, "bad_value", "%s must be a positive number", d.Label)
 		}
 	}
-
-	err = s.store.InTx(ctx, func(tx *store.Store) error {
+	err := s.store.InTx(ctx, func(tx *store.Store) error {
 		for _, key := range sortedKeys(changes) {
-			l, to := byKey[key], changes[key]
-			switch l.Compare(l.Current, to) {
+			d, _ := Find(key)
+			to := changes[key]
+			current, err := currentLocked(ctx, tx, d)
+			if err != nil {
+				return err
+			}
+			dir := d.Compare(current, to)
+			if d.Locked && dir == Looser {
+				return httpx.Errorf(http.StatusBadRequest, "locked", "%s is locked: it can only be made stricter", d.Label)
+			}
+			if !d.WithinHard(to) {
+				return httpx.Errorf(http.StatusBadRequest, "past_hard_limit", "%s can't go past the hard limit of %s", d.Label, fmtValue(d, d.Hard))
+			}
+			switch dir {
 			case Same:
 				continue
 			case Tighter:
@@ -237,20 +236,20 @@ func (s *Service) Change(ctx context.Context, r *http.Request, p *auth.Principal
 					return err
 				}
 				if err := tx.Audit(ctx, auth.AuditEntry(r, "safety_limit.tightened", "safety_limit", key, nil),
-					map[string]float64{"value": l.Current}, map[string]float64{"value": to}); err != nil {
+					map[string]float64{"value": current}, map[string]float64{"value": to}); err != nil {
 					return err
 				}
 				res.Applied = append(res.Applied, key)
 			case Looser:
 				a, err := s.approvals.Request(ctx, tx, approvals.Request{
 					Kind: approvals.KindSafetyLimit, RequestedBy: p.User, Reason: reason,
-					Summary: fmt.Sprintf("Loosen %s: %s → %s", l.Label, fmtValue(l.Def, l.Current), fmtValue(l.Def, to)),
-					Payload: loosenPayload{Key: key, From: l.Current, To: to},
+					Summary: fmt.Sprintf("Loosen %s: %s → %s", d.Label, fmtValue(d, current), fmtValue(d, to)),
+					Payload: loosenPayload{Key: key, From: current, To: to},
 					Audit:   auth.AuditEntry(r, "", "", "", nil),
 				})
 				if errors.Is(err, approvals.ErrNoApprover) {
 					return httpx.Errorf(http.StatusConflict, "no_approver",
-						"loosening %s needs a second admin, and there's no other owner or approver yet", l.Label)
+						"loosening %s needs a second admin, and nobody else can approve right now", d.Label)
 				}
 				if err != nil {
 					return err
@@ -263,6 +262,18 @@ func (s *Service) Change(ctx context.Context, r *http.Request, p *auth.Principal
 	return res, err
 }
 
+// currentLocked locks the limit for this transaction and returns its value.
+func currentLocked(ctx context.Context, tx *store.Store, d Def) (float64, error) {
+	if err := tx.Lock(ctx, "safety_limit:"+d.Key); err != nil {
+		return 0, err
+	}
+	v, ok, err := tx.LimitValue(ctx, d.Key)
+	if err != nil || !ok {
+		return d.Value, err
+	}
+	return v, nil
+}
+
 func sortedKeys(m map[string]float64) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -272,7 +283,9 @@ func sortedKeys(m map[string]float64) []string {
 	return keys
 }
 
-// executeLoosen applies an approved loosening, re-checking the hard limit.
+// executeLoosen applies an approved loosening — only if nothing changed since
+// it was requested (otherwise approving would silently undo a later
+// tightening) and the requester is still an admin.
 func (s *Service) executeLoosen(ctx context.Context, tx *store.Store, a store.Approval) (any, error) {
 	var p loosenPayload
 	if err := jsonUnmarshal(a.Payload, &p); err != nil {
@@ -280,7 +293,21 @@ func (s *Service) executeLoosen(ctx context.Context, tx *store.Store, a store.Ap
 	}
 	d, ok := Find(p.Key)
 	if !ok || !d.WithinHard(p.To) || d.Locked {
-		return nil, httpx.Errorf(http.StatusConflict, "past_hard_limit", "this change is no longer allowed")
+		return nil, approvals.Reject("this change is no longer allowed")
+	}
+	requester, err := tx.UserByID(ctx, a.RequestedBy)
+	if err != nil {
+		return nil, err
+	}
+	if requester.FrozenAt != nil || (requester.CompanyRole != store.CompanyOwner && requester.CompanyRole != store.CompanyApprover) {
+		return nil, approvals.Reject("%s can no longer change safety limits", requester.Email)
+	}
+	current, err := currentLocked(ctx, tx, d)
+	if err != nil {
+		return nil, err
+	}
+	if current != p.From {
+		return nil, approvals.Reject("%s changed to %s after this was requested; ask again from the current value", d.Label, fmtValue(d, current))
 	}
 	if err := tx.SetLimit(ctx, p.Key, p.To, a.RequestedBy); err != nil {
 		return nil, err

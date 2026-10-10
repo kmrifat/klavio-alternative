@@ -83,6 +83,7 @@ function ApprovalCard({ a }: { a: ApprovalItem }) {
           </div>
           <p className="mt-2 font-medium">{a.summary}</p>
           {a.reason && <p className="mt-0.5 text-sm text-zinc-600">“{a.reason}”</p>}
+          {a.detail && <p className="mt-0.5 text-sm text-amber-800">{a.detail}</p>}
           <p className="mt-1 text-xs text-zinc-500">
             Requested by {a.mine ? "you" : a.requester_name} · {timeAgo(a.requested_at)}
             {a.status === "pending" && <> · expires {new Date(a.expires_at).toLocaleDateString()}</>}

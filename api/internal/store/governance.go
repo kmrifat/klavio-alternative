@@ -75,6 +75,10 @@ func (s *Store) DecideApproval(ctx context.Context, id uuid.UUID, status Approva
 type ApprovalFilter struct {
 	Status      ApprovalStatus // "" = any
 	RequestedBy *uuid.UUID
+	// Decidable narrows to live (pending, unexpired) requests by someone else;
+	// BrandIDs, when set, keeps only those brands' requests.
+	DecidableBy *uuid.UUID
+	BrandIDs    []uuid.UUID
 	Limit       int
 }
 
@@ -87,6 +91,12 @@ func (s *Store) ListApprovals(ctx context.Context, f ApprovalFilter) ([]Approval
 	if f.RequestedBy != nil {
 		where = append(where, "requested_by = "+arg(*f.RequestedBy))
 	}
+	if f.DecidableBy != nil {
+		where = append(where, "status = 'pending' AND expires_at > now() AND requested_by <> "+arg(*f.DecidableBy))
+	}
+	if f.BrandIDs != nil {
+		where = append(where, "brand_id = ANY("+arg(f.BrandIDs)+")")
+	}
 	if f.Limit <= 0 || f.Limit > 200 {
 		f.Limit = 100
 	}
@@ -95,10 +105,54 @@ func (s *Store) ListApprovals(ctx context.Context, f ApprovalFilter) ([]Approval
 	return all[Approval](rows, err)
 }
 
-// ExpireApprovals closes pending requests past their deadline.
-func (s *Store) ExpireApprovals(ctx context.Context) (int64, error) {
-	tag, err := s.db.Exec(ctx, `UPDATE approvals SET status = 'expired', decided_at = now() WHERE status = 'pending' AND expires_at <= now()`)
-	return tag.RowsAffected(), err
+// OverdueApprovals lists pending requests past their deadline.
+func (s *Store) OverdueApprovals(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx, `SELECT id FROM approvals WHERE status = 'pending' AND expires_at <= now() LIMIT 500`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// HadTwoAdmins: has the company ever had two owners/approvers? (one-way flag)
+func (s *Store) HadTwoAdmins(ctx context.Context) (bool, error) {
+	var had bool
+	err := s.db.QueryRow(ctx, `SELECT two_admins_since IS NOT NULL FROM company_state WHERE id = 1`).Scan(&had)
+	return had, translate(err)
+}
+
+// OtherAdminsExcluding counts unfrozen owners/approvers other than the given users.
+func (s *Store) OtherAdminsExcluding(ctx context.Context, except ...uuid.UUID) (int, error) {
+	var n int
+	err := s.db.QueryRow(ctx, `SELECT count(*) FROM users
+		WHERE company_role IN ('owner', 'approver') AND frozen_at IS NULL AND NOT (id = ANY($1))`, except).Scan(&n)
+	return n, err
+}
+
+// Lock serialises work on a named resource until the transaction ends
+// (Postgres advisory lock). Only meaningful inside InTx.
+func (s *Store) Lock(ctx context.Context, name string) error {
+	_, err := s.db.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, name)
+	return err
+}
+
+// LimitValue returns a limit's stored value (ok=false: still the default).
+func (s *Store) LimitValue(ctx context.Context, key string) (float64, bool, error) {
+	var v float64
+	err := s.db.QueryRow(ctx, `SELECT value::float8 FROM safety_limits WHERE key = $1`, key).Scan(&v)
+	if translate(err) == ErrNotFound {
+		return 0, false, nil
+	}
+	return v, err == nil, err
 }
 
 // OtherAdmins counts unfrozen owners/company approvers other than the given
@@ -232,12 +286,6 @@ func (s *Store) AllContactsForExport(ctx context.Context, brandID uuid.UUID, f C
 		}
 		f.After = page[len(page)-1].Email
 	}
-}
-
-// CountContacts counts contacts matching a filter.
-func (s *Store) CountContacts(ctx context.Context, brandID uuid.UUID, f ContactFilter) (int, error) {
-	cs, err := s.AllContactsForExport(ctx, brandID, f)
-	return len(cs), err
 }
 
 // --- sign-ins, freezing, alerts ---

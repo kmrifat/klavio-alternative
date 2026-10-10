@@ -24,6 +24,33 @@ CREATE TABLE approvals (
 CREATE INDEX approvals_pending ON approvals (requested_at) WHERE status = 'pending';
 CREATE INDEX approvals_requester ON approvals (requested_by, requested_at DESC);
 
+-- One-way flag: has this company ever had two admins (owners/approvers)?
+-- Until then a lone first owner may make admin changes alone (bootstrap);
+-- after that, admin changes always need a second person — demoting or
+-- freezing the other admins can't reopen the shortcut. Set by a trigger, so
+-- no code path can forget it.
+CREATE TABLE company_state (
+    id               int PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    two_admins_since timestamptz
+);
+INSERT INTO company_state (id, two_admins_since)
+SELECT 1, CASE WHEN (SELECT count(*) FROM users WHERE company_role IN ('owner', 'approver')) >= 2 THEN now() END;
+
+-- +goose StatementBegin
+CREATE FUNCTION note_two_admins() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF (SELECT count(*) FROM users WHERE company_role IN ('owner', 'approver')) >= 2 THEN
+        UPDATE company_state SET two_admins_since = now() WHERE id = 1 AND two_admins_since IS NULL;
+    END IF;
+    RETURN NULL;
+END;
+$$;
+-- +goose StatementEnd
+
+CREATE TRIGGER users_note_two_admins
+    AFTER INSERT OR UPDATE OF company_role ON users
+    FOR EACH STATEMENT EXECUTE FUNCTION note_two_admins();
+
 -- Company-wide safety limits (S17). Rows exist only for values changed from
 -- the default; defaults and hard limits live in code.
 CREATE TABLE safety_limits (
@@ -84,6 +111,9 @@ CREATE INDEX alerts_open ON alerts (created_at DESC) WHERE acknowledged_at IS NU
 
 -- +goose Down
 DROP TABLE alerts;
+DROP TRIGGER users_note_two_admins ON users;
+DROP FUNCTION note_two_admins();
+DROP TABLE company_state;
 ALTER TABLE users DROP COLUMN frozen_reason;
 ALTER TABLE users DROP COLUMN frozen_at;
 DROP TABLE sign_ins;

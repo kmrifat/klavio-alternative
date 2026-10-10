@@ -38,7 +38,7 @@ function approval(extra: Partial<ApprovalItem> = {}): ApprovalItem {
     requested_by: "u-maria", requester_name: "Maria Santos", requester_email: "maria@acme.test",
     requested_at: new Date().toISOString(), summary: "Loosen Campaign pause · bounces: 2% → 2.5%", reason: "Black Friday",
     status: "pending", decided_by: null, decider_name: "", decided_at: null, decision_note: "",
-    expires_at: new Date(Date.now() + 86_400_000).toISOString(), can_decide: true, mine: false, ...extra,
+    expires_at: new Date(Date.now() + 86_400_000).toISOString(), can_decide: true, mine: false, detail: "", ...extra,
   };
 }
 
@@ -50,7 +50,7 @@ describe("approvals (S15)", () => {
       ...signedIn,
       "GET /admin/v1/approvals": (_b, url) => ({
         status: 200,
-        body: { approvals: url.searchParams.get("view") === "decide" && !decided ? [approval(), approval({ id: "a2", summary: "Export 1,204 Brightside contacts" })] : [] },
+        body: { approvals: url.searchParams.get("view") === "decide" && !decided ? [approval(), approval({ id: "a2", summary: "Export 1,204 Brightside contacts", detail: "1210 contacts match these filters now (1204 when requested)" })] : [] },
       }),
       "POST /admin/v1/approvals/a1/approve": () => {
         if (!steppedUp) return { status: 403, body: { error: { code: "step_up_required", message: "confirm" } } };
@@ -69,6 +69,7 @@ describe("approvals (S15)", () => {
     expect(within(card).getByText(/Maria Santos/)).toBeInTheDocument();
     expect(within(card).getByText("“Black Friday”")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Waiting for you (2)" })).toBeInTheDocument();
+    expect(screen.getByText("1210 contacts match these filters now (1204 when requested)")).toBeInTheDocument();
 
     const other = screen.getByText("Export 1,204 Brightside contacts").closest("li")!;
     await userEvent.click(within(other).getByRole("button", { name: /reject/i }));

@@ -83,6 +83,14 @@ func (s *Service) CheckSignIn(ctx context.Context, tx *store.Store, u store.User
 		details["known_countries"] = known
 		return s.freezeOrWarn(ctx, tx, u, "new_country", fmt.Sprintf("Sign-in for %s from a new country (%s)", u.Email, country), nil, details)
 	}
+	if country == "" && len(knownCountries) > 0 {
+		// Earlier sign-ins came through Cloudflare with a country; this one
+		// didn't. Unknown isn't "same": raise it.
+		return false, tx.CreateAlert(ctx, store.Alert{
+			Kind: "unknown_country", Severity: "warning", UserID: &u.ID,
+			Message: fmt.Sprintf("%s signed in without country information (not through Cloudflare?)", u.Email),
+		}, details)
+	}
 	if device != "" && !knownDevices[device] {
 		return false, tx.CreateAlert(ctx, store.Alert{
 			Kind: "new_device", Severity: "info", UserID: &u.ID,

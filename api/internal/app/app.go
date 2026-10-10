@@ -217,7 +217,7 @@ func (a *App) ServeHTTP(ctx context.Context) error {
 // RunWorker works background jobs until ctx is cancelled.
 func (a *App) RunWorker(ctx context.Context) error {
 	log := a.deps.Log
-	client, err := jobs.NewWorker(a.deps.Pool, log, jobs.Deps{Brands: a.Brands, Sessions: a.Store, Imports: a.Imports, ImportFiles: a.Store, Templates: a.Templates, Governance: a.Store})
+	client, err := jobs.NewWorker(a.deps.Pool, log, jobs.Deps{Brands: a.Brands, Sessions: a.Store, Imports: a.Imports, ImportFiles: a.Store, Templates: a.Templates, Governance: governanceJobs{a}})
 	if err != nil {
 		return err
 	}
@@ -262,4 +262,14 @@ func (a *App) Bootstrap(ctx context.Context, email, name string) (string, error)
 		return err
 	})
 	return link, err
+}
+
+// governanceJobs adapts the housekeeping job to the approvals engine and store.
+type governanceJobs struct{ a *App }
+
+func (g governanceJobs) ExpireApprovals(ctx context.Context) (int64, error) {
+	return g.a.Approvals.Expire(ctx)
+}
+func (g governanceJobs) PurgeExpiredExports(ctx context.Context) (int64, error) {
+	return g.a.Store.PurgeExpiredExports(ctx)
 }

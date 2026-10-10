@@ -34,8 +34,18 @@ func (t *Handlers) RegisterApprovals() {
 	})
 	t.Approvals.Register(approvals.KindAdminInvite, approvals.Definition{
 		Label: "Invite someone with admin rights", CompanyLevel: true,
-		// Approving makes the already-created invite link usable.
-		Execute: func(context.Context, *store.Store, store.Approval) (any, error) { return nil, nil },
+		// Approving makes the already-created invite link usable — if the
+		// person who sent it is still an owner.
+		Execute: func(ctx context.Context, tx *store.Store, a store.Approval) (any, error) {
+			u, err := tx.UserByID(ctx, a.RequestedBy)
+			if err != nil {
+				return nil, err
+			}
+			if u.CompanyRole != store.CompanyOwner || u.FrozenAt != nil {
+				return nil, approvals.Reject("%s is no longer an owner", u.Email)
+			}
+			return nil, nil
+		},
 		OnReject: func(ctx context.Context, tx *store.Store, a store.Approval) error {
 			return tx.DeleteInviteByApproval(ctx, a.ID)
 		},
@@ -229,7 +239,9 @@ func (t *Handlers) invite(w http.ResponseWriter, r *http.Request) error {
 			})
 			switch {
 			case errors.Is(err, approvals.ErrNoApprover):
-				noSecondAdmin = true // a one-admin company can't get a second opinion yet
+				if noSecondAdmin, err = t.shortcut(ctx, tx); err != nil {
+					return err
+				}
 			case err != nil:
 				return err
 			default:
@@ -309,15 +321,29 @@ func (t *Handlers) setRoles(w http.ResponseWriter, r *http.Request) error {
 		}
 		change := roleChange{UserID: id, CompanyRole: in.CompanyRole, BrandRoles: in.BrandRoles}
 		noSecondAdmin := false
-		if elevates(target.CompanyRole, before, in.CompanyRole, in.BrandRoles) {
+		needs := elevates(target.CompanyRole, before, in.CompanyRole, in.BrandRoles)
+		summary := "Make " + target.Email + " " + roleSummary(in.CompanyRole, mergedRoles(before, in.BrandRoles), brands)
+		if !needs && isAdmin(target.CompanyRole) && !isAdmin(in.CompanyRole) && target.ID != p.User.ID {
+			// Removing the last other admin would leave the actor alone with no
+			// second person to check them: that needs approval too.
+			others, err := tx.OtherAdminsExcluding(ctx, p.User.ID, target.ID)
+			if err != nil {
+				return err
+			}
+			if others == 0 {
+				needs, summary = true, "Remove admin rights from "+target.Email+" (leaves "+p.User.Email+" as the only admin)"
+			}
+		}
+		if needs {
 			a, err := t.Approvals.Request(ctx, tx, approvals.Request{
-				Kind: approvals.KindRoleChange, RequestedBy: p.User,
-				Summary: "Make " + target.Email + " " + roleSummary(in.CompanyRole, mergedRoles(before, in.BrandRoles), brands),
+				Kind: approvals.KindRoleChange, RequestedBy: p.User, Summary: summary,
 				Payload: change, Audit: auth.AuditEntry(r, "", "", "", nil),
 			})
 			switch {
 			case errors.Is(err, approvals.ErrNoApprover):
-				noSecondAdmin = true // a one-admin company can't get a second opinion yet
+				if noSecondAdmin, err = t.shortcut(ctx, tx); err != nil {
+					return err
+				}
 			case err != nil:
 				return err
 			default:
@@ -338,6 +364,23 @@ func (t *Handlers) setRoles(w http.ResponseWriter, r *http.Request) error {
 	}
 	w.WriteHeader(http.StatusNoContent)
 	return nil
+}
+
+func isAdmin(r store.CompanyRole) bool { return r == store.CompanyOwner || r == store.CompanyApprover }
+
+// shortcut decides what happens when nobody else can approve an admin change:
+// allowed (returns true) only while the company has never had two admins.
+// Afterwards it's refused — unfreeze or re-invite a second admin first.
+func (t *Handlers) shortcut(ctx context.Context, tx *store.Store) (bool, error) {
+	ok, err := t.Approvals.ShortcutAllowed(ctx, tx)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, httpx.Errorf(http.StatusConflict, "no_approver",
+			"this needs a second admin, and nobody else can approve right now (other admins may be frozen) — unfreeze one first")
+	}
+	return true, nil
 }
 
 func mergedRoles(before, change store.BrandRoles) store.BrandRoles {
@@ -415,12 +458,20 @@ func (t *Handlers) executeRoleChange(ctx context.Context, tx *store.Store, a sto
 	if err := json.Unmarshal(a.Payload, &c); err != nil {
 		return nil, err
 	}
-	target, before, _, err := t.checkRoleChange(ctx, tx, a.RequestedBy, c)
+	// The requester must still be an owner now, not just when they asked.
+	requester, err := tx.UserByID(ctx, a.RequestedBy)
 	if err != nil {
 		return nil, err
 	}
-	requester, err := tx.UserByID(ctx, a.RequestedBy)
+	if requester.CompanyRole != store.CompanyOwner || requester.FrozenAt != nil {
+		return nil, approvals.Reject("%s is no longer an owner", requester.Email)
+	}
+	target, before, _, err := t.checkRoleChange(ctx, tx, a.RequestedBy, c)
 	if err != nil {
+		var he *httpx.Error
+		if errors.As(err, &he) {
+			return nil, approvals.Reject("%s", he.Message) // e.g. would remove the last owner
+		}
 		return nil, err
 	}
 	e := store.AuditEntry{ActorID: &requester.ID, ActorEmail: requester.Email, Action: "user.roles_changed",

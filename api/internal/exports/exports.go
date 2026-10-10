@@ -38,7 +38,9 @@ type Service struct {
 
 func NewService(st *store.Store, ap *approvals.Service, an *anomaly.Service, log *slog.Logger) *Service {
 	s := &Service{store: st, approvals: ap, anomaly: an, log: log, now: time.Now}
-	ap.Register(approvals.KindExport, approvals.Definition{Label: "Export with personal data", Execute: s.execute})
+	ap.Register(approvals.KindExport, approvals.Definition{
+		Label: "Export with personal data", Execute: s.execute, Describe: s.describeLive,
+	})
 	return s
 }
 
@@ -109,21 +111,26 @@ func (s *Service) request(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 	ctx := r.Context()
-	rows, err := s.store.CountContacts(ctx, b.ID, in.Filter.contactFilter())
-	if err != nil {
-		return err
-	}
-	if rows == 0 {
-		return httpx.Errorf(http.StatusBadRequest, "empty_export", "no contacts match these filters")
-	}
-	recent, err := s.store.RecentExportCount(ctx, p.User.ID)
-	if err != nil {
-		return err
-	}
 
 	var exp store.Export
 	var frozen bool
 	err = s.store.InTx(ctx, func(tx *store.Store) error {
+		// One export request per person at a time, so the "3rd in 24 hours"
+		// count can't be dodged by sending them all at once.
+		if err := tx.Lock(ctx, "exports:"+p.User.ID.String()); err != nil {
+			return err
+		}
+		rows, err := tx.CountContacts(ctx, b.ID, in.Filter.contactFilter())
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			return httpx.Errorf(http.StatusBadRequest, "empty_export", "no contacts match these filters")
+		}
+		recent, err := tx.RecentExportCount(ctx, p.User.ID)
+		if err != nil {
+			return err
+		}
 		a, err := s.approvals.Request(ctx, tx, approvals.Request{
 			Kind: approvals.KindExport, BrandID: &b.ID, RequestedBy: p.User, Reason: in.Reason,
 			Summary: fmt.Sprintf("Export %d %s contacts (%s)", rows, b.Name, in.Filter.describe()),
@@ -151,6 +158,41 @@ func (s *Service) request(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+// requesterMayExport: still a brand admin of the brand (or owner), not frozen.
+func requesterMayExport(ctx context.Context, tx *store.Store, userID, brandID uuid.UUID) (store.User, bool, error) {
+	u, err := tx.UserByID(ctx, userID)
+	if err != nil {
+		return u, false, err
+	}
+	if u.FrozenAt != nil {
+		return u, false, nil
+	}
+	if u.CompanyRole == store.CompanyOwner {
+		return u, true, nil
+	}
+	roles, err := tx.MembershipsForUser(ctx, userID)
+	return u, roles[brandID] == store.RoleBrandAdmin, err
+}
+
+// describeLive tells the approver how many contacts match right now.
+func (s *Service) describeLive(ctx context.Context, a store.Approval) string {
+	exp, err := s.store.ExportByApproval(ctx, a.ID)
+	if err != nil {
+		return ""
+	}
+	var f Filter
+	if json.Unmarshal(exp.Filter, &f) != nil {
+		return ""
+	}
+	n, err := s.store.CountContacts(ctx, exp.BrandID, f.contactFilter())
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d contacts match these filters now (%d when requested)", n, exp.RowCount)
+}
+
+var oneLine = strings.NewReplacer("\r", " ", "\n", " ")
+
 // csvSafe stops spreadsheet formula injection: a cell starting with = + - @
 // (or a tab/CR) is prefixed with ' so Excel and Sheets treat it as text.
 func csvSafe(v string) string {
@@ -174,19 +216,30 @@ func (s *Service) execute(ctx context.Context, tx *store.Store, a store.Approval
 	if err != nil {
 		return nil, err
 	}
-	requester, err := tx.UserByID(ctx, exp.RequestedBy)
+	// The requester must still be allowed to export this brand now.
+	requester, ok, err := requesterMayExport(ctx, tx, exp.RequestedBy, exp.BrandID)
 	if err != nil {
 		return nil, err
+	}
+	if !ok {
+		return nil, approvals.Reject("%s no longer has export rights for %s", requester.Email, b.Name)
 	}
 	contacts, err := tx.AllContactsForExport(ctx, exp.BrandID, f.contactFilter())
 	if err != nil {
 		return nil, err
 	}
+	// What would be exported is decided now, not at request time: re-check the size.
+	if len(contacts) > anomaly.MassExportRows {
+		if _, err := s.anomaly.CheckExport(ctx, tx, requester, b, len(contacts), 1); err != nil {
+			return nil, err
+		}
+		return nil, approvals.Reject("the filters now match %d contacts, over the %d mass-export limit", len(contacts), anomaly.MassExportRows)
+	}
 	now := s.now()
 	var buf bytes.Buffer
-	// Watermark: who, what, when — so a leaked file can be traced.
+	// Watermark: who, what, when — so a leaked file can be traced. One line, always.
 	fmt.Fprintf(&buf, "# CONFIDENTIAL — %s contacts (%s). Export %s for %s, approved %s UTC. Personal data: don't share or keep after use.\n",
-		b.Name, f.describe(), exp.ID, requester.Email, now.UTC().Format("2006-01-02 15:04"))
+		oneLine.Replace(b.Name), oneLine.Replace(f.describe()), exp.ID, requester.Email, now.UTC().Format("2006-01-02 15:04"))
 	cw := csv.NewWriter(&buf)
 	_ = cw.Write([]string{"email", "first_name", "last_name", "status", "tier", "consent", "consent_source", "consented_at", "tags", "export_id"})
 	for _, c := range contacts {
@@ -275,6 +328,12 @@ func (s *Service) download(w http.ResponseWriter, r *http.Request) error {
 	}
 	if err != nil {
 		return err
+	}
+	// Still allowed to see this brand's personal data? (Rights can change after approval.)
+	if _, ok, err := requesterMayExport(ctx, s.store, p.User.ID, exp.BrandID); err != nil {
+		return err
+	} else if !ok {
+		return httpx.Errorf(http.StatusForbidden, "export_forbidden", "you no longer have export rights for this brand")
 	}
 	file, err := s.store.TakeExportFile(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {

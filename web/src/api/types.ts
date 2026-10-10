@@ -254,6 +254,7 @@ export type ApprovalItem = {
   expires_at: string;
   can_decide: boolean;
   mine: boolean;
+  detail: string; // live context for the approver, e.g. how many contacts match now
 };
 
 export type SafetyLimit = {

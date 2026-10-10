@@ -60,6 +60,21 @@ type Definition struct {
 	Execute func(ctx context.Context, tx *store.Store, a store.Approval) (any, error)
 	// OnReject optionally cleans up when a request is rejected, cancelled or expires.
 	OnReject func(ctx context.Context, tx *store.Store, a store.Approval) error
+	// Describe optionally adds live detail for the approver (e.g. "1,204
+	// contacts match now"), computed when the list is shown.
+	Describe func(ctx context.Context, a store.Approval) string
+}
+
+// RejectError, returned by Execute, closes the request as rejected with this
+// reason instead of rolling back: the request can no longer be carried out
+// (stale, requester lost their rights). Side effects Execute made before
+// returning it (e.g. freezing an account) are kept.
+type RejectError struct{ Reason string }
+
+func (e *RejectError) Error() string { return "rejected: " + e.Reason }
+
+func Reject(format string, args ...any) error {
+	return &RejectError{Reason: fmt.Sprintf(format, args...)}
 }
 
 type Service struct {
@@ -140,6 +155,14 @@ func (s *Service) Request(ctx context.Context, tx *store.Store, r Request) (stor
 	return a, tx.Audit(ctx, e, nil, map[string]any{"kind": r.Kind, "summary": r.Summary, "reason": r.Reason})
 }
 
+// ShortcutAllowed: may an admin change skip approval because nobody else
+// could approve? Only while the company has never had two admins (the
+// bootstrap); afterwards demoting or freezing others can't reopen it.
+func (s *Service) ShortcutAllowed(ctx context.Context, tx *store.Store) (bool, error) {
+	had, err := tx.HadTwoAdmins(ctx)
+	return !had, err
+}
+
 // SomeoneElseCanApprove: is there an unfrozen admin, other than the requester, who could decide?
 func (s *Service) SomeoneElseCanApprove(ctx context.Context, tx *store.Store, requester uuid.UUID, brandID *uuid.UUID, companyLevel bool) (bool, error) {
 	n, err := tx.OtherAdmins(ctx, requester)
@@ -215,7 +238,17 @@ func (s *Service) decide(ctx context.Context, p *auth.Principal, id uuid.UUID, s
 			if d.Execute == nil {
 				return httpx.Errorf(http.StatusConflict, "not_ready", "approving %q isn't supported yet", d.Label)
 			}
-			if result, err = d.Execute(ctx, tx, a); err != nil {
+			result, err = d.Execute(ctx, tx, a)
+			var rej *RejectError
+			switch {
+			case errors.As(err, &rej):
+				status, note = store.ApprovalRejected, "Couldn't be carried out: "+rej.Reason
+				if d.OnReject != nil {
+					if err := d.OnReject(ctx, tx, a); err != nil {
+						return err
+					}
+				}
+			case err != nil:
 				return err
 			}
 		default:
@@ -264,7 +297,34 @@ func (s *Service) Cancel(ctx context.Context, p *auth.Principal, id uuid.UUID, a
 	})
 }
 
-// Expire closes overdue requests (hourly job).
+// Expire closes overdue requests (housekeeping job), running each kind's
+// OnReject so e.g. an expired admin invite stops blocking the email.
 func (s *Service) Expire(ctx context.Context) (int64, error) {
-	return s.store.ExpireApprovals(ctx)
+	ids, err := s.store.OverdueApprovals(ctx)
+	if err != nil {
+		return 0, err
+	}
+	var n int64
+	for _, id := range ids {
+		err := s.store.InTx(ctx, func(tx *store.Store) error {
+			a, err := tx.LockApproval(ctx, id)
+			if err != nil || a.Status != store.ApprovalPending || a.ExpiresAt.After(s.now()) {
+				return err
+			}
+			if d, ok := s.def(a.Kind); ok && d.OnReject != nil {
+				if err := d.OnReject(ctx, tx, a); err != nil {
+					return err
+				}
+			}
+			if err := tx.DecideApproval(ctx, a.ID, store.ApprovalExpired, nil, "", nil); err != nil {
+				return err
+			}
+			n++
+			return nil
+		})
+		if err != nil {
+			return n, err
+		}
+	}
+	return n, nil
 }

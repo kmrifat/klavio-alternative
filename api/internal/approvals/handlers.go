@@ -47,6 +47,7 @@ type Item struct {
 	BrandSlug      string `json:"brand_slug"`
 	CanDecide      bool   `json:"can_decide"`
 	Mine           bool   `json:"mine"`
+	Detail         string `json:"detail"` // live context for the approver
 }
 
 func (s *Service) items(r *http.Request, p *auth.Principal, list []store.Approval) ([]Item, error) {
@@ -86,6 +87,9 @@ func (s *Service) items(r *http.Request, p *auth.Principal, list []store.Approva
 		if a.BrandID != nil {
 			it.BrandName, it.BrandSlug = brandByID[*a.BrandID].Name, brandByID[*a.BrandID].Slug
 		}
+		if d, ok := s.def(a.Kind); ok && d.Describe != nil && a.Status == store.ApprovalPending {
+			it.Detail = d.Describe(r.Context(), a)
+		}
 		out = append(out, it)
 	}
 	return out, nil
@@ -101,7 +105,16 @@ func (s *Service) list(w http.ResponseWriter, r *http.Request) error {
 	view := r.URL.Query().Get("view")
 	switch view {
 	case "decide":
-		f.Status = store.ApprovalPending
+		// Filter in SQL so older requests aren't crowded out by ones you can't decide.
+		f.DecidableBy, f.Limit = &p.User.ID, 200
+		if !p.SeesAllBrands() {
+			f.BrandIDs = []uuid.UUID{}
+			for id, role := range p.Roles {
+				if role == store.RoleBrandAdmin {
+					f.BrandIDs = append(f.BrandIDs, id)
+				}
+			}
+		}
 	case "mine":
 		f.RequestedBy = &p.User.ID
 	}
