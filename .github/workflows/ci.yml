@@ -43,7 +43,7 @@ jobs:
           go build -o bin/app ./cmd/app
           ./bin/app -mode=migrate
           ./bin/app -mode=all &
-          for i in $(seq 1 30); do curl -fsS localhost:8080/readyz && break; sleep 1; done
+          for _ in $(seq 1 30); do curl -fsS localhost:8080/readyz && break; sleep 1; done
           curl -fsS localhost:8080/healthz
           curl -fsS localhost:8080/admin/v1/meta
           kill %1 && wait %1
@@ -72,7 +72,8 @@ jobs:
       - name: Build image
         run: docker build --build-arg VERSION=${{ github.sha }} -t mail-api:ci api
       - name: Check image size
-        run: docker image inspect mail-api:ci --format '{{.Size}}' | awk '{ printf "image size: %.1f MB\n", $1/1048576 }'
+        run: |
+          docker image inspect mail-api:ci --format '{{.Size}}' | awk '{ printf "image size: %.1f MB\n", $1/1048576 }'
 
   infra:
     runs-on: ubuntu-latest
