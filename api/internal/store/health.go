@@ -109,21 +109,34 @@ func (s *Store) SaveBlocklistResult(ctx context.Context, r BlocklistResult) erro
 	return err
 }
 
+// BlocklistClaimStale: a claim older than this, never finished, is from a
+// worker that died; the lookup can be claimed again.
+const BlocklistClaimStale = 5 * time.Minute
+
 // ClaimBlocklistCheck atomically claims the brand's next blocklist lookup:
-// true when the last claim is older than minAge (or there was none). Only
-// one of many concurrent callers gets true.
+// true when the last finished lookup is older than minAge (or there was
+// none) and no other worker is on it (no claim since, or a stale one). Only
+// one of many concurrent callers gets true. CompleteBlocklistCheck marks it done.
 func (s *Store) ClaimBlocklistCheck(ctx context.Context, brandID uuid.UUID, minAge time.Duration) (bool, error) {
 	rows, err := s.db.Query(ctx, `
 		INSERT INTO blocklist_checks (brand_id, claimed_at) VALUES ($1, now())
 		ON CONFLICT (brand_id) DO UPDATE SET claimed_at = now()
-		WHERE blocklist_checks.claimed_at < now() - make_interval(secs => $2)
-		RETURNING brand_id`, brandID, minAge.Seconds())
+		WHERE (blocklist_checks.checked_at IS NULL OR blocklist_checks.checked_at < now() - make_interval(secs => $2))
+		  AND (blocklist_checks.checked_at >= blocklist_checks.claimed_at
+		       OR blocklist_checks.claimed_at < now() - make_interval(secs => $3))
+		RETURNING brand_id`, brandID, minAge.Seconds(), BlocklistClaimStale.Seconds())
 	if err != nil {
 		return false, err
 	}
 	defer rows.Close()
 	claimed := rows.Next()
 	return claimed, rows.Err()
+}
+
+// CompleteBlocklistCheck records a finished lookup.
+func (s *Store) CompleteBlocklistCheck(ctx context.Context, brandID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `UPDATE blocklist_checks SET checked_at = now() WHERE brand_id = $1`, brandID)
+	return err
 }
 
 func (s *Store) BlocklistResults(ctx context.Context, brandID uuid.UUID) ([]BlocklistResult, error) {

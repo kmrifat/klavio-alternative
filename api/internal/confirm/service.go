@@ -66,6 +66,10 @@ func NewService(d Deps) *Service {
 // SetSender swaps the sender (the SES sender, once it exists).
 func (s *Service) SetSender(m mailer.Sender) { s.sender = m }
 
+// ErrGateClosed: the brakes hold the email back for now (account brake or
+// a paused brand). The confirmation job waits and tries again.
+var ErrGateClosed = errors.New("confirm: held back by the brakes")
+
 // Gate is the brakes' say (M4's *brakes.Service).
 type Gate interface {
 	CheckGate(ctx context.Context, tx *store.Store, brandID uuid.UUID) (brakes.Gate, error)
@@ -114,7 +118,8 @@ func render(name string, d emailData) (html, text string, err error) {
 
 func (s *Service) base(b store.Brand) string { return unsubscribe.BaseURL(b.LinkDomain, s.override) }
 
-// SendConfirmation emails a confirmation link (P2). requestID Nil: a
+// SendConfirmation emails a confirmation link (P2), or returns ErrGateClosed
+// while the brakes hold it back. requestID Nil: a
 // sign-up awaiting double opt-in. Otherwise a subscriber's topic request,
 // whose link confirms exactly that request's topics. People who confirmed,
 // left or were suppressed meanwhile get nothing. Run by the confirmation job.
@@ -136,11 +141,10 @@ func (s *Service) SendConfirmation(ctx context.Context, brandID, contactID, requ
 	if c.SuppressionReason != nil {
 		return nil
 	}
-	if ok, why, err := s.allowed(ctx, b.ID, false); err != nil || !ok {
-		if err == nil {
-			s.log.WarnContext(ctx, "confirmation email not sent: brakes", "brand", b.Slug, "reason", why)
-		}
+	if ok, why, err := s.allowed(ctx, b.ID, false); err != nil {
 		return err
+	} else if !ok {
+		return fmt.Errorf("%w: %s", ErrGateClosed, why)
 	}
 	now := s.now()
 	claims := Claims{BrandID: b.ID, ContactID: c.ID, Purpose: PurposeOptIn, IssuedAt: now.Truncate(time.Second)}

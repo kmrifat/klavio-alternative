@@ -237,6 +237,7 @@ func New(d Deps) (*App, error) {
 	a.Health.SetReputationSource(a.Brakes)
 	a.Campaigns.SetBrakes(a.Brakes)
 	a.Confirm.SetGate(a.Brakes)
+	a.contactsAPI.Gate = a.Brakes
 	a.Campaigns.SetTracking(a.Tracking, d.Config.TrackingHoneypot)
 	a.recovery = &brakes.Recovery{Service: a.Brakes, Store: st, Auth: authSvc, Approvals: a.Approvals, Log: d.Log}
 	a.recovery.RegisterApprovals()

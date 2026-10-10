@@ -598,8 +598,10 @@ func TestBrakesGateConfirmationAndRepermission(t *testing.T) {
 	} {
 		set(tc.brake, tc.status, tc.account)
 		email := fmt.Sprintf("signup%d@example.com", i)
-		if r := apiCall(t, f.srv, "POST", "/api/v1/contacts", key, f.signup(email)); r.status != 202 {
-			t.Fatalf("%s: signup %d %s", tc.brake, r.status, r.raw)
+		r := apiCall(t, f.srv, "POST", "/api/v1/contacts", key, f.signup(email))
+		want := map[bool]string{true: "sent", false: "delayed"}[tc.confirmation]
+		if r.status != 202 || r.body["confirmation_email"] != want {
+			t.Fatalf("%s: signup %d %s, want confirmation_email %s", tc.brake, r.status, r.raw, want)
 		}
 		if got := sentTo(f.a, email, "confirmation") == 1; got != tc.confirmation {
 			t.Errorf("brake %s, account brake %v: confirmation sent = %v", tc.brake, tc.account, got)
@@ -612,6 +614,15 @@ func TestBrakesGateConfirmationAndRepermission(t *testing.T) {
 		}
 	}
 	set("healthy", "ready", false)
+	// The held-back confirmations (paused brand, account brake) go out once
+	// the gate opens, each once.
+	retryHeld(t, f.a)
+	retryHeld(t, f.a)
+	for _, email := range []string{"signup2@example.com", "signup3@example.com"} {
+		if n := sentTo(f.a, email, "confirmation"); n != 1 {
+			t.Errorf("%s: %d confirmations after the gate opened", email, n)
+		}
+	}
 	if err := f.a.Confirm.SendRepermissions(ctx); err != nil {
 		t.Fatal(err)
 	}

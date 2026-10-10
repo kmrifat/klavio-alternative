@@ -143,9 +143,10 @@ func (s *Service) eachBrand(ctx context.Context, f func(store.Brand) error) erro
 // BlocklistsOn reports whether blocklist checks are configured.
 func (s *Service) BlocklistsOn() bool { return s.cfg.Blocklists != nil }
 
-// CheckBlocklists looks up the brand's sending and link domains, unless
-// they were looked up less than minAge ago. The claim is atomic, so parallel
-// re-checks can't multiply queries to the lists.
+// CheckBlocklists looks up the brand's sending and link domains, unless a
+// lookup finished less than minAge ago or another worker is on it. The
+// claim is atomic, so parallel re-checks can't multiply queries to the
+// lists; a claim that never finishes goes stale after a few minutes.
 func (s *Service) CheckBlocklists(ctx context.Context, b store.Brand, minAge time.Duration) error {
 	if s.cfg.Blocklists == nil {
 		return nil
@@ -183,7 +184,8 @@ func (s *Service) CheckBlocklists(ctx context.Context, b store.Brand, minAge tim
 			}
 		}
 	}
-	return nil
+	// Only now: a worker that died above leaves the claim to go stale.
+	return s.store.CompleteBlocklistCheck(ctx, b.ID)
 }
 
 // CheckAllBlocklists is the periodic job: it re-checks every brand whose
