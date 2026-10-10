@@ -3,18 +3,382 @@
     "name": "Contacts",
     "description": "Contacts and topics."
   },
-  "x-todo": [
-    "GET /admin/v1/brands/{slug}/contacts",
-    "POST /admin/v1/brands/{slug}/contacts",
-    "GET /admin/v1/brands/{slug}/contacts/stats",
-    "GET /admin/v1/brands/{slug}/contacts/{id}",
-    "POST /admin/v1/brands/{slug}/contacts/{id}/suppress",
-    "POST /admin/v1/brands/{slug}/contacts/{id}/unsubscribe",
-    "GET /admin/v1/brands/{slug}/topics",
-    "POST /admin/v1/brands/{slug}/topics"
-  ],
-  "paths": {},
+  "x-todo": [],
+  "paths": {
+    "/brands/{slug}/contacts": {
+      "get": {
+        "operationId": "listContacts",
+        "summary": "List contacts",
+        "description": "The brand's contacts, sorted by email, one page at a time, with each one's engagement tier and suppression. Needs editor or above, since it shows personal data: viewers only get the counts (`GET /contacts/stats`), and company approvers need an editor role on the brand too.\n\nPaging is by email: pass the previous page's `next_after` as `after` until it comes back empty. A full page always returns a `next_after`, so the last page may be empty.",
+        "x-role": "brand:editor",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found", "bad_tier"],
+        "parameters": [
+          { "$ref": "#/components/parameters/Slug" },
+          { "name": "tier", "in": "query", "description": "Only these engagement tiers, comma-separated (e.g. `active,warm`).", "schema": { "type": "string", "examples": ["at_risk,sunset"] } },
+          { "name": "status", "in": "query", "description": "Only contacts with this status. An unknown value matches nobody.", "schema": { "$ref": "#/components/schemas/ContactsStatus" } },
+          { "name": "tag", "in": "query", "description": "Only contacts with this tag (exact match).", "schema": { "type": "string" } },
+          { "name": "q", "in": "query", "description": "Search: the start of the email, first name or last name, ignoring case.", "schema": { "type": "string" } },
+          { "name": "suppressed", "in": "query", "description": "`true`: only addresses blocked company-wide. Any other value: only addresses that aren't. Leave out for both.", "schema": { "type": "boolean" } },
+          { "name": "after", "in": "query", "description": "Cursor: the previous page's `next_after` (the last email on it).", "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "description": "Page size, 1–200. Anything else means 50.", "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of contacts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["contacts", "next_after"],
+                  "properties": {
+                    "contacts": { "type": "array", "maxItems": 200, "items": { "$ref": "#/components/schemas/ContactsContact" } },
+                    "next_after": { "type": "string", "description": "Pass as `after` for the next page; empty when there are no more." }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_tier`: `tier` names a tier that doesn't exist.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "post": {
+        "operationId": "addContact",
+        "summary": "Add a contact",
+        "description": "Adds one person as subscribed to the chosen topics, with where and how they agreed kept as proof (a manual `opt_in` consent record, with the caller's IP). Brand admins only, like imports. Refused if the address is blocked company-wide (after a bounce, complaint or removal request) or is already a contact of this brand. Recorded in the audit log (`contact.added`).",
+        "x-role": "brand:brand_admin",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found", "bad_json", "invalid_email", "bad_consent", "no_topics", "unknown_topic", "suppressed", "contact_exists"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ContactsAddInput" } } }
+        },
+        "responses": {
+          "201": {
+            "description": "The new contact.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ContactsContact" } } }
+          },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields. `invalid_email`: that isn't a valid email address. `bad_consent`: choose how they agreed, say where and how, and give a past consent date. `no_topics`: choose at least one topic. `unknown_topic`: a topic doesn't belong to this brand.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "`suppressed`: the address is blocked for every brand. `contact_exists`: it's already a contact of this brand.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/brands/{slug}/contacts/stats": {
+      "get": {
+        "operationId": "getContactStats",
+        "summary": "Contact counts",
+        "description": "The header cards of the contacts page: how many contacts there are, per tier and per status. Counts only, so every brand role can see them. `suppressed_company_wide` spans other brands, so it's left out for members below editor (owners and approvers always get it).",
+        "x-role": "brand:viewer",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "not_found"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }],
+        "responses": {
+          "200": {
+            "description": "The counts.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ContactsStats" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/brands/{slug}/contacts/{id}": {
+      "get": {
+        "operationId": "getContact",
+        "summary": "A contact",
+        "description": "One contact with the topics they're subscribed to and their consent history (opt-ins, confirmations, unsubscribes…), newest first. Needs editor or above, like the list.",
+        "x-role": "brand:editor",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/ID" }],
+        "responses": {
+          "200": {
+            "description": "The contact.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["contact", "topic_ids", "consent_history"],
+                  "properties": {
+                    "contact": { "$ref": "#/components/schemas/ContactsContact" },
+                    "topic_ids": { "type": "array", "description": "The topics they're subscribed to.", "items": { "type": "string", "format": "uuid" } },
+                    "consent_history": { "type": "array", "items": { "$ref": "#/components/schemas/ContactsConsentRecord" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/brands/{slug}/contacts/{id}/unsubscribe": {
+      "post": {
+        "operationId": "unsubscribeContact",
+        "summary": "Unsubscribe a contact",
+        "description": "Honours a request made outside the email (by phone, in a reply…). Removes the given topics, or every topic when `topic_ids` is empty or left out; once no topic is left the contact's status becomes `unsubscribed`. Topic IDs they aren't subscribed to are ignored. Editors can do it: saying no must be easy. Adds a manual `unsubscribed` consent record (the note as its source) and an audit log entry (`contact.unsubscribed`, with the topics before and after).",
+        "x-role": "brand:editor",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found", "bad_json"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/ID" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "topic_ids": { "type": "array", "description": "The topics to leave; empty or left out = all of them.", "items": { "type": "string", "format": "uuid" } },
+                  "note": { "type": "string", "description": "How they asked, e.g. \"Asked by phone\". Kept with the consent record." }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": { "description": "Unsubscribed." },
+          "400": { "$ref": "#/components/responses/BadJSON" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/brands/{slug}/contacts/{id}/suppress": {
+      "post": {
+        "operationId": "suppressContact",
+        "summary": "Block an address everywhere",
+        "description": "Suppresses the contact's address for every brand, for good (reason `manual`, with the note). If it's already suppressed the first reason is kept. The contact's status doesn't change, but nothing will be sent to it. Brand admins only. Recorded in the audit log (`contact.suppressed`).",
+        "x-role": "brand:brand_admin",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found", "bad_json", "note_required"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/ID" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["note"],
+                "properties": {
+                  "note": { "type": "string", "minLength": 1, "description": "Why, e.g. \"asked never to be emailed again\". Not blank." }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": { "description": "Suppressed." },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields. `note_required`: say why.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/brands/{slug}/topics": {
+      "get": {
+        "operationId": "listTopics",
+        "summary": "List topics",
+        "description": "The brand's topics (what people can subscribe to), oldest first, with how many contacts are subscribed to each.",
+        "x-role": "brand:viewer",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "not_found"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }],
+        "responses": {
+          "200": {
+            "description": "The topics.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["topics"],
+                  "properties": { "topics": { "type": "array", "items": { "$ref": "#/components/schemas/ContactsTopic" } } }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "post": {
+        "operationId": "createTopic",
+        "summary": "Create a topic",
+        "description": "Adds a topic people can subscribe to. Names are unique per brand. Brand admins only. Recorded in the audit log (`topic.created`).",
+        "x-role": "brand:brand_admin",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found", "bad_json", "bad_name", "topic_exists"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name"],
+                "properties": {
+                  "name": { "type": "string", "minLength": 1, "maxLength": 60, "description": "Trimmed; 1–60 characters (bytes).", "examples": ["Weekly newsletter"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The new topic (no subscribers yet).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ContactsTopic" } } }
+          },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields. `bad_name`: the name must be 1–60 characters.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "`topic_exists`: the brand already has a topic with that name.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    }
+  },
   "components": {
-    "schemas": {}
+    "schemas": {
+      "ContactsStatus": {
+        "type": "string",
+        "enum": ["pending_confirmation", "subscribed", "quarantined", "unsubscribed"],
+        "description": "`pending_confirmation`: waiting to click the confirmation link. `quarantined`: imported with no recent sign of life; gets only a re-permission email."
+      },
+      "ContactsTier": {
+        "type": "string",
+        "enum": ["active", "warm", "at_risk", "sunset"],
+        "description": "Engagement, by days since the last click (or since signing up, for people who haven't clicked): `active` 0–30, `warm` 31–90, `at_risk` 91–180, `sunset` 181+ or never. Without click-tracking consent the best is `warm`."
+      },
+      "ContactsConsentBasis": { "type": "string", "enum": ["double_opt_in", "single_opt_in", "soft_opt_in"] },
+      "ContactsContact": {
+        "type": "object",
+        "required": ["id", "email", "first_name", "last_name", "status", "consent_basis", "consent_source", "consented_at", "last_click_at", "last_engaged_at", "tags", "tracking_allowed", "timezone", "country", "created_at", "tier", "suppression_reason"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "email": { "type": "string", "format": "email" },
+          "first_name": { "type": "string" },
+          "last_name": { "type": "string" },
+          "status": { "$ref": "#/components/schemas/ContactsStatus" },
+          "consent_basis": { "$ref": "#/components/schemas/ContactsConsentBasis" },
+          "consent_source": { "type": "string", "description": "Where and how they agreed.", "examples": ["Asked at the shop counter"] },
+          "consented_at": { "type": ["string", "null"], "format": "date-time" },
+          "last_click_at": { "type": ["string", "null"], "format": "date-time" },
+          "last_engaged_at": { "type": ["string", "null"], "format": "date-time", "description": "What the tier is measured from: the last click, a sign of life from an import, or the opt-in." },
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "tracking_allowed": { "type": "boolean", "description": "Whether they agreed to click tracking." },
+          "timezone": { "type": "string", "description": "Empty if unknown." },
+          "country": { "type": "string", "description": "Two-letter code; empty if unknown." },
+          "created_at": { "type": "string", "format": "date-time" },
+          "tier": { "$ref": "#/components/schemas/ContactsTier" },
+          "suppression_reason": {
+            "type": ["string", "null"],
+            "enum": ["hard_bounce", "soft_bounce", "complaint", "manual", "erasure", null],
+            "description": "Why the address is blocked company-wide; null if it isn't."
+          }
+        }
+      },
+      "ContactsAddInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["email", "topic_ids", "consent"],
+        "properties": {
+          "email": { "type": "string", "format": "email", "maxLength": 254, "description": "Lower-cased and trimmed." },
+          "first_name": { "type": "string", "description": "Trimmed." },
+          "last_name": { "type": "string", "description": "Trimmed." },
+          "tags": { "type": "array", "description": "Cleaned up: trimmed, duplicates (ignoring case) and tags over 64 characters dropped; commas, semicolons and pipes split a tag.", "items": { "type": "string", "maxLength": 64 } },
+          "topic_ids": { "type": "array", "minItems": 1, "description": "The brand's topics they agreed to.", "items": { "type": "string", "format": "uuid" } },
+          "tracking_allowed": { "type": "boolean", "default": true, "description": "`false` for people (e.g. in the EU) who didn't agree to click tracking." },
+          "consent": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["basis", "source"],
+            "properties": {
+              "basis": { "$ref": "#/components/schemas/ContactsConsentBasis" },
+              "source": { "type": "string", "minLength": 1, "description": "How they agreed; kept as proof.", "examples": ["Asked at the shop counter"] },
+              "consented_at": { "type": "string", "description": "When they agreed: a past date like `2026-03-12` (RFC 3339 and common export formats work too). Defaults to now.", "examples": ["2026-03-12"] }
+            }
+          }
+        }
+      },
+      "ContactsStats": {
+        "type": "object",
+        "required": ["total", "tiers", "quarantined", "pending_confirmation", "unsubscribed", "suppressed_in_brand"],
+        "properties": {
+          "total": { "type": "integer", "description": "Every contact of the brand." },
+          "tiers": {
+            "type": "object",
+            "description": "People who can be emailed (subscribed, not suppressed), per tier.",
+            "required": ["active", "warm", "at_risk", "sunset"],
+            "properties": {
+              "active": { "type": "integer" },
+              "warm": { "type": "integer" },
+              "at_risk": { "type": "integer" },
+              "sunset": { "type": "integer" }
+            }
+          },
+          "quarantined": { "type": "integer" },
+          "pending_confirmation": { "type": "integer" },
+          "unsubscribed": { "type": "integer" },
+          "suppressed_in_brand": { "type": "integer", "description": "This brand's contacts whose address is blocked company-wide (whatever their status)." },
+          "suppressed_company_wide": { "type": "integer", "description": "Every blocked address, across brands. Left out for members below editor." }
+        }
+      },
+      "ContactsConsentRecord": {
+        "type": "object",
+        "required": ["id", "kind", "method", "source", "wording", "page_url", "ip", "occurred_at", "recorded_by", "import_id"],
+        "properties": {
+          "id": { "type": "integer" },
+          "kind": { "type": "string", "description": "What happened: `opt_in`, `confirmed`, `import_attested`, `unsubscribed`, and others.", "examples": ["opt_in"] },
+          "method": { "type": "string", "description": "How: `manual` (in this app), `import`, `api`, `link`, `header` (one-click unsubscribe), `ses`…", "examples": ["manual"] },
+          "source": { "type": "string", "description": "Where and how, in words (or the note given when unsubscribing)." },
+          "wording": { "type": "string", "description": "The consent text agreed to, if known." },
+          "page_url": { "type": "string" },
+          "ip": { "type": "string" },
+          "occurred_at": { "type": "string", "format": "date-time" },
+          "recorded_by": { "type": ["string", "null"], "format": "uuid", "description": "The member who recorded it, if any." },
+          "import_id": { "type": ["string", "null"], "format": "uuid" }
+        }
+      },
+      "ContactsTopic": {
+        "type": "object",
+        "required": ["id", "name", "subscribers"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string", "examples": ["Weekly newsletter"] },
+          "subscribers": { "type": "integer", "description": "Contacts linked to this topic." }
+        }
+      }
+    }
   }
 }

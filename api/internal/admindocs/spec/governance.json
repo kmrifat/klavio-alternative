@@ -3,20 +3,512 @@
     "name": "Governance",
     "description": "Approvals, safety limits, exports and the audit log."
   },
-  "x-todo": [
-    "GET /admin/v1/approvals",
-    "POST /admin/v1/approvals/{id}/approve",
-    "POST /admin/v1/approvals/{id}/cancel",
-    "POST /admin/v1/approvals/{id}/reject",
-    "GET /admin/v1/audit",
-    "POST /admin/v1/brands/{slug}/exports",
-    "GET /admin/v1/exports",
-    "GET /admin/v1/exports/{id}/download",
-    "GET /admin/v1/safety-limits",
-    "PUT /admin/v1/safety-limits"
-  ],
-  "paths": {},
+  "x-todo": [],
+  "paths": {
+    "/approvals": {
+      "get": {
+        "operationId": "listApprovals",
+        "summary": "Approval requests",
+        "description": "Requests for a second person's approval (the two-person rule), newest first. Each member only sees requests they made, can decide, or that belong to a brand they administer; owners and approvers see all of them. A pending request past its deadline is shown as `expired` even before the hourly job closes it. Pending requests the caller can decide carry live context for the approver in `detail` (e.g. how many contacts an export matches now).",
+        "x-role": "signed_in",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated"],
+        "parameters": [
+          {
+            "name": "view",
+            "in": "query",
+            "description": "`decide`: live requests waiting for the caller's decision (at most 200). `mine`: the caller's own requests (at most 100). Anything else, or none: every request the caller can see (at most 100).",
+            "schema": { "type": "string", "enum": ["decide", "mine", "recent"] }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The requests.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["approvals"],
+                  "properties": { "approvals": { "type": "array", "maxItems": 200, "items": { "$ref": "#/components/schemas/GovernanceApproval" } } }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" }
+        }
+      }
+    },
+    "/approvals/{id}/approve": {
+      "post": {
+        "operationId": "approveApproval",
+        "summary": "Approve a request",
+        "description": "Carries out the requested action with the approver's authority, in the same transaction as the decision. Owners and approvers can decide anything; a brand admin can decide brand-level requests (not company-level ones such as role changes, admin invites, safety limits or resuming sending) for brands they administer. Nobody can decide their own request or one that is about them. If the action can no longer be carried out (the requester lost their rights, the data changed since), the request is closed as `rejected` with the reason in `decision_note` instead, and the answer is still 200. Recorded in the audit log (`approval.approved` or `approval.rejected`).",
+        "x-role": "signed_in",
+        "x-step-up": true,
+        "x-error-codes": ["unauthenticated", "step_up_required", "not_found", "bad_json", "not_pending", "own_request", "about_you", "forbidden", "not_ready"],
+        "parameters": [{ "$ref": "#/components/parameters/ID" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GovernanceDecision" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "The decided request.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GovernanceApproval" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadJSON" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": {
+            "description": "`step_up_required`: confirm with a passkey first. `own_request`: the caller made this request. `about_you`: the request is about the caller (e.g. their own promotion). `forbidden`: the caller can see the request but can't decide it.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "`not_pending`: already decided, cancelled or expired. `not_ready`: this kind of request can't be approved yet (no action is wired up for it).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/approvals/{id}/reject": {
+      "post": {
+        "operationId": "rejectApproval",
+        "summary": "Reject a request",
+        "description": "Closes the request without carrying it out; the feature cleans up after it (e.g. a pending invite link or API key stops working). Who may decide is the same as for approving. A note saying why is required, so the requester knows what to change. Recorded in the audit log (`approval.rejected`).",
+        "x-role": "signed_in",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "not_found", "bad_json", "note_required", "not_pending", "own_request", "about_you", "forbidden"],
+        "parameters": [{ "$ref": "#/components/parameters/ID" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GovernanceDecision" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "The rejected request.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GovernanceApproval" } } }
+          },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields. `note_required`: the note is empty.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": {
+            "description": "`own_request`: the caller made this request. `about_you`: the request is about the caller. `forbidden`: the caller can see the request but can't decide it.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "`not_pending`: already decided, cancelled or expired.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/approvals/{id}/cancel": {
+      "post": {
+        "operationId": "cancelApproval",
+        "summary": "Withdraw your request",
+        "description": "Withdraws one of the caller's own pending requests; the feature cleans up after it as for a rejection. Other people's requests answer 404. Recorded in the audit log (`approval.cancelled`).",
+        "x-role": "signed_in",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "not_found", "not_pending"],
+        "parameters": [{ "$ref": "#/components/parameters/ID" }],
+        "responses": {
+          "204": { "description": "Withdrawn." },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "`not_pending`: already decided, cancelled or expired.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/audit": {
+      "get": {
+        "operationId": "listAuditEntries",
+        "summary": "Audit log",
+        "description": "Who did what, newest first. Owners and approvers see every entry; a brand admin must filter by a brand they administer (`brand`), and anyone else gets 403. Pages are keyset-paginated: pass the previous answer's `next_before` as `before` to get the next page.",
+        "x-role": "signed_in",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "not_found", "forbidden", "bad_date"],
+        "parameters": [
+          { "name": "brand", "in": "query", "description": "Only this brand's entries (its slug). An unknown or invisible brand answers 404.", "schema": { "type": "string", "examples": ["brightside"] } },
+          { "name": "actor", "in": "query", "description": "Only entries whose actor's email starts with this (case-insensitive).", "schema": { "type": "string", "examples": ["olivia@"] } },
+          { "name": "action", "in": "query", "description": "Only actions starting with this, e.g. `import.` or `approval.approved`.", "schema": { "type": "string", "examples": ["approval."] } },
+          { "name": "since", "in": "query", "description": "Only entries on or after this day (UTC).", "schema": { "type": "string", "format": "date", "examples": ["2026-10-01"] } },
+          { "name": "until", "in": "query", "description": "Only entries up to and including this day (UTC).", "schema": { "type": "string", "format": "date", "examples": ["2026-10-31"] } },
+          { "name": "before", "in": "query", "description": "Only entries with a smaller ID: the previous page's `next_before`. Ignored unless a positive integer.", "schema": { "type": "integer", "format": "int64", "minimum": 1 } },
+          { "name": "limit", "in": "query", "description": "Page size. Values outside 1–200 are ignored.", "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of entries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["entries", "next_before"],
+                  "properties": {
+                    "entries": { "type": "array", "maxItems": 200, "items": { "$ref": "#/components/schemas/GovernanceAuditEntry" } },
+                    "next_before": { "type": "integer", "format": "int64", "description": "When the page is full, the last entry's ID (pass it as `before` for the next page); 0 when there are no more." }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_date`: `since` or `until` isn't a date like 2026-10-01.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/brands/{slug}/exports": {
+      "post": {
+        "operationId": "requestExport",
+        "summary": "Request a contacts export",
+        "description": "Files a request to export the brand's contacts, with their personal data, as CSV. Nothing is exported until a second admin approves it (approval kind `export`); the file is then built, watermarked with who asked and when, and only the requester can download it for 24 hours. A large export (over 5,000 contacts) or a third request within 24 hours raises a critical alert, and a requester who isn't an owner is frozen at once (`requester_frozen`), signed out everywhere until an owner reviews it. One request per person is handled at a time. Recorded in the audit log (`approval.requested`).",
+        "x-role": "brand:brand_admin",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "not_found", "forbidden", "bad_json", "reason_required", "bad_tier", "account_frozen", "empty_export", "no_approver"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GovernanceExportRequest" } } }
+        },
+        "responses": {
+          "202": {
+            "description": "Filed for approval.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["export", "requester_frozen"],
+                  "properties": {
+                    "export": { "$ref": "#/components/schemas/GovernanceExport" },
+                    "requester_frozen": { "type": "boolean", "description": "The request looked like a mass export and the caller's account was frozen." }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields. `reason_required`: the reason is empty. `bad_tier`: an unknown tier. `empty_export`: no contacts match the filter.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": {
+            "description": "`forbidden`: the caller isn't an admin of this brand. `account_frozen`: the caller's account was frozen after unusual activity.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "`no_approver`: nobody else (an owner, approver or another admin of the brand) could approve it.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/exports": {
+      "get": {
+        "operationId": "listMyExports",
+        "summary": "Your exports",
+        "description": "The caller's own export requests (nobody sees anyone else's), newest first, at most 50, each with where it stands.",
+        "x-role": "signed_in",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated"],
+        "responses": {
+          "200": {
+            "description": "The exports.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["exports"],
+                  "properties": { "exports": { "type": "array", "maxItems": 50, "items": { "$ref": "#/components/schemas/GovernanceMyExport" } } }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" }
+        }
+      }
+    },
+    "/exports/{id}/download": {
+      "get": {
+        "operationId": "downloadExport",
+        "summary": "Download an export",
+        "description": "The approved export as CSV. Only the person who requested it, while they still have export rights for the brand (its admin, or an owner, and not frozen), and only within 24 hours of approval; after that the file is deleted. It can be downloaded more than once in that window: each download is counted (`download_count`) and recorded in the audit log (`export.downloaded`). The first line is a `# CONFIDENTIAL` watermark naming the brand, filter, export ID, requester and approval time; then a header row (`email`, `first_name`, `last_name`, `status`, `tier`, `consent`, `consent_source`, `consented_at`, `tags`, `export_id`) and one row per contact. Tags are joined with `;`; cells that start with `=`, `+`, `-` or `@` are prefixed with `'` so spreadsheets don't run them.",
+        "x-role": "signed_in",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "not_found", "export_forbidden", "export_unavailable"],
+        "parameters": [{ "$ref": "#/components/parameters/ID" }],
+        "responses": {
+          "200": {
+            "description": "The file.",
+            "headers": {
+              "Content-Disposition": { "description": "`attachment; filename=\"contacts-export-<first 8 characters of the ID>.csv\"`", "schema": { "type": "string" } },
+              "Cache-Control": { "description": "`no-store`", "schema": { "type": "string" } }
+            },
+            "content": { "text/csv": { "schema": { "type": "string" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": {
+            "description": "`export_forbidden`: the caller no longer has export rights for this brand.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "410": {
+            "description": "`export_unavailable`: not approved yet, or the 24-hour download window has passed.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/safety-limits": {
+      "get": {
+        "operationId": "listSafetyLimits",
+        "summary": "Safety limits",
+        "description": "Every company-wide safety limit (brake thresholds, audience caps, import checks) with its default, hard limit and current value. Readable by any signed-in member.",
+        "x-role": "signed_in",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated"],
+        "responses": {
+          "200": {
+            "description": "The limits.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["limits"],
+                  "properties": { "limits": { "type": "array", "items": { "$ref": "#/components/schemas/GovernanceSafetyLimit" } } }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" }
+        }
+      },
+      "put": {
+        "operationId": "changeSafetyLimits",
+        "summary": "Change safety limits",
+        "description": "Changes several limits at once, all or nothing. Making a limit stricter applies at once (audit log: `safety_limit.tightened`). Making one looser files a request for a second admin (approval kind `safety_limit`, audit log: `approval.requested`) and changes nothing until it's approved; the approval is dropped if the limit changes in the meantime. Locked limits can only be made stricter, and no limit can go past its hard limit. Unchanged values are skipped.",
+        "x-role": "company:approver",
+        "x-step-up": true,
+        "x-error-codes": ["unauthenticated", "step_up_required", "forbidden", "bad_json", "unknown_limit", "bad_value", "locked", "past_hard_limit", "no_approver"],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GovernanceSafetyLimitChange" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "What applied now and what waits for approval.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GovernanceSafetyLimitChangeResult" } } }
+          },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields. `unknown_limit`: no limit has that key. `bad_value`: a value isn't a positive number. `locked`: a locked limit would be loosened. `past_hard_limit`: a value crosses the limit's hard limit.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/ForbiddenOrStepUp" },
+          "409": {
+            "description": "`no_approver`: a loosening needs a second admin and nobody else can approve right now.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    }
+  },
   "components": {
-    "schemas": {}
+    "schemas": {
+      "GovernanceApprovalKind": {
+        "type": "string",
+        "description": "What needs a second person: a large or risky send, every send while a brand warms up, an export with personal data, giving someone admin rights, inviting an admin, loosening a safety limit, resuming sending, creating an API key, changing a brand's locked layout.",
+        "enum": ["large_send", "risky_audience", "warmup_send", "export", "role_change", "admin_invite", "safety_limit", "brand_resume", "api_key", "layout_change"]
+      },
+      "GovernanceApprovalStatus": { "type": "string", "enum": ["pending", "approved", "rejected", "cancelled", "expired"] },
+      "GovernanceApprovalRecord": {
+        "type": "object",
+        "description": "An approval request as stored.",
+        "required": ["id", "kind", "brand_id", "requested_by", "requested_at", "summary", "reason", "payload", "status", "decided_by", "decided_at", "decision_note", "result", "expires_at", "target_user_id", "target_email"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "kind": { "$ref": "#/components/schemas/GovernanceApprovalKind" },
+          "brand_id": { "type": ["string", "null"], "format": "uuid", "description": "The brand it concerns; null for company-level requests." },
+          "requested_by": { "type": "string", "format": "uuid" },
+          "requested_at": { "type": "string", "format": "date-time" },
+          "summary": { "type": "string", "description": "One line for the approver.", "examples": ["Export 1204 Brightside contacts (all contacts)"] },
+          "reason": { "type": "string", "description": "Why, in the requester's words (may be empty)." },
+          "payload": { "description": "Kind-specific details of the action, as filed." },
+          "status": { "$ref": "#/components/schemas/GovernanceApprovalStatus" },
+          "decided_by": { "type": ["string", "null"], "format": "uuid", "description": "Who approved or rejected it; null while pending, and when cancelled or expired." },
+          "decided_at": { "type": ["string", "null"], "format": "date-time" },
+          "decision_note": { "type": "string", "description": "The decider's note; for an approval that couldn't be carried out, why." },
+          "result": { "description": "What the approved action returned (kind-specific, e.g. an export's row count and expiry); null otherwise." },
+          "expires_at": { "type": "string", "format": "date-time", "description": "Undecided requests expire 7 days after they're filed." },
+          "target_user_id": { "type": ["string", "null"], "format": "uuid", "description": "The member the request is about (they can't decide it)." },
+          "target_email": { "type": ["string", "null"], "description": "The invitee the request is about, for an admin invite." }
+        }
+      },
+      "GovernanceApproval": {
+        "description": "An approval request with what the app shows next to it.",
+        "allOf": [
+          { "$ref": "#/components/schemas/GovernanceApprovalRecord" },
+          {
+            "type": "object",
+            "required": ["label", "requester_name", "requester_email", "decider_name", "brand_name", "brand_slug", "can_decide", "mine", "detail"],
+            "properties": {
+              "label": { "type": "string", "description": "The kind, for people.", "examples": ["Export with personal data"] },
+              "requester_name": { "type": "string" },
+              "requester_email": { "type": "string", "format": "email" },
+              "decider_name": { "type": "string", "description": "Empty until decided." },
+              "brand_name": { "type": "string", "description": "Empty for company-level requests." },
+              "brand_slug": { "type": "string", "description": "Empty for company-level requests." },
+              "can_decide": { "type": "boolean", "description": "Pending, and the caller may approve or reject it." },
+              "mine": { "type": "boolean", "description": "The caller made this request." },
+              "detail": { "type": "string", "description": "Live context for the approver, for pending requests of some kinds (empty otherwise).", "examples": ["1240 contacts match these filters now (1204 when requested)"] }
+            }
+          }
+        ]
+      },
+      "GovernanceDecision": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "note": { "type": "string", "description": "Shown to the requester. Required (non-blank) to reject; optional to approve." }
+        }
+      },
+      "GovernanceAuditEntry": {
+        "type": "object",
+        "required": ["id", "at", "actor_id", "actor_email", "brand_id", "action", "target_type", "target_id", "ip", "user_agent"],
+        "properties": {
+          "id": { "type": "integer", "format": "int64" },
+          "at": { "type": "string", "format": "date-time" },
+          "actor_id": { "type": ["string", "null"], "format": "uuid", "description": "Null for the system and for people not signed in." },
+          "actor_email": { "type": "string", "description": "`system` for automatic actions.", "examples": ["olivia@acme.test"] },
+          "brand_id": { "type": ["string", "null"], "format": "uuid" },
+          "action": { "type": "string", "examples": ["approval.approved"] },
+          "target_type": { "type": "string", "examples": ["approval"] },
+          "target_id": { "type": "string" },
+          "before": { "description": "The state before, when recorded (absent otherwise)." },
+          "after": { "description": "The state after, or the action's details, when recorded (absent otherwise)." },
+          "ip": { "type": "string" },
+          "user_agent": { "type": "string" }
+        }
+      },
+      "GovernanceExportFilter": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Which contacts to export, as in the contact list's filters. Empty: every contact.",
+        "properties": {
+          "tiers": {
+            "type": ["array", "null"],
+            "description": "Only contacts in these engagement tiers.",
+            "items": { "type": "string", "enum": ["active", "warm", "at_risk", "sunset"] }
+          },
+          "status": { "type": "string", "description": "Only contacts with this status; empty: any.", "enum": ["", "pending_confirmation", "subscribed", "quarantined", "unsubscribed"] },
+          "tag": { "type": "string", "description": "Only contacts with this tag; empty: any." }
+        }
+      },
+      "GovernanceExportRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["reason"],
+        "properties": {
+          "filter": { "$ref": "#/components/schemas/GovernanceExportFilter" },
+          "reason": { "type": "string", "minLength": 1, "description": "What the export is for; the approver sees it. Must not be blank." }
+        }
+      },
+      "GovernanceExport": {
+        "type": "object",
+        "required": ["id", "brand_id", "requested_by", "approval_id", "filter", "row_count", "has_file", "ready_at", "expires_at", "download_count", "created_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "brand_id": { "type": "string", "format": "uuid" },
+          "requested_by": { "type": "string", "format": "uuid" },
+          "approval_id": { "type": "string", "format": "uuid", "description": "The approval request it waits on." },
+          "filter": { "$ref": "#/components/schemas/GovernanceExportFilter" },
+          "row_count": { "type": "integer", "description": "Contacts matched when requested; once approved, contacts in the file." },
+          "has_file": { "type": "boolean", "description": "The file exists (approved and not yet deleted after its window)." },
+          "ready_at": { "type": ["string", "null"], "format": "date-time", "description": "When it was approved and the file built." },
+          "expires_at": { "type": ["string", "null"], "format": "date-time", "description": "End of the 24-hour download window." },
+          "download_count": { "type": "integer" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "GovernanceMyExport": {
+        "description": "An export with where it stands.",
+        "allOf": [
+          { "$ref": "#/components/schemas/GovernanceExport" },
+          {
+            "type": "object",
+            "required": ["brand_name", "status", "approval_status"],
+            "properties": {
+              "brand_name": { "type": "string" },
+              "status": {
+                "type": "string",
+                "description": "`waiting`: for approval. `ready`: can be downloaded now. `expired`: approved, but the download window has passed. Otherwise the request's own status: `rejected`, `cancelled`, or `expired` if nobody decided in time.",
+                "enum": ["waiting", "ready", "expired", "rejected", "cancelled"]
+              },
+              "approval_status": { "$ref": "#/components/schemas/GovernanceApprovalStatus" }
+            }
+          }
+        ]
+      },
+      "GovernanceSafetyLimitKey": {
+        "type": "string",
+        "enum": [
+          "campaign_pause_bounce_pct", "campaign_pause_complaint_pct", "campaign_pause_unsubscribe_pct",
+          "brand_pause_bounce_pct_7d", "brand_pause_gmail_spam_pct", "account_brake_complaint_pct",
+          "cross_brand_cap_per_day", "cross_brand_cap_per_week", "same_brand_min_gap_hours", "approval_needed_above",
+          "test_slice_pct", "test_slice_hold_minutes",
+          "import_invalid_pct", "import_role_disposable_pct", "import_quarantine_months", "repermission_emails_per_day"
+        ]
+      },
+      "GovernanceSafetyLimit": {
+        "type": "object",
+        "required": ["key", "group", "label", "unit", "default", "hard_limit", "looser_is_higher", "locked", "help", "value", "changed_by", "changed_at"],
+        "properties": {
+          "key": { "$ref": "#/components/schemas/GovernanceSafetyLimitKey" },
+          "group": { "type": "string", "enum": ["brakes", "audience", "imports"] },
+          "label": { "type": "string", "examples": ["Campaign pause · bounces"] },
+          "unit": { "type": "string", "description": "Percent values are percents (2 means 2%).", "examples": ["%", "emails", "people", "hours", "minutes", "months"] },
+          "default": { "type": "number", "description": "The value it ships with." },
+          "hard_limit": { "type": "number", "description": "The value can never cross this." },
+          "looser_is_higher": { "type": "boolean", "description": "Raising the number is the riskier direction (a pause threshold); false: lowering it is (a minimum gap)." },
+          "locked": { "type": "boolean", "description": "Can only be made stricter." },
+          "help": { "type": "string" },
+          "value": { "type": "number", "description": "The value in force now." },
+          "changed_by": { "type": "string", "description": "Name of who last changed it; empty while it's the default." },
+          "changed_at": { "type": ["string", "null"], "format": "date-time", "description": "Null while it's the default." }
+        }
+      },
+      "GovernanceSafetyLimitChange": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "changes": {
+            "type": "object",
+            "description": "Limit key → new value (a positive number).",
+            "propertyNames": { "$ref": "#/components/schemas/GovernanceSafetyLimitKey" },
+            "additionalProperties": { "type": "number", "exclusiveMinimum": 0 }
+          },
+          "reason": { "type": "string", "description": "Why; shown to the approver of any loosening." }
+        }
+      },
+      "GovernanceSafetyLimitChangeResult": {
+        "type": "object",
+        "required": ["applied", "requested"],
+        "properties": {
+          "applied": { "type": "array", "description": "Keys made stricter, in force now.", "items": { "$ref": "#/components/schemas/GovernanceSafetyLimitKey" } },
+          "requested": { "type": "array", "description": "One approval request per loosening.", "items": { "$ref": "#/components/schemas/GovernanceApprovalRecord" } }
+        }
+      }
+    }
   }
 }

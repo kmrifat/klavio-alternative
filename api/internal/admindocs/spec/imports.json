@@ -1,19 +1,354 @@
 {
   "tag": {
     "name": "Imports",
-    "description": "CSV imports."
+    "description": "CSV imports. An import goes upload → setup (match columns, say where the contacts came from, choose topics) → safety check → import, and can be cancelled while it waits. Checking and importing run in the background: poll `GET /imports/{id}` until the status moves on. Every step needs brand admin; starting the import also needs step-up."
   },
-  "x-todo": [
-    "GET /admin/v1/brands/{slug}/imports",
-    "POST /admin/v1/brands/{slug}/imports",
-    "GET /admin/v1/brands/{slug}/imports/{id}",
-    "PUT /admin/v1/brands/{slug}/imports/{id}",
-    "POST /admin/v1/brands/{slug}/imports/{id}/cancel",
-    "POST /admin/v1/brands/{slug}/imports/{id}/check",
-    "POST /admin/v1/brands/{slug}/imports/{id}/commit"
-  ],
-  "paths": {},
+  "x-todo": [],
+  "paths": {
+    "/brands/{slug}/imports": {
+      "get": {
+        "operationId": "listImports",
+        "summary": "List imports",
+        "description": "The brand's 20 most recent imports, newest first. Brand admins only.",
+        "x-role": "brand:brand_admin",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }],
+        "responses": {
+          "200": {
+            "description": "The imports.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["imports"],
+                  "properties": { "imports": { "type": "array", "maxItems": 20, "items": { "$ref": "#/components/schemas/ImportsImport" } } }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "post": {
+        "operationId": "uploadImport",
+        "summary": "Upload a CSV",
+        "description": "Starts an import from a CSV file (`multipart/form-data`, field `file`): at most 20 MB and 200,000 rows, UTF-8 (a BOM is fine), comma, semicolon or tab separated, with a header row and unique column names. Blank rows are skipped. The file is stored with the import, with the first 5 rows as a preview and a suggested column mapping (from common Mailchimp, Klaviyo and Shopify header names); nothing is imported yet. Brand admins only.\n\nThis is the one write that isn't JSON: browsers must send their `Origin` (one of the app's), as they always do with uploads.\n\nAn upload of more than 5,000 rows and over 3× the brand's current contacts raises an `import_spike` alert for the company.",
+        "x-role": "brand:brand_admin",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found", "bad_file"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["file"],
+                "properties": {
+                  "file": { "type": "string", "format": "binary", "description": "The CSV export; its name (without any path) is kept as the import's `filename`." }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The new import, status `uploaded`.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ImportsDetail" } } }
+          },
+          "400": {
+            "description": "`bad_file`: no file attached, the upload didn't finish or was too large, or the file can't be read as a CSV of contacts (not UTF-8, empty, no rows, a duplicated column, too many rows…). The message says which.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/brands/{slug}/imports/{id}": {
+      "get": {
+        "operationId": "getImport",
+        "summary": "An import",
+        "description": "One import with its preview rows and the attestation text and consent sources the setup screen shows. Poll this while it's `checking` or `importing`. Brand admins only.",
+        "x-role": "brand:brand_admin",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/ID" }],
+        "responses": {
+          "200": {
+            "description": "The import.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ImportsDetail" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "operationId": "setupImport",
+        "summary": "Set up an import",
+        "description": "Saves the column mapping, the answers about where the contacts came from, and the topics they'll be subscribed to. Only while the import is `uploaded`, `checked` or `failed`; saving puts it back to `uploaded` and clears any earlier check, so the check must run again. The consent answers aren't validated here: anything missing shows up as a problem in the safety check, which then fails.\n\nTicking `consent.attested` records the caller as the person who signed the attestation, and when; it's also written to the audit log (`import.attested`, with the attestation text, source and row count) as part of the consent proof. Brand admins only.",
+        "x-role": "brand:brand_admin",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found", "bad_json", "import_locked", "bad_mapping", "no_topics", "unknown_topic"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/ID" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ImportsSetupInput" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "The import, status `uploaded`.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ImportsDetail" } } }
+          },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields. `bad_mapping`: no email column, a column the file doesn't have, or `consent.tracking` is `column` without a `mapping.tracking` column. `no_topics`: choose at least one topic. `unknown_topic`: a topic doesn't belong to this brand.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "`import_locked`: the import is being checked, imported, or is finished or cancelled, so it can't be changed.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/brands/{slug}/imports/{id}/check": {
+      "post": {
+        "operationId": "checkImport",
+        "summary": "Run the safety check",
+        "description": "Queues the safety check: every address is classified (invalid, duplicate, suppressed company-wide, role address, throwaway inbox, domain without a mail server, existing or unsubscribed contact, stale → quarantine, ready), and the import passes the gate only if the consent answers are complete, the invalid and role/throwaway shares are under the company's safety limits, and someone can be imported. The import becomes `checking`, then `checked` (see `check_result`) or `failed` (see `error`). Allowed from `uploaded`, `checked` or `failed`; no body. Brand admins only.",
+        "x-role": "brand:brand_admin",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found", "bad_mapping", "import_busy"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/ID" }],
+        "responses": {
+          "202": {
+            "description": "Queued; the import as it is now (`checking`, unless the check already finished).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ImportsDetail" } } }
+          },
+          "400": {
+            "description": "`bad_mapping`: match the email column first (set the import up).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "`import_busy`: it's already being checked or imported, or it's finished or cancelled.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/brands/{slug}/imports/{id}/commit": {
+      "post": {
+        "operationId": "commitImport",
+        "summary": "Start the import",
+        "description": "Queues the import itself, if the last safety check passed. It runs in one transaction (all rows or none), re-reading suppressions and contacts since the check: new people are added as `subscribed` (or `quarantined` if stale) to the chosen topics, each with an `import_attested` consent record; existing contacts only get blanks filled in, tags and activity added (their status and consent never change); unsubscribed and suppressed people are left alone. The import becomes `importing`, then `done` (see `import_result`; the uploaded file is deleted) or `failed` with nothing imported. No body. Brand admins only, with step-up. Recorded in the audit log (`import.started`, then `import.finished`).",
+        "x-role": "brand:brand_admin",
+        "x-step-up": true,
+        "x-error-codes": ["unauthenticated", "step_up_required", "forbidden", "not_found", "not_checked", "import_gate_failed", "import_busy"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/ID" }],
+        "responses": {
+          "202": {
+            "description": "Queued; the import as it is now (`importing`, unless it already finished).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ImportsDetail" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/ForbiddenOrStepUp" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "`not_checked`: run the safety check first (the import isn't `checked`). `import_gate_failed`: it didn't pass the safety check. `import_busy`: it's already running.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/brands/{slug}/imports/{id}/cancel": {
+      "post": {
+        "operationId": "cancelImport",
+        "summary": "Cancel an import",
+        "description": "Cancels an import that's waiting (`uploaded`, `checked` or `failed`) and deletes the uploaded file. A check or import that's still running can only be cancelled once it's been stuck for 35 minutes (jobs time out at 30). No body. Brand admins only.",
+        "x-role": "brand:brand_admin",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden", "not_found", "import_busy"],
+        "parameters": [{ "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/ID" }],
+        "responses": {
+          "200": {
+            "description": "The import, status `cancelled`.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ImportsDetail" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "`import_busy`: it's finished or already cancelled, or still running and not stuck yet.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    }
+  },
   "components": {
-    "schemas": {}
+    "schemas": {
+      "ImportsStatus": {
+        "type": "string",
+        "enum": ["uploaded", "checking", "checked", "importing", "done", "failed", "cancelled"],
+        "description": "`uploaded`: waiting for setup or a check. `checking` / `importing`: running in the background. `checked`: see `check_result`. `failed`: see `error`; can be set up and checked again. `done` and `cancelled` are final."
+      },
+      "ImportsDetail": {
+        "type": "object",
+        "required": ["import", "preview", "attestation_text", "sources"],
+        "properties": {
+          "import": { "$ref": "#/components/schemas/ImportsImport" },
+          "preview": {
+            "type": "array",
+            "maxItems": 5,
+            "description": "The file's first rows, as text, in the order of `import.headers`.",
+            "items": { "type": "array", "items": { "type": "string" } }
+          },
+          "attestation_text": { "type": "string", "description": "What the importer signs by ticking `consent.attested`.", "examples": ["I confirm this list was not bought, rented, appended, scraped or shared by anyone else, and everyone on it agreed to hear from this brand."] },
+          "sources": {
+            "type": "object",
+            "description": "The allowed `consent.source` values → their labels.",
+            "additionalProperties": { "type": "string" },
+            "examples": [{ "platform_migration": "Moving from another platform", "website_form": "Signup form on our website", "checkout": "Opt-in at checkout", "event": "In person or at an event", "customers": "Existing customers (soft opt-in)" }]
+          }
+        }
+      },
+      "ImportsImport": {
+        "type": "object",
+        "required": ["id", "created_by", "filename", "row_count", "headers", "mapping", "consent", "topic_ids", "status", "check_result", "import_result", "error", "created_at", "updated_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "created_by": { "type": "string", "format": "uuid", "description": "The member who uploaded it." },
+          "filename": { "type": "string", "examples": ["mailchimp-export.csv"] },
+          "row_count": { "type": "integer", "description": "Contact rows in the file (blank rows not counted)." },
+          "headers": { "type": "array", "items": { "type": "string" } },
+          "mapping": { "$ref": "#/components/schemas/ImportsMapping" },
+          "consent": { "$ref": "#/components/schemas/ImportsConsent" },
+          "topic_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } },
+          "status": { "$ref": "#/components/schemas/ImportsStatus" },
+          "check_result": { "anyOf": [{ "$ref": "#/components/schemas/ImportsCheckResult" }, { "type": "null" }], "description": "The last safety check; null until one finishes, and cleared when the setup changes." },
+          "import_result": { "anyOf": [{ "$ref": "#/components/schemas/ImportsResult" }, { "type": "null" }], "description": "Set when the import is `done`." },
+          "error": { "type": "string", "description": "Why the last check or import failed; empty otherwise." },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ImportsMapping": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Which CSV column (by header name) feeds each field; empty or left out = not in the file. Every named column must exist in the file.",
+        "required": ["email"],
+        "properties": {
+          "email": { "type": "string", "description": "Required before setup or a check can succeed; the suggested mapping leaves it empty if no header looks like one.", "examples": ["Email Address"] },
+          "first_name": { "type": "string" },
+          "last_name": { "type": "string" },
+          "tags": { "type": "string", "description": "Tags separated by commas, semicolons or pipes." },
+          "consented_at": { "type": "string", "description": "When they signed up or confirmed." },
+          "last_engaged_at": { "type": "string", "description": "Their last click (or activity) in the old tool." },
+          "rating": { "type": "string", "description": "Engagement stars 1–5 (e.g. Mailchimp's `MEMBER_RATING`); 4–5 counts as recent activity for people who agreed to tracking." },
+          "tracking": { "type": "string", "description": "Per-row click-tracking consent (yes/no); required when `consent.tracking` is `column`." },
+          "timezone": { "type": "string" },
+          "country": { "type": "string", "description": "Two-letter country codes." }
+        }
+      },
+      "ImportsConsent": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Where the contacts came from. Bought, rented, scraped and \"I don't know\" are deliberately not options. Empty (`{}`) until the import is set up. Nothing is validated when saving; the safety check fails while anything is missing.",
+        "properties": {
+          "source": { "type": "string", "description": "One of the `sources` keys: `platform_migration`, `website_form`, `checkout`, `event`, `customers`.", "examples": ["platform_migration"] },
+          "source_detail": { "type": "string", "description": "E.g. the platform's name; required for `platform_migration`.", "examples": ["Mailchimp export"] },
+          "collected_period": { "type": "string", "description": "When they were collected, in words. Required.", "examples": ["2021–2026"] },
+          "wording": { "type": "string", "description": "The consent text they agreed to, or the signup page's URL. Required." },
+          "legal_basis": { "type": "string", "description": "`consent`, or `soft_opt_in` (only for the `customers` and `checkout` sources).", "examples": ["consent"] },
+          "double_opt_in": { "type": "boolean", "description": "Whether they confirmed by email; makes the contacts' consent basis `double_opt_in`." },
+          "tracking": {
+            "type": "string",
+            "description": "Who agreed to click tracking: `all`, `none`, `column` (per row, from `mapping.tracking`), or `eu_by_country` (the default when empty: yes only for a recognised country outside the EU/EEA/UK). People without it are tiered from their opt-in date only and are never Active.",
+            "examples": ["eu_by_country"]
+          },
+          "attested": { "type": "boolean", "description": "The importer signs `attestation_text`. Required for the import to run." },
+          "attested_by": { "type": "string", "format": "uuid", "readOnly": true, "description": "Set by the server when `attested` is saved; ignored if sent." },
+          "attested_by_email": { "type": "string", "format": "email", "readOnly": true },
+          "attested_at": { "type": "string", "format": "date-time", "readOnly": true }
+        }
+      },
+      "ImportsSetupInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["mapping", "consent", "topic_ids"],
+        "properties": {
+          "mapping": { "$ref": "#/components/schemas/ImportsMapping" },
+          "consent": { "$ref": "#/components/schemas/ImportsConsent" },
+          "topic_ids": { "type": "array", "minItems": 1, "description": "The brand's topics these people agreed to.", "items": { "type": "string", "format": "uuid" } }
+        }
+      },
+      "ImportsOutcome": {
+        "type": "string",
+        "enum": ["ready", "quarantine", "existing", "unsubscribed", "suppressed", "role", "disposable", "invalid", "no_mailbox", "duplicate"],
+        "description": "What happens to a row. `ready`: imported and can be emailed. `quarantine`: imported, no sign of life for a long time (12 months by default), gets only one re-permission email. `existing`: already a contact; blanks filled in, consent unchanged. `unsubscribed`: an existing contact who unsubscribed; left alone. `suppressed`: blocked company-wide; left out. `role` (info@, sales@…): excluded. `disposable` (throwaway inbox), `invalid`, `no_mailbox` (the domain can't receive mail): rejected. `duplicate`: the same address earlier in the file; skipped."
+      },
+      "ImportsCheckResult": {
+        "type": "object",
+        "required": ["total", "counts", "samples", "no_mailbox_domains", "no_tracking", "dates_mapped", "gate", "checked_at"],
+        "properties": {
+          "total": { "type": "integer" },
+          "counts": {
+            "type": "object",
+            "description": "Rows per outcome (only outcomes that occur).",
+            "propertyNames": { "$ref": "#/components/schemas/ImportsOutcome" },
+            "additionalProperties": { "type": "integer" }
+          },
+          "samples": {
+            "type": "object",
+            "description": "Up to 5 addresses per outcome (`line N` for rows without a valid address).",
+            "propertyNames": { "$ref": "#/components/schemas/ImportsOutcome" },
+            "additionalProperties": { "type": "array", "maxItems": 5, "items": { "type": "string" } }
+          },
+          "no_mailbox_domains": { "type": "array", "items": { "type": "string" } },
+          "no_tracking": { "type": "integer", "description": "Rows to be imported without click-tracking consent." },
+          "dates_mapped": { "type": "boolean", "description": "Whether a signup-date, last-click or rating column is mapped. Without any there is no sign of life to go on, so every new contact is quarantined." },
+          "gate": { "$ref": "#/components/schemas/ImportsGate" },
+          "checked_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ImportsGate": {
+        "type": "object",
+        "description": "Whether the import may run. Limits are the company's safety limits (2% invalid and 5% role/throwaway by default).",
+        "required": ["invalid_rate", "invalid_limit", "role_disposable_rate", "role_disposable_limit", "consent_recorded", "passed", "problems"],
+        "properties": {
+          "invalid_rate": { "type": "number", "description": "Share of invalid and no-mailbox rows, 0–1." },
+          "invalid_limit": { "type": "number" },
+          "role_disposable_rate": { "type": "number", "description": "Share of role and throwaway addresses, 0–1." },
+          "role_disposable_limit": { "type": "number" },
+          "consent_recorded": { "type": "boolean", "description": "Whether the consent answers are complete." },
+          "passed": { "type": "boolean" },
+          "problems": { "type": "array", "description": "Why it didn't pass, in words; empty when it did.", "items": { "type": "string" } }
+        }
+      },
+      "ImportsResult": {
+        "type": "object",
+        "required": ["created", "quarantined", "updated", "left_unsubscribed", "left_suppressed", "rejected", "finished_at"],
+        "properties": {
+          "created": { "type": "integer", "description": "New subscribed contacts." },
+          "quarantined": { "type": "integer", "description": "New quarantined contacts." },
+          "updated": { "type": "integer", "description": "Existing contacts with blanks filled in." },
+          "left_unsubscribed": { "type": "integer" },
+          "left_suppressed": { "type": "integer" },
+          "rejected": { "type": "integer", "description": "Invalid, duplicate, role, throwaway and no-mailbox rows." },
+          "finished_at": { "type": "string", "format": "date-time" }
+        }
+      }
+    }
   }
 }
