@@ -7,19 +7,25 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/kmrifat/klavio-alternative/api/internal/auth"
 	"github.com/kmrifat/klavio-alternative/api/internal/brands"
+	"github.com/kmrifat/klavio-alternative/api/internal/cache"
 	"github.com/kmrifat/klavio-alternative/api/internal/httpx"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
 )
 
 type Handlers struct {
-	Store *store.Store
-	Log   *slog.Logger
+	Store   *store.Store
+	Limiter cache.Limiter
+	Log     *slog.Logger
 }
+
+// PreviewsPerMinute limits live counts per person: each is a full scan.
+const PreviewsPerMinute = 60
 
 func (h *Handlers) Routes(mux *http.ServeMux) {
 	f := func(fn httpx.HandlerFunc) http.HandlerFunc { return httpx.Handle(h.Log, fn) }
@@ -41,6 +47,24 @@ func Count(ctx context.Context, st *store.Store, brandID uuid.UUID, r Rules) (st
 	return st.CountSegment(ctx, brandID, c.SQL, c.Args)
 }
 
+// recount counts a saved segment and caches the result for the list.
+func (h *Handlers) recount(ctx context.Context, b store.Brand, s *store.Segment) error {
+	var rules Rules
+	if err := json.Unmarshal(s.Rules, &rules); err != nil {
+		return err
+	}
+	counts, err := Count(ctx, h.Store, b.ID, rules)
+	if err != nil {
+		return badRules(err)
+	}
+	if err := h.Store.SaveSegmentCounts(ctx, s.ID, counts); err != nil {
+		return err
+	}
+	now := time.Now()
+	s.Counts, s.CountedAt = &counts, &now
+	return nil
+}
+
 func badRules(err error) error {
 	var re *Error
 	if errors.As(err, &re) {
@@ -58,11 +82,8 @@ func (h *Handlers) fields(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-type item struct {
-	store.Segment
-	Counts store.SegmentCounts `json:"counts"`
-}
-
+// list shows each segment's last count (counting every segment on each
+// visit would scan the contacts table once per segment).
 func (h *Handlers) list(w http.ResponseWriter, r *http.Request) error {
 	b, _, err := brands.WithRole(r, h.Store, store.RoleViewer)
 	if err != nil {
@@ -72,20 +93,15 @@ func (h *Handlers) list(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	out := []item{}
-	for _, s := range segs {
-		var rules Rules
-		_ = json.Unmarshal(s.Rules, &rules)
-		counts, err := Count(r.Context(), h.Store, b.ID, rules)
-		if err != nil && !errors.As(err, new(*Error)) {
-			return err
-		}
-		out = append(out, item{Segment: s, Counts: counts})
+	if segs == nil {
+		segs = []store.Segment{}
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"segments": out})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"segments": segs})
 	return nil
 }
 
+// get recounts the segment. Viewers may see a saved segment's numbers; only
+// editors can try rules of their own (preview).
 func (h *Handlers) get(w http.ResponseWriter, r *http.Request) error {
 	b, _, err := brands.WithRole(r, h.Store, store.RoleViewer)
 	if err != nil {
@@ -95,13 +111,10 @@ func (h *Handlers) get(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	var rules Rules
-	_ = json.Unmarshal(s.Rules, &rules)
-	counts, err := Count(r.Context(), h.Store, b.ID, rules)
-	if err != nil {
-		return badRules(err)
+	if err := h.recount(r.Context(), b, &s); err != nil {
+		return err
 	}
-	httpx.WriteJSON(w, http.StatusOK, item{Segment: s, Counts: counts})
+	httpx.WriteJSON(w, http.StatusOK, s)
 	return nil
 }
 
@@ -166,11 +179,10 @@ func (h *Handlers) create(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	counts, err := Count(r.Context(), h.Store, b.ID, in.Rules)
-	if err != nil {
+	if err := h.recount(r.Context(), b, &s); err != nil {
 		return err
 	}
-	httpx.WriteJSON(w, http.StatusCreated, item{Segment: s, Counts: counts})
+	httpx.WriteJSON(w, http.StatusCreated, s)
 	return nil
 }
 
@@ -202,11 +214,10 @@ func (h *Handlers) update(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	counts, err := Count(r.Context(), h.Store, b.ID, in.Rules)
-	if err != nil {
+	if err := h.recount(r.Context(), b, &s); err != nil {
 		return err
 	}
-	httpx.WriteJSON(w, http.StatusOK, item{Segment: s, Counts: counts})
+	httpx.WriteJSON(w, http.StatusCreated, s)
 	return nil
 }
 
@@ -232,12 +243,21 @@ func (h *Handlers) delete(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// preview is the live count while editing (S12), plus a few matching people
-// for those allowed to see people (editors and up, like the contact list).
+// preview is the live count while editing (S12), plus a few matching
+// people. Editors and up only, like the contact list: a count of any rule
+// someone can type is a yes/no oracle ("email starts with zo…"), which would
+// spell out addresses for people not allowed to see them.
 func (h *Handlers) preview(w http.ResponseWriter, r *http.Request) error {
-	b, p, err := brands.WithRole(r, h.Store, store.RoleViewer)
+	b, p, err := brands.WithRole(r, h.Store, store.RoleEditor)
 	if err != nil {
 		return err
+	}
+	ok, err := h.Limiter.Allow(r.Context(), "segments:preview:"+p.User.ID.String(), PreviewsPerMinute, time.Minute)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return httpx.Errorf(http.StatusTooManyRequests, "rate_limited", "too many live counts; wait a minute")
 	}
 	var in struct {
 		Rules Rules `json:"rules"`
@@ -253,14 +273,12 @@ func (h *Handlers) preview(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	sample := []store.Contact{}
-	if p.HasBrandRole(b.ID, store.RoleEditor) {
-		if sample, err = h.Store.SegmentSample(r.Context(), b.ID, c.SQL, c.Args, 10); err != nil {
-			return err
-		}
-		if sample == nil {
-			sample = []store.Contact{}
-		}
+	sample, err := h.Store.SegmentSample(r.Context(), b.ID, c.SQL, c.Args, 10)
+	if err != nil {
+		return err
+	}
+	if sample == nil {
+		sample = []store.Contact{}
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"counts": counts, "sample": sample})
 	return nil

@@ -64,6 +64,11 @@ func (s *Store) RecordMarketingSends(ctx context.Context, brandID uuid.UUID, con
 	return err
 }
 
+func (s *Store) DeleteMarketingSends(ctx context.Context, brandID uuid.UUID, contactIDs []uuid.UUID, at time.Time) error {
+	_, err := s.db.Exec(ctx, `DELETE FROM marketing_sends WHERE brand_id = $1 AND contact_id = ANY($2) AND sent_at = $3`, brandID, contactIDs, at)
+	return err
+}
+
 func (s *Store) PurgeMarketingSends(ctx context.Context, before time.Time) (int64, error) {
 	tag, err := s.db.Exec(ctx, `DELETE FROM marketing_sends WHERE sent_at < $1`, before)
 	return tag.RowsAffected(), err

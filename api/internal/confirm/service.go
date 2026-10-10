@@ -104,7 +104,17 @@ func (s *Service) SendConfirmation(ctx context.Context, brandID, contactID uuid.
 	if err != nil {
 		return err
 	}
-	if c.Status != store.ContactPending || c.SuppressionReason != nil {
+	if c.SuppressionReason != nil {
+		return nil
+	}
+	switch c.Status {
+	case store.ContactPending:
+	case store.ContactSubscribed:
+		// A subscriber who asked for more topics confirms those.
+		if n, err := s.store.PendingTopicRequests(ctx, c.ID); err != nil || n == 0 {
+			return err
+		}
+	default:
 		return nil
 	}
 	now := s.now()
@@ -122,11 +132,21 @@ func (s *Service) SendConfirmation(ctx context.Context, brandID, contactID uuid.
 	return s.store.SetConfirmationSent(ctx, c.ID, now)
 }
 
+// CanSend: is a real sender configured? Re-permission stays off without one,
+// so nothing is reserved (warm-up, frequency cap) for emails that can't go.
+func (s *Service) CanSend() bool {
+	_, unconfigured := s.sender.(mailer.Unconfigured)
+	return !unconfigured
+}
+
 // SendRepermissions is the hourly job: for each ready brand that turned
 // re-permission on, ask quarantined contacts to confirm, up to the daily
 // limit (repermission_emails_per_day), within the warm-up cap and the
 // cross-brand frequency cap.
 func (s *Service) SendRepermissions(ctx context.Context) error {
+	if !s.CanSend() {
+		return nil
+	}
 	all, err := s.store.ListBrands(ctx)
 	if err != nil {
 		return err
@@ -143,19 +163,26 @@ func (s *Service) SendRepermissions(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// repermissionBrand claims a batch under a per-brand lock (so parallel runs
+// can't overshoot the daily limit), sends it, and gives back the claim, the
+// warm-up allowance and the frequency-cap record of every email that fails.
 func (s *Service) repermissionBrand(ctx context.Context, b store.Brand) error {
 	now := s.now()
 	y, m, d := now.UTC().Date()
-	sent, err := s.store.RepermissionSentSince(ctx, b.ID, time.Date(y, m, d, 0, 0, 0, 0, time.UTC))
-	if err != nil {
-		return err
-	}
-	room := int(s.limit(ctx, limits.RepermissionEmailsPerDay)) - sent
-	if room <= 0 {
-		return nil
-	}
+	today := time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 	var batch []store.Contact
-	err = s.store.InTx(ctx, func(tx *store.Store) error {
+	err := s.store.InTx(ctx, func(tx *store.Store) error {
+		if err := tx.Lock(ctx, "repermission:"+b.ID.String()); err != nil {
+			return err
+		}
+		sent, err := tx.RepermissionSentSince(ctx, b.ID, today)
+		if err != nil {
+			return err
+		}
+		room := int(s.limit(ctx, limits.RepermissionEmailsPerDay)) - sent
+		if room <= 0 {
+			return nil
+		}
 		claimed, err := tx.ClaimRepermission(ctx, b.ID, room, now)
 		if err != nil || len(claimed) == 0 {
 			return err
@@ -178,6 +205,11 @@ func (s *Service) repermissionBrand(ctx context.Context, b store.Brand) error {
 		if err != nil {
 			return err
 		}
+		if extra := granted - len(allowed); extra > 0 {
+			if err := s.warm.Release(ctx, tx, b.ID, now, extra); err != nil {
+				return err
+			}
+		}
 		// Whoever can't be emailed today goes back in the queue.
 		var back []uuid.UUID
 		for _, c := range claimed {
@@ -196,14 +228,25 @@ func (s *Service) repermissionBrand(ctx context.Context, b store.Brand) error {
 		return err
 	}
 	var failed []uuid.UUID
+	var sendErr error
 	for _, c := range batch {
 		if err := s.sendRepermission(ctx, b, c, now); err != nil {
 			s.log.WarnContext(ctx, "re-permission email", "brand", b.Slug, "err", err)
-			failed = append(failed, c.ID)
+			failed, sendErr = append(failed, c.ID), err
 		}
 	}
 	if len(failed) > 0 {
-		return errors.Join(s.store.UnclaimRepermission(ctx, failed), fmt.Errorf("%d re-permission emails failed", len(failed)))
+		// Undo everything the failed emails reserved: they never went out.
+		err := s.store.InTx(context.WithoutCancel(ctx), func(tx *store.Store) error {
+			if err := tx.UnclaimRepermission(ctx, failed); err != nil {
+				return err
+			}
+			if err := s.warm.Release(ctx, tx, b.ID, now, len(failed)); err != nil {
+				return err
+			}
+			return s.caps.Release(ctx, tx, b.ID, failed, now)
+		})
+		return errors.Join(err, fmt.Errorf("%d of %d re-permission emails failed: %w", len(failed), len(batch), sendErr))
 	}
 	if len(batch) > 0 {
 		s.log.InfoContext(ctx, "re-permission emails sent", "brand", b.Slug, "count", len(batch))
@@ -241,6 +284,8 @@ type View struct {
 	Brand   store.Brand
 	Contact *store.Contact
 	Purpose Purpose
+	// PendingTopics: topics a subscriber asked for and hasn't confirmed yet.
+	PendingTopics int
 }
 
 // Load reads what the page needs (no changes).
@@ -252,12 +297,17 @@ func (s *Service) Load(ctx context.Context, c Claims) (View, error) {
 	}
 	v.Brand = b
 	contact, err := s.store.ContactByID(ctx, c.BrandID, c.ContactID)
-	if err == nil {
-		v.Contact = &contact
-	} else if !errors.Is(err, store.ErrNotFound) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return v, nil
+	case err != nil:
 		return v, err
 	}
-	return v, nil
+	v.Contact = &contact
+	if c.Purpose == PurposeOptIn {
+		v.PendingTopics, err = s.store.PendingTopicRequests(ctx, contact.ID)
+	}
+	return v, err
 }
 
 // Confirm applies a click: pending (opt-in link) or quarantined
@@ -285,20 +335,34 @@ func (s *Service) Confirm(ctx context.Context, c Claims, ip string) (View, Outco
 		if c.Purpose == PurposeRepermission {
 			from, source = []store.ContactStatus{store.ContactQuarantined}, "re-permission link"
 		}
+		now := s.now()
 		switch {
 		case contact.SuppressionReason != nil:
 			out = CantJoin
 			return nil
 		case contact.Status == store.ContactSubscribed:
-			out = Already
-			return nil
+			// Already subscribed: an opt-in link may still carry topics they asked for.
+			added := 0
+			if c.Purpose == PurposeOptIn {
+				if added, err = tx.ApplyTopicRequests(ctx, contact.ID); err != nil {
+					return err
+				}
+			}
+			if added == 0 {
+				out = Already
+				return nil
+			}
+			source = "double opt-in link (new topics)"
 		case !slices.Contains(from, contact.Status):
 			out = CantJoin
 			return nil
-		}
-		now := s.now()
-		if err := tx.ConfirmContact(ctx, contact.ID, from, now); err != nil {
-			return err
+		default:
+			if err := tx.ConfirmContact(ctx, contact.ID, from, now); err != nil {
+				return err
+			}
+			if _, err := tx.ApplyTopicRequests(ctx, contact.ID); err != nil {
+				return err
+			}
 		}
 		out = Confirmed
 		return tx.AddConsentRecord(ctx, store.NewConsentRecord{

@@ -70,8 +70,10 @@ type Admin struct {
 	Auth      stepUpper
 	Approvals *approvals.Service
 	Limit     func(ctx context.Context, key string) float64
-	Log       *slog.Logger
-	now       func() time.Time
+	// CanSend: is a real email sender configured? (confirm.Service.CanSend)
+	CanSend func() bool
+	Log     *slog.Logger
+	now     func() time.Time
 }
 
 func (a *Admin) clock() time.Time {
@@ -456,14 +458,16 @@ func (a *Admin) retireWording(w http.ResponseWriter, r *http.Request) error {
 // --- re-permission ---
 
 type repermissionView struct {
-	On          bool `json:"on"`
-	Quarantined int  `json:"quarantined"`
-	SentToday   int  `json:"sent_today"`
-	PerDay      int  `json:"per_day"`
+	On bool `json:"on"`
+	// SendingReady false: no email sender yet, so it can't be turned on.
+	SendingReady bool `json:"sending_ready"`
+	Quarantined  int  `json:"quarantined"`
+	SentToday    int  `json:"sent_today"`
+	PerDay       int  `json:"per_day"`
 }
 
 func (a *Admin) repermissionState(ctx context.Context, b store.Brand) (repermissionView, error) {
-	v := repermissionView{On: b.RepermissionOn, PerDay: int(a.Limit(ctx, limits.RepermissionEmailsPerDay))}
+	v := repermissionView{On: b.RepermissionOn, SendingReady: a.CanSend(), PerDay: int(a.Limit(ctx, limits.RepermissionEmailsPerDay))}
 	st, err := a.Store.ContactStats(ctx, b.ID)
 	if err != nil {
 		return v, err
@@ -497,6 +501,10 @@ func (a *Admin) setRepermission(w http.ResponseWriter, r *http.Request) error {
 	}
 	if err := httpx.ReadJSON(r, &in); err != nil {
 		return err
+	}
+	if in.On && !a.CanSend() {
+		return httpx.Errorf(http.StatusConflict, "sending_not_configured",
+			"email sending isn't set up yet, so re-permission emails can't go out")
 	}
 	ctx := r.Context()
 	err = a.Store.InTx(ctx, func(tx *store.Store) error {

@@ -188,7 +188,7 @@ func New(d Deps) (*App, error) {
 		queue = jobs.Runner{Client: client}
 	}
 	a.contactsAPI = &contactsapi.API{Store: st, Limiter: a.deps.Limiter, Queue: queue, Log: d.Log}
-	a.contactsAdm = &contactsapi.Admin{Store: st, Auth: authSvc, Approvals: a.Approvals, Limit: a.Limits.Get, Log: d.Log}
+	a.contactsAdm = &contactsapi.Admin{Store: st, Auth: authSvc, Approvals: a.Approvals, Limit: a.Limits.Get, CanSend: a.Confirm.CanSend, Log: d.Log}
 	a.contactsAdm.RegisterApprovals()
 	return a, nil
 }
@@ -252,7 +252,7 @@ func (a *App) Handler() http.Handler {
 			contactsH.Routes(mux)
 			a.Imports.Routes(mux, a.Auth)
 			(&health.Handlers{Service: a.Health, Store: a.Store, Approvals: a.Approvals}).Routes(mux)
-			(&segments.Handlers{Store: a.Store, Log: a.deps.Log}).Routes(mux)
+			(&segments.Handlers{Store: a.Store, Limiter: a.deps.Limiter, Log: a.deps.Log}).Routes(mux)
 			a.contactsAdm.Routes(mux)
 		},
 		RegisterPublic: func(mux *http.ServeMux) {

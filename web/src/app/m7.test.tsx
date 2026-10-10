@@ -50,6 +50,7 @@ const segment: Segment = {
   created_at: "2026-10-01T00:00:00Z",
   updated_at: new Date().toISOString(),
   counts: counts(1204, 980),
+  counted_at: new Date().toISOString(),
 };
 
 describe("segments (S12)", () => {
@@ -100,6 +101,23 @@ describe("segments (S12)", () => {
     expect(api.calls.some((c) => c.path.endsWith("/segments/preview"))).toBe(true);
   });
 
+  it("shows viewers a saved segment's numbers without live counting", async () => {
+    const viewer = { ...ownerMe, user: { ...ownerMe.user, company_role: "member" as const }, brand_roles: { "b-brightside": "viewer" as const } };
+    const api = fakeApi({
+      ...signedIn,
+      "GET /admin/v1/me": { status: 200, body: viewer },
+      "GET /admin/v1/brands": { status: 200, body: { brands: [brand("brightside", "Brightside", "#f97316", { my_role: "viewer" })] } },
+      "GET /admin/v1/segments/fields": { status: 200, body: { fields } },
+      "GET /admin/v1/brands/brightside/topics": { status: 200, body: { topics: [] } },
+      "GET /admin/v1/brands/brightside/segments/s1": { status: 200, body: segment },
+    });
+    renderAt("/b/brightside/segments/s1");
+    expect(await screen.findByLabelText("Matching contacts")).toHaveTextContent("1,204");
+    expect(screen.getByLabelText("Segment name")).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Save segment" })).toBeNull();
+    expect(api.calls.some((c) => c.path.endsWith("/preview"))).toBe(false);
+  });
+
   it("shows the server's rule error in the live count", async () => {
     fakeApi({
       ...signedIn,
@@ -128,7 +146,7 @@ const contactsApiRoutes = {
     status: 200,
     body: { wordings: [{ id: "w1", label: "Footer form", text: "Yes, send me Brightside news.", created_at: "2026-10-01T00:00:00Z", retired_at: null }] },
   },
-  "GET /admin/v1/brands/brightside/repermission": { status: 200, body: { on: false, quarantined: 312, sent_today: 0, per_day: 200 } },
+  "GET /admin/v1/brands/brightside/repermission": { status: 200, body: { on: false, sending_ready: true, quarantined: 312, sent_today: 0, per_day: 200 } },
   "GET /admin/v1/brands/brightside/api-calls": {
     status: 200,
     body: { calls: [{ id: 1, key_name: "Website", at: new Date().toISOString(), method: "POST", path: "/api/v1/contacts", status: 202, ip: "203.0.113.9", email_mask: "a•••@example.com", error_code: "" }] },
@@ -148,7 +166,7 @@ describe("contacts API (S14)", () => {
       },
       "PUT /admin/v1/brands/brightside/repermission": (body) => {
         rpOn = (body as { on: boolean }).on;
-        return { status: 200, body: { on: rpOn, quarantined: 312, sent_today: 0, per_day: 200 } };
+        return { status: 200, body: { on: rpOn, sending_ready: true, quarantined: 312, sent_today: 0, per_day: 200 } };
       },
     });
     renderAt("/b/brightside/api");
@@ -169,6 +187,17 @@ describe("contacts API (S14)", () => {
     await userEvent.click(screen.getByRole("button", { name: "Turn on" }));
     expect(await screen.findByRole("button", { name: "Turn off" })).toBeInTheDocument();
     expect(rpOn).toBe(true);
+  });
+
+  it("can't turn on re-permission before email sending is set up", async () => {
+    fakeApi({
+      ...signedIn,
+      ...contactsApiRoutes,
+      "GET /admin/v1/brands/brightside/repermission": { status: 200, body: { on: false, sending_ready: false, quarantined: 312, sent_today: 0, per_day: 200 } },
+    });
+    renderAt("/b/brightside/api");
+    expect(await screen.findByRole("button", { name: "Turn on" })).toBeDisabled();
+    expect(screen.getByText(/sending isn't set up yet/)).toBeInTheDocument();
   });
 
   it("shows editors the wordings and docs, but not keys or calls", async () => {

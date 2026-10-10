@@ -323,7 +323,7 @@ function RepermissionCard({ slug, isAdmin }: { slug: string; isAdmin: boolean })
       description="Ask quarantined contacts from imports to confirm they still want email. Those who confirm become subscribed; the rest are never emailed."
       action={
         isAdmin && (
-          <Button size="sm" variant={d.on ? "secondary" : "primary"} disabled={set.isPending} onClick={() => set.mutate(!d.on)}>
+          <Button size="sm" variant={d.on ? "secondary" : "primary"} disabled={set.isPending || (!d.on && !d.sending_ready)} onClick={() => set.mutate(!d.on)}>
             {d.on ? "Turn off" : "Turn on"}
           </Button>
         )
@@ -347,6 +347,9 @@ function RepermissionCard({ slug, isAdmin }: { slug: string; isAdmin: boolean })
           </p>
         </div>
       </div>
+      {!d.sending_ready && (
+        <p className="px-5 pb-3 text-xs text-amber-700">Email sending isn't set up yet, so these emails can't go out. They'll be available once it is.</p>
+      )}
       <div className="px-5 pb-3">
         <ErrorNote error={set.error} />
       </div>

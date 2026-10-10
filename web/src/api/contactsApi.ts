@@ -34,7 +34,7 @@ export type ApiCall = {
   error_code: string;
 };
 
-export type Repermission = { on: boolean; quarantined: number; sent_today: number; per_day: number };
+export type Repermission = { on: boolean; sending_ready: boolean; quarantined: number; sent_today: number; per_day: number };
 
 export function useApiKeys(slug: string, enabled: boolean) {
   return useQuery({

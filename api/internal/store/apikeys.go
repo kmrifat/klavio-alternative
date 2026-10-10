@@ -165,12 +165,20 @@ type IdempotentResponse struct {
 	Response    json.RawMessage `db:"response"`
 }
 
+// IdempotencyStale: an in-progress claim older than this is presumed dead
+// (the process stopped mid-request) and can be claimed again.
+const IdempotencyStale = 2 * time.Minute
+
 // ClaimIdempotency records that a request with this key is starting. ok is
-// false when the key was used before; prev is that earlier request.
+// false when the key was used before; prev is that earlier request. A stale
+// in-progress claim for the same request is taken over.
 func (s *Store) ClaimIdempotency(ctx context.Context, keyID uuid.UUID, idemKey string, requestHash []byte) (ok bool, prev IdempotentResponse, err error) {
 	tag, err := s.db.Exec(ctx, `
 		INSERT INTO api_idempotency (key_id, idem_key, request_hash, status, response) VALUES ($1, $2, $3, 0, 'null')
-		ON CONFLICT (key_id, idem_key) DO NOTHING`, keyID, idemKey, requestHash)
+		ON CONFLICT (key_id, idem_key) DO UPDATE SET created_at = now()
+		WHERE api_idempotency.status = 0 AND api_idempotency.request_hash = EXCLUDED.request_hash
+			AND api_idempotency.created_at < now() - make_interval(secs => $4)`,
+		keyID, idemKey, requestHash, IdempotencyStale.Seconds())
 	if err != nil {
 		return false, prev, err
 	}

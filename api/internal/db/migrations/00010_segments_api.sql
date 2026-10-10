@@ -7,6 +7,9 @@ CREATE TABLE segments (
     brand_id   uuid NOT NULL REFERENCES brands ON DELETE CASCADE,
     name       text NOT NULL,
     rules      jsonb NOT NULL,
+    -- Last count, so the list doesn't recount every segment.
+    counts     jsonb,
+    counted_at timestamptz,
     created_by uuid REFERENCES users ON DELETE SET NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
@@ -30,11 +33,12 @@ CREATE TABLE consent_wordings (
 -- +goose StatementBegin
 CREATE FUNCTION consent_wordings_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    IF TG_OP = 'DELETE' THEN
+    IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
         RAISE EXCEPTION 'consent wordings are never deleted; retire them';
     END IF;
-    IF NEW.text IS DISTINCT FROM OLD.text OR NEW.label IS DISTINCT FROM OLD.label
-       OR NEW.brand_id IS DISTINCT FROM OLD.brand_id OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    IF NEW.id IS DISTINCT FROM OLD.id OR NEW.text IS DISTINCT FROM OLD.text OR NEW.label IS DISTINCT FROM OLD.label
+       OR NEW.brand_id IS DISTINCT FROM OLD.brand_id OR NEW.created_at IS DISTINCT FROM OLD.created_at
+       OR NEW.created_by IS DISTINCT FROM OLD.created_by THEN
         RAISE EXCEPTION 'consent wording text is immutable; add a new wording instead';
     END IF;
     IF OLD.retired_at IS NOT NULL AND NEW.retired_at IS DISTINCT FROM OLD.retired_at THEN
@@ -48,6 +52,9 @@ $$;
 CREATE TRIGGER consent_wordings_immutable
     BEFORE UPDATE OR DELETE ON consent_wordings
     FOR EACH ROW EXECUTE FUNCTION consent_wordings_immutable();
+CREATE TRIGGER consent_wordings_no_truncate
+    BEFORE TRUNCATE ON consent_wordings
+    FOR EACH STATEMENT EXECUTE FUNCTION consent_wordings_immutable();
 
 ALTER TABLE consent_records ADD COLUMN wording_id uuid REFERENCES consent_wordings;
 
@@ -113,6 +120,18 @@ CREATE TABLE marketing_sends (
 CREATE INDEX marketing_sends_person ON marketing_sends (email_hash, sent_at DESC);
 CREATE INDEX marketing_sends_at ON marketing_sends (sent_at);
 
+-- Topics an existing subscriber asked for through the API, waiting for their
+-- confirmation click: adding topics needs double opt-in too.
+CREATE TABLE contact_topic_requests (
+    brand_id     uuid NOT NULL,
+    contact_id   uuid NOT NULL,
+    topic_id     uuid NOT NULL,
+    requested_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (contact_id, topic_id),
+    FOREIGN KEY (brand_id, contact_id) REFERENCES contacts (brand_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (brand_id, topic_id) REFERENCES topics (brand_id, id) ON DELETE CASCADE
+);
+
 -- Double opt-in (P1/P2) and re-permission emails.
 ALTER TABLE contacts ADD COLUMN confirmation_sent_at timestamptz;
 ALTER TABLE contacts ADD COLUMN repermission_sent_at timestamptz;
@@ -125,11 +144,13 @@ ALTER TABLE brands DROP COLUMN repermission_on;
 DROP INDEX contacts_repermission;
 ALTER TABLE contacts DROP COLUMN repermission_sent_at;
 ALTER TABLE contacts DROP COLUMN confirmation_sent_at;
+DROP TABLE contact_topic_requests;
 DROP TABLE marketing_sends;
 DROP TABLE api_idempotency;
 DROP TABLE api_calls;
 DROP TABLE api_keys;
 ALTER TABLE consent_records DROP COLUMN wording_id;
+DROP TRIGGER consent_wordings_no_truncate ON consent_wordings;
 DROP TRIGGER consent_wordings_immutable ON consent_wordings;
 DROP FUNCTION consent_wordings_immutable();
 DROP TABLE consent_wordings;

@@ -71,3 +71,30 @@ func (s *Store) UnclaimRepermission(ctx context.Context, contactIDs []uuid.UUID)
 	_, err := s.db.Exec(ctx, `UPDATE contacts SET repermission_sent_at = NULL WHERE id = ANY($1)`, contactIDs)
 	return err
 }
+
+// --- topics waiting for a subscriber's confirmation ---
+
+// RequestTopics records topics a subscriber asked for, to add once they confirm.
+func (s *Store) RequestTopics(ctx context.Context, brandID, contactID uuid.UUID, topicIDs []uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO contact_topic_requests (brand_id, contact_id, topic_id)
+		SELECT $1, $2, unnest($3::uuid[])
+		ON CONFLICT (contact_id, topic_id) DO UPDATE SET requested_at = now()`, brandID, contactID, topicIDs)
+	return err
+}
+
+func (s *Store) PendingTopicRequests(ctx context.Context, contactID uuid.UUID) (int, error) {
+	var n int
+	err := s.db.QueryRow(ctx, `SELECT count(*) FROM contact_topic_requests WHERE contact_id = $1`, contactID).Scan(&n)
+	return n, err
+}
+
+// ApplyTopicRequests subscribes the contact to the topics they asked for and
+// clears the requests; returns how many topics were new.
+func (s *Store) ApplyTopicRequests(ctx context.Context, contactID uuid.UUID) (int, error) {
+	tag, err := s.db.Exec(ctx, `
+		WITH req AS (DELETE FROM contact_topic_requests WHERE contact_id = $1 RETURNING brand_id, contact_id, topic_id)
+		INSERT INTO contact_topics (brand_id, contact_id, topic_id) SELECT brand_id, contact_id, topic_id FROM req
+		ON CONFLICT DO NOTHING`, contactID)
+	return int(tag.RowsAffected()), err
+}

@@ -20,7 +20,8 @@ export type Segment = {
   rules: Rules;
   created_at: string;
   updated_at: string;
-  counts: SegmentCounts;
+  counts: SegmentCounts | null; // last count; null = never counted
+  counted_at: string | null;
 };
 
 export function useSegmentFields() {

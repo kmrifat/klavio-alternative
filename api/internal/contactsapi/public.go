@@ -348,7 +348,8 @@ func (a *API) subscribe(c *call) (result, error) {
 	now := a.clock()
 
 	var status string
-	var queue uuid.UUID // contact to send a confirmation to, after commit
+	var newTopics []uuid.UUID // topics a subscriber asked for, waiting for their confirmation
+	var queue uuid.UUID       // contact to send a confirmation to, after commit
 	err := a.Store.InTx(ctx, func(tx *store.Store) error {
 		if err := tx.Lock(ctx, "contact:"+b.ID.String()+":"+in.Email); err != nil {
 			return err
@@ -367,16 +368,14 @@ func (a *API) subscribe(c *call) (result, error) {
 		if err != nil {
 			return err
 		}
-		topicIDs := in.Topics
-		if len(topicIDs) == 0 {
-			for _, t := range topics {
-				topicIDs = append(topicIDs, t.ID)
-			}
-		}
-		for _, id := range topicIDs {
+		for _, id := range in.Topics {
 			if !slices.ContainsFunc(topics, func(t store.Topic) bool { return t.ID == id }) {
 				return bad422("unknown_topic", "topic "+id.String()+" isn't one of this brand's topics")
 			}
+		}
+		allTopics := make([]uuid.UUID, len(topics))
+		for i, t := range topics {
+			allTopics[i] = t.ID
 		}
 		// Suppressed addresses (bounced, complained, removed) never get
 		// email; the answer doesn't say so.
@@ -393,12 +392,20 @@ func (a *API) subscribe(c *call) (result, error) {
 		var id uuid.UUID
 		switch {
 		case errors.Is(err, store.ErrNotFound):
+			// New: the topics asked for, or all of them; confirmed with the sign-up.
 			id, err = tx.InsertContact(ctx, store.NewContact{
 				BrandID: b.ID, Email: in.Email, FirstName: in.FirstName, LastName: in.LastName,
 				Status: store.ContactPending, ConsentBasis: "double_opt_in", ConsentSource: "api: " + c.key.Name,
 				TrackingAllowed: in.Consent.ClickTracking, Tags: in.Tags, Timezone: in.Timezone, Country: in.Country,
 			})
 			if err != nil {
+				return err
+			}
+			topicIDs := in.Topics
+			if len(topicIDs) == 0 {
+				topicIDs = allTopics
+			}
+			if err := tx.AddContactTopics(ctx, id, topicIDs); err != nil {
 				return err
 			}
 			status, queue = "pending_confirmation", id
@@ -410,22 +417,44 @@ func (a *API) subscribe(c *call) (result, error) {
 				Timezone: in.Timezone, Country: in.Country, Tags: in.Tags}); err != nil {
 				return err
 			}
-			switch existing.Status {
-			case store.ContactSubscribed:
-				status = "subscribed" // already confirmed: the new topics apply now
-			default:
-				// Pending, quarantined or unsubscribed: signing up again means
-				// confirming again.
+			current, err := tx.ContactTopicIDs(ctx, id)
+			if err != nil {
+				return err
+			}
+			if existing.Status == store.ContactSubscribed {
+				// Already confirmed. Omitted topics change nothing; new
+				// ones wait for a confirmation click like a sign-up.
+				status = "subscribed"
+				for _, t := range in.Topics {
+					if !slices.Contains(current, t) && !slices.Contains(newTopics, t) {
+						newTopics = append(newTopics, t)
+					}
+				}
+				if len(newTopics) == 0 {
+					return nil
+				}
+				if err := tx.RequestTopics(ctx, b.ID, id, newTopics); err != nil {
+					return err
+				}
+				queue = id
+			} else {
+				// Pending, quarantined or unsubscribed: signing up again
+				// means confirming again, for the topics asked for (or the
+				// ones they had, or all).
 				if existing.Status != store.ContactPending {
 					if err := tx.SetContactStatus(ctx, id, store.ContactPending); err != nil {
 						return err
 					}
 				}
+				topicIDs := in.Topics
+				if len(topicIDs) == 0 && len(current) == 0 {
+					topicIDs = allTopics
+				}
+				if err := tx.AddContactTopics(ctx, id, topicIDs); err != nil {
+					return err
+				}
 				status, queue = "pending_confirmation", id
 			}
-		}
-		if err := tx.AddContactTopics(ctx, id, topicIDs); err != nil {
-			return err
 		}
 		return tx.AddConsentRecord(ctx, store.NewConsentRecord{
 			BrandID: b.ID, ContactID: id, Email: in.Email, Kind: "opt_in", Method: "api",
@@ -436,30 +465,39 @@ func (a *API) subscribe(c *call) (result, error) {
 	if err != nil {
 		return result{}, err
 	}
+	body := map[string]any{"email": in.Email, "status": status}
+	code := http.StatusOK
+	if status == "pending_confirmation" || len(newTopics) > 0 {
+		code = http.StatusAccepted
+	}
+	if len(newTopics) > 0 {
+		body["pending_topics"] = newTopics
+	}
 	if queue != uuid.Nil {
-		if err := a.queueConfirmation(ctx, b.ID, queue, in.Email); err != nil {
-			return result{}, err
-		}
+		body["confirmation_email"] = a.queueConfirmation(ctx, b.ID, queue, in.Email)
 	}
-	code := http.StatusAccepted
-	if status == "subscribed" {
-		code = http.StatusOK
-	}
-	return result{code, map[string]any{"email": in.Email, "status": status}}, nil
+	return result{code, body}, nil
 }
 
 // queueConfirmation sends the double opt-in email, at most a few a day per
-// address however often the API is called for it.
-func (a *API) queueConfirmation(ctx context.Context, brandID, contactID uuid.UUID, email string) error {
-	ok, err := a.Limiter.Allow(ctx, "api:confirm:"+hex.EncodeToString(store.EmailHash(email)), ConfirmEmailsPerDay, 24*time.Hour)
-	if err != nil {
-		a.Log.WarnContext(ctx, "confirmation rate limiter", "err", err)
-		ok = true
+// address and brand however often the API is called for it. It reports
+// "sent", "limit_reached", or "not_sent" (the limiter or queue failed: no
+// email rather than an unlimited one).
+func (a *API) queueConfirmation(ctx context.Context, brandID, contactID uuid.UUID, email string) string {
+	key := "api:confirm:" + brandID.String() + ":" + hex.EncodeToString(store.EmailHash(email))
+	ok, err := a.Limiter.Allow(ctx, key, ConfirmEmailsPerDay, 24*time.Hour)
+	switch {
+	case err != nil:
+		a.Log.ErrorContext(ctx, "confirmation rate limiter", "err", err)
+		return "not_sent"
+	case !ok:
+		return "limit_reached"
 	}
-	if !ok {
-		return nil
+	if err := a.Queue.QueueConfirmation(ctx, brandID, contactID); err != nil {
+		a.Log.ErrorContext(ctx, "queueing confirmation email", "err", err)
+		return "not_sent"
 	}
-	return a.Queue.QueueConfirmation(ctx, brandID, contactID)
+	return "sent"
 }
 
 func (a *API) pathEmail(c *call) (string, error) {

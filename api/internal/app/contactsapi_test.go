@@ -3,11 +3,14 @@ package app_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -126,6 +129,16 @@ func TestContactsAPIDoubleOptIn(t *testing.T) {
 	if err := f.a.Store.TryEditWordingForTest(ctx, uuid.MustParse(f.wording)); err == nil {
 		t.Fatal("consent wording text was edited")
 	}
+	for _, q := range []string{
+		`TRUNCATE consent_wordings CASCADE`,
+		`DELETE FROM consent_wordings`,
+		`UPDATE consent_wordings SET created_by = NULL`,
+		`UPDATE consent_wordings SET id = gen_random_uuid()`,
+	} {
+		if err := f.a.Store.ExecForTest(ctx, q); err == nil {
+			t.Fatalf("%s was allowed", q)
+		}
+	}
 	f.owner.must(400, f.owner.do("POST", "/admin/v1/brands/brightside/consent-wordings", map[string]any{"label": "x", "text": "short"}))
 
 	// One admin in the company: the key works at once. The secret is only in this response.
@@ -185,6 +198,46 @@ func TestContactsAPIDoubleOptIn(t *testing.T) {
 		t.Fatal("subscribed contact got another confirmation")
 	}
 
+	// New topics for a subscriber wait for their confirmation; omitting topics changes nothing.
+	deals := f.owner.must(201, f.owner.do("POST", "/admin/v1/brands/brightside/topics", map[string]any{"name": "Deals"})).body["id"].(string)
+	topicsOf := func() int {
+		ids, err := f.a.Store.ContactTopicIDs(ctx, ann.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(ids)
+	}
+	if n := topicsOf(); n != 1 {
+		t.Fatalf("ann starts with %d topics", n)
+	}
+	body := f.signup("ann@example.com")
+	body["topics"] = []string{deals}
+	r = apiCall(t, f.srv, "POST", "/api/v1/contacts", secret, body)
+	if r.status != 202 || r.body["status"] != "subscribed" || len(r.body["pending_topics"].([]any)) != 1 || r.body["confirmation_email"] != "sent" {
+		t.Fatalf("new topic: %d %s", r.status, r.raw)
+	}
+	if n := topicsOf(); n != 1 {
+		t.Fatal("topic added before confirming")
+	}
+	if r := apiCall(t, f.srv, "POST", "/api/v1/contacts", secret, f.signup("ann@example.com")); r.status != 200 || r.body["pending_topics"] != nil {
+		t.Fatalf("no topics given: %d %s", r.status, r.raw)
+	}
+	topicLink := ""
+	for _, m := range outbox(f.a) {
+		if m.To == "ann@example.com" {
+			topicLink = linkRe.FindString(m.Text) // the latest
+		}
+	}
+	if g := page.do("GET", topicLink, nil); !strings.Contains(string(g.raw), "Yes, subscribe me") {
+		t.Fatalf("topic confirm page: %s", g.raw)
+	}
+	if p := page.do("POST", topicLink, nil); !strings.Contains(string(p.raw), "You're subscribed") {
+		t.Fatalf("topic confirm: %s", p.raw)
+	}
+	if n := topicsOf(); n != 2 {
+		t.Fatalf("after confirming the topic: %d topics", n)
+	}
+
 	// Lookup and unsubscribe.
 	if r := apiCall(t, f.srv, "GET", "/api/v1/contacts/ann@example.com", secret, nil); r.status != 200 || r.body["status"] != "subscribed" {
 		t.Fatalf("lookup: %d %s", r.status, r.raw)
@@ -201,11 +254,12 @@ func TestContactsAPIDoubleOptIn(t *testing.T) {
 	}
 
 	// A few confirmation emails a day per address, however often the API is called.
-	for range 6 {
-		apiCall(t, f.srv, "POST", "/api/v1/contacts", secret, f.signup("bob@example.com"))
+	var outcomes []any
+	for range 5 {
+		outcomes = append(outcomes, apiCall(t, f.srv, "POST", "/api/v1/contacts", secret, f.signup("bob@example.com")).body["confirmation_email"])
 	}
-	if n := sentTo(f.a, "bob@example.com", "confirmation"); n != 3 {
-		t.Fatalf("%d confirmation emails to one address", n)
+	if n := sentTo(f.a, "bob@example.com", "confirmation"); n != 3 || outcomes[2] != "sent" || outcomes[3] != "limit_reached" {
+		t.Fatalf("%d confirmation emails to one address: %v", n, outcomes)
 	}
 
 	// Validation.
@@ -273,6 +327,26 @@ func TestContactsAPIKeys(t *testing.T) {
 	}
 	if r := apiCall(t, f.srv, "POST", "/api/v1/contacts", key, f.signup("zed@example.com"), "Idempotency-Key", "k-1"); r.status != 422 || r.errCode() != "idempotency_mismatch" {
 		t.Fatalf("reused key: %d %s", r.status, r.raw)
+	}
+
+	// A claim left behind by a crashed request blocks the key for 2 minutes, not a day.
+	stuck := f.signup("sam@example.com")
+	raw, _ := json.Marshal(stuck)
+	h := sha256.New()
+	h.Write([]byte("POST /api/v1/contacts\x00"))
+	h.Write(raw)
+	keyID := uuid.MustParse(created.body["key"].(map[string]any)["id"].(string))
+	if ok, _, err := f.a.Store.ClaimIdempotency(context.Background(), keyID, "k-stuck", h.Sum(nil)); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if r := apiCall(t, f.srv, "POST", "/api/v1/contacts", key, stuck, "Idempotency-Key", "k-stuck"); r.status != 409 || r.errCode() != "request_in_progress" {
+		t.Fatalf("fresh claim: %d %s", r.status, r.raw)
+	}
+	if err := f.a.Store.AgeIdempotencyForTest(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if r := apiCall(t, f.srv, "POST", "/api/v1/contacts", key, stuck, "Idempotency-Key", "k-stuck"); r.status != 202 {
+		t.Fatalf("stale claim: %d %s", r.status, r.raw)
 	}
 
 	// Revoking stops the key at once.
@@ -364,6 +438,33 @@ func TestRepermissionEmails(t *testing.T) {
 	}
 }
 
+func TestRepermissionDailyLimitHoldsUnderConcurrency(t *testing.T) {
+	f := newAPIFixture(t)
+	ctx := context.Background()
+	for i := range 8 {
+		if _, err := f.a.Store.InsertContact(ctx, store.NewContact{BrandID: f.brandID, Email: fmt.Sprintf("q%d@example.com", i), Status: store.ContactQuarantined, ConsentBasis: "single_opt_in"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Tightening a limit applies at once.
+	f.owner.must(200, f.owner.do("PUT", "/admin/v1/safety-limits", map[string]any{"changes": map[string]any{"repermission_emails_per_day": 3}}))
+	f.owner.must(200, f.owner.do("PUT", "/admin/v1/brands/brightside/repermission", map[string]any{"on": true}))
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() { _ = f.a.Confirm.SendRepermissions(ctx) })
+	}
+	wg.Wait()
+	n := 0
+	for _, m := range outbox(f.a) {
+		if m.Kind == "repermission" {
+			n++
+		}
+	}
+	if n != 3 {
+		t.Fatalf("4 parallel runs sent %d re-permission emails, daily limit 3", n)
+	}
+}
+
 func TestSegmentsAPI(t *testing.T) {
 	f := newAPIFixture(t)
 	ctx := context.Background()
@@ -393,12 +494,27 @@ func TestSegmentsAPI(t *testing.T) {
 		"email": "val@acme.test", "name": "Val", "company_role": "member", "brand_roles": map[string]any{f.brandID.String(): "viewer"}}))
 	val := newBrowser(t, f.srv)
 	val.must(200, val.acceptInvite(inv.body["invite_url"].(string)))
-	val.must(200, val.do("GET", "/admin/v1/brands/brightside/segments/"+id, nil))
-	// Viewers see counts, not people.
-	vp := val.must(200, val.do("POST", "/admin/v1/brands/brightside/segments/preview", map[string]any{"rules": rules}))
-	if len(vp.body["sample"].([]any)) != 0 || vp.body["counts"].(map[string]any)["matching"].(float64) != 1 {
-		t.Fatalf("viewer preview: %s", vp.raw)
+	// Viewers see saved segments' numbers but can't try rules of their own:
+	// a count is a yes/no test ("email starts with a…") that spells out addresses.
+	vg := val.must(200, val.do("GET", "/admin/v1/brands/brightside/segments/"+id, nil))
+	if vg.body["counts"].(map[string]any)["matching"].(float64) != 1 {
+		t.Fatalf("viewer get: %s", vg.raw)
+	}
+	val.must(403, val.do("POST", "/admin/v1/brands/brightside/segments/preview", map[string]any{"rules": rules}))
+	if l := val.must(200, val.do("GET", "/admin/v1/brands/brightside/segments", nil)); l.body["segments"].([]any)[0].(map[string]any)["counts"] == nil {
+		t.Fatalf("list should carry the cached count: %s", l.raw)
 	}
 	val.must(403, val.do("DELETE", "/admin/v1/brands/brightside/segments/"+id, nil))
 	f.owner.must(204, f.owner.do("DELETE", "/admin/v1/brands/brightside/segments/"+id, nil))
+
+	// Live counts are rate-limited per person.
+	limited := 0
+	for range 70 {
+		if f.owner.do("POST", "/admin/v1/brands/brightside/segments/preview", map[string]any{"rules": rules}).status == 429 {
+			limited++
+		}
+	}
+	if limited == 0 {
+		t.Fatal("70 previews in a minute weren't limited")
+	}
 }

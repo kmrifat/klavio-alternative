@@ -129,6 +129,11 @@ func (s *Service) Reserve(ctx context.Context, tx *store.Store, brandID uuid.UUI
 	return allowed, excluded, nil
 }
 
+// Release forgets sends reserved at `at` that didn't go out.
+func (s *Service) Release(ctx context.Context, tx *store.Store, brandID uuid.UUID, contactIDs []uuid.UUID, at time.Time) error {
+	return tx.DeleteMarketingSends(ctx, brandID, contactIDs, at)
+}
+
 // Purge forgets sends older than Keep (hourly job).
 func (s *Service) Purge(ctx context.Context) (int64, error) {
 	return s.store.PurgeMarketingSends(ctx, time.Now().Add(-Keep))

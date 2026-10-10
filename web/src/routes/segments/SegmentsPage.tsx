@@ -14,6 +14,7 @@ import {
   type Condition,
   type RuleGroup,
   type Rules,
+  type SegmentCounts,
   type SegmentField,
 } from "../../api/segments";
 import type { Topic } from "../../api/types";
@@ -75,8 +76,8 @@ export function SegmentsPage() {
                       {s.name}
                     </Link>
                   </td>
-                  <td className="px-3 py-2.5 text-right tabular-nums">{s.counts.matching.toLocaleString()}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums">{s.counts.mailable.toLocaleString()}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{s.counts?.matching.toLocaleString() ?? "—"}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{s.counts?.mailable.toLocaleString() ?? "—"}</td>
                   <td className="px-5 py-2.5 text-right text-zinc-500">{timeAgo(s.updated_at)}</td>
                 </tr>
               ))}
@@ -98,7 +99,16 @@ export function SegmentEditor() {
   const existing = useSegment(slug, id);
   if (!isNew && existing.isPending) return <Spinner />;
   if (!isNew && existing.isError) return <ErrorNote error={existing.error} />;
-  return <Editor key={id ?? "new"} slug={slug} id={id} initialName={existing.data?.name ?? ""} initialRules={existing.data?.rules ?? emptyRules} />;
+  return (
+    <Editor
+      key={id ?? "new"}
+      slug={slug}
+      id={id}
+      initialName={existing.data?.name ?? ""}
+      initialRules={existing.data?.rules ?? emptyRules}
+      savedCounts={existing.data?.counts ?? null}
+    />
+  );
 }
 
 function useDebounced<T>(value: T, ms: number): T {
@@ -110,7 +120,13 @@ function useDebounced<T>(value: T, ms: number): T {
   return v;
 }
 
-function Editor({ slug, id, initialName, initialRules }: { slug: string; id?: string; initialName: string; initialRules: Rules }) {
+function Editor({ slug, id, initialName, initialRules, savedCounts }: {
+  slug: string;
+  id?: string;
+  initialName: string;
+  initialRules: Rules;
+  savedCounts: SegmentCounts | null;
+}) {
   const navigate = useNavigate();
   const fields = useSegmentFields();
   const topics = useTopics(slug).data ?? [];
@@ -118,7 +134,9 @@ function Editor({ slug, id, initialName, initialRules }: { slug: string; id?: st
   const [name, setName] = useState(initialName);
   const [rules, setRules] = useState<Rules>(initialRules);
   const debounced = useDebounced(rules, 400);
-  const preview = useSegmentPreview(slug, debounced);
+  // Only editors can try rules (a live count would let viewers test for
+  // addresses); viewers see the saved segment's numbers.
+  const preview = useSegmentPreview(slug, canEdit ? debounced : null);
   const save = useSaveSegment(slug, id);
   const del = useDeleteSegment(slug);
 
@@ -128,7 +146,7 @@ function Editor({ slug, id, initialName, initialRules }: { slug: string; id?: st
 
   const setGroup = (gi: number, g: RuleGroup) => setRules({ ...rules, groups: rules.groups.map((x, i) => (i === gi ? g : x)) });
   const removeGroup = (gi: number) => setRules({ ...rules, groups: rules.groups.filter((_, i) => i !== gi) });
-  const counts = preview.data?.counts;
+  const counts = canEdit ? preview.data?.counts : (savedCounts ?? undefined);
 
   return (
     <div className="max-w-5xl space-y-5">
@@ -211,7 +229,7 @@ function Editor({ slug, id, initialName, initialRules }: { slug: string; id?: st
         </div>
 
         <aside className="space-y-3">
-          <Card title="Live count">
+          <Card title={canEdit ? "Live count" : "Count"}>
             <div className="space-y-3 border-t border-zinc-200 px-5 py-4" aria-live="polite">
               {preview.isError ? (
                 <ErrorNote error={preview.error} />
