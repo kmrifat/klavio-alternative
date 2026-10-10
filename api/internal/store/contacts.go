@@ -69,11 +69,13 @@ type Contact struct {
 	CreatedAt         time.Time     `db:"created_at" json:"created_at"`
 	Tier              Tier          `db:"tier" json:"tier"`
 	SuppressionReason *string       `db:"suppression_reason" json:"suppression_reason"`
+	// StatusBeforeUnsubscribe is set when someone unsubscribes; nil otherwise.
+	StatusBeforeUnsubscribe *ContactStatus `db:"status_before_unsubscribe" json:"-"`
 }
 
 const contactCols = `c.id, c.brand_id, c.email, c.first_name, c.last_name, c.status, c.consent_basis,
 	c.consent_source, c.consented_at, c.last_click_at, c.last_engaged_at, c.tags, c.tracking_allowed, c.timezone, c.country,
-	c.created_at, ` + tierExpr + ` AS tier, s.reason AS suppression_reason`
+	c.created_at, ` + tierExpr + ` AS tier, s.reason AS suppression_reason, c.status_before_unsubscribe`
 
 const contactFrom = ` FROM contacts c LEFT JOIN suppressions s ON s.email_hash = c.email_hash `
 
@@ -273,8 +275,42 @@ func (s *Store) MergeImportedFields(ctx context.Context, id uuid.UUID, c NewCont
 	return err
 }
 
+// LockContact loads a contact and locks its row until the transaction ends,
+// so two unsubscribe clicks can't interleave.
+func (s *Store) LockContact(ctx context.Context, brandID, id uuid.UUID) (Contact, error) {
+	if _, err := s.db.Exec(ctx, `SELECT 1 FROM contacts WHERE brand_id = $1 AND id = $2 FOR UPDATE`, brandID, id); err != nil {
+		return Contact{}, err
+	}
+	return s.ContactByID(ctx, brandID, id)
+}
+
+// Resubscribe: the person opted back in themselves (preference center).
+// Their new consent counts as fresh engagement. Only someone who was properly
+// subscribed before unsubscribing qualifies (ErrNotFound otherwise).
+func (s *Store) Resubscribe(ctx context.Context, id uuid.UUID, at time.Time) error {
+	return expectOne(s.db.Exec(ctx, `
+		UPDATE contacts SET status = 'subscribed', status_before_unsubscribe = NULL, consented_at = $2,
+			last_engaged_at = GREATEST(last_engaged_at, $2), updated_at = now()
+		WHERE id = $1 AND status = 'unsubscribed' AND status_before_unsubscribe = 'subscribed'`, id, at))
+}
+
+// CampaignUnsubscribes counts unsubscribes that came from a campaign (M4 brake input).
+func (s *Store) CampaignUnsubscribes(ctx context.Context, campaignID uuid.UUID) (int, error) {
+	var n int
+	err := s.db.QueryRow(ctx, `SELECT count(DISTINCT contact_id) FROM consent_records WHERE campaign_id = $1 AND kind = 'unsubscribed'`, campaignID).Scan(&n)
+	return n, err
+}
+
+// SetContactStatus also remembers the status someone had when they unsubscribe.
 func (s *Store) SetContactStatus(ctx context.Context, id uuid.UUID, status ContactStatus) error {
-	_, err := s.db.Exec(ctx, `UPDATE contacts SET status = $2, updated_at = now() WHERE id = $1`, id, status)
+	_, err := s.db.Exec(ctx, `
+		UPDATE contacts SET
+			status_before_unsubscribe = CASE
+				WHEN $2 = 'unsubscribed' AND status <> 'unsubscribed' THEN status
+				WHEN $2 <> 'unsubscribed' THEN NULL
+				ELSE status_before_unsubscribe END,
+			status = $2, updated_at = now()
+		WHERE id = $1`, id, status)
 	return err
 }
 
@@ -321,6 +357,7 @@ type NewConsentRecord struct {
 	OccurredAt time.Time
 	RecordedBy *uuid.UUID
 	ImportID   *uuid.UUID
+	CampaignID *uuid.UUID // the email an unsubscribe came from
 }
 
 func (s *Store) AddConsentRecord(ctx context.Context, r NewConsentRecord) error {
@@ -328,10 +365,10 @@ func (s *Store) AddConsentRecord(ctx context.Context, r NewConsentRecord) error 
 		r.OccurredAt = time.Now()
 	}
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO consent_records (brand_id, contact_id, email_hash, kind, method, source, wording, page_url, ip, occurred_at, recorded_by, import_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		INSERT INTO consent_records (brand_id, contact_id, email_hash, kind, method, source, wording, page_url, ip, occurred_at, recorded_by, import_id, campaign_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		r.BrandID, r.ContactID, EmailHash(r.Email), r.Kind, r.Method, r.Source, r.Wording, r.PageURL, r.IP,
-		r.OccurredAt, r.RecordedBy, r.ImportID)
+		r.OccurredAt, r.RecordedBy, r.ImportID, r.CampaignID)
 	return err
 }
 

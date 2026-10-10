@@ -228,6 +228,7 @@ func setup(t *testing.T) (*app.App, *httptest.Server, *fakeDNS) {
 		Config: config.Config{
 			Env: config.EnvDevelopment, AllowedOrigins: []string{origin}, AppURL: origin,
 			WebAuthnRPID: "localhost", WebAuthnRPName: "Test",
+			UnsubscribeSecret: "test-unsubscribe-secret-0123456789abcdef",
 		},
 		Log:               slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Pool:              pool,

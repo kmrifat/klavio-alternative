@@ -24,6 +24,7 @@ import (
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
 	"github.com/kmrifat/klavio-alternative/api/internal/team"
 	"github.com/kmrifat/klavio-alternative/api/internal/templates"
+	"github.com/kmrifat/klavio-alternative/api/internal/unsubscribe"
 )
 
 type Deps struct {
@@ -40,7 +41,9 @@ type Deps struct {
 	// TemplateRebuilder overrides the river job that recompiles templates
 	// after a layout or allowlist change (tests run it inline).
 	TemplateRebuilder templates.Rebuilder
-	Version           string
+	// Limiter rate-limits the public unsubscribe POSTs (Redis in production).
+	Limiter cache.Limiter
+	Version string
 }
 
 // Resolver answers the DNS questions for brand checks and import MX checks.
@@ -56,6 +59,9 @@ type App struct {
 	Brands    *brands.Service
 	Imports   *imports.Service
 	Templates *templates.Service
+	// Unsubscribe signs the unsubscribe/preferences links in every email.
+	Unsubscribe *unsubscribe.Signer
+	unsubSvc    *unsubscribe.Service
 }
 
 func New(d Deps) (*App, error) {
@@ -93,6 +99,13 @@ func New(d Deps) (*App, error) {
 	}
 	a.Imports.SetRunner(runner)
 	a.Templates.SetRebuilder(rebuilder)
+	if a.Unsubscribe, err = unsubscribe.NewSigner(d.Config.UnsubscribeSecret, d.Config.UnsubscribeSecretOld); err != nil {
+		return nil, err
+	}
+	a.unsubSvc = unsubscribe.NewService(st)
+	if a.deps.Limiter == nil {
+		a.deps.Limiter = &cache.MemoryLimiter{}
+	}
 	return a, nil
 }
 
@@ -102,6 +115,7 @@ func FromConfig(ctx context.Context, cfg config.Config, log *slog.Logger, pool *
 	d := Deps{
 		Config: cfg, Log: log, Pool: pool, Redis: rdb, Version: version,
 		Ceremonies: auth.RedisCeremonies{R: rdb.Client},
+		Limiter:    rdb,
 		SES:        &ses.Fake{},
 		DNS:        dnscheck.PublicResolver(cfg.DNSResolver),
 	}
@@ -137,6 +151,7 @@ func (a *App) Handler() http.Handler {
 			contactsH.Routes(mux)
 			a.Imports.Routes(mux, a.Auth)
 		},
+		RegisterPublic: (&unsubscribe.Handlers{Signer: a.Unsubscribe, Service: a.unsubSvc, Limiter: a.deps.Limiter, Log: a.deps.Log}).Routes,
 	})
 }
 

@@ -30,6 +30,8 @@ type Options struct {
 	RegisterAdmin func(mux *http.ServeMux)
 	// AdminMiddleware wraps every /admin request (authentication).
 	AdminMiddleware func(http.Handler) http.Handler
+	// RegisterPublic adds unauthenticated routes at the root (unsubscribe pages).
+	RegisterPublic func(mux *http.ServeMux)
 }
 
 // New returns the root handler with all routes and middleware.
@@ -67,6 +69,9 @@ func New(o Options) http.Handler {
 		adminH = o.AdminMiddleware(adminH)
 	}
 	mux.Handle("/admin/", cors(o.AllowedOrigins, csrf(o.AllowedOrigins, adminH)))
+	if o.RegisterPublic != nil {
+		o.RegisterPublic(mux)
+	}
 
 	return recoverer(o.Log, requestLog(o.Log, mux))
 }
@@ -155,9 +160,20 @@ func requestLog(log *slog.Logger, next http.Handler) http.Handler {
 			level = slog.LevelDebug
 		}
 		log.Log(r.Context(), level, "http request",
-			"id", id, "method", r.Method, "path", r.URL.Path,
+			"id", id, "method", r.Method, "path", redactPath(r.URL.Path),
 			"status", rec.status, "duration_ms", time.Since(start).Milliseconds())
 	})
+}
+
+// redactPath hides the signed token in public link paths (/u/<token>,
+// /p/<token>): it works like a password for that person's subscription.
+func redactPath(p string) string {
+	for _, prefix := range []string{"/u/", "/p/"} {
+		if strings.HasPrefix(p, prefix) && len(p) > len(prefix) {
+			return prefix + "[token]"
+		}
+	}
+	return p
 }
 
 func recoverer(log *slog.Logger, next http.Handler) http.Handler {
