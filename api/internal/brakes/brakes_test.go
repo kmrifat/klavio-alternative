@@ -125,7 +125,7 @@ func (f *fixture) state(t *testing.T) (string, store.BrandStatus) {
 	return b.BrakeState, b.Status
 }
 
-func TestBrandBrakeTightensAndOnlyRelaxesBelowPaused(t *testing.T) {
+func TestBrandBrakeOnlyTightensOnItsOwn(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	f.events(t, "delivery", "", 975, "1 hour")
@@ -140,16 +140,28 @@ func TestBrandBrakeTightensAndOnlyRelaxesBelowPaused(t *testing.T) {
 	if !g.Allowed || g.RateFactor != 0.5 || !g.NeedsApproval {
 		t.Fatalf("slowed gate: %+v", g)
 	}
-	// Rates recover (the bounces age out of the window): slowed clears.
+	// Rates recover (the bounces age out), and then the brand stops sending
+	// (too few emails to judge): neither loosens the brake. That takes a
+	// second admin (Recovery).
 	if err := f.st.ExecForTest(ctx, `UPDATE email_events SET occurred_at = now() - interval '8 days' WHERE type = 'bounce'`); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.svc.EvaluateBrand(ctx, f.brand.ID); err != nil {
 		t.Fatal(err)
 	}
-	if s, _ := f.state(t); s != "healthy" {
-		t.Fatalf("after recovery: %s", s)
+	if s, _ := f.state(t); s != "slowed" {
+		t.Fatalf("slowed loosened on its own: %s", s)
 	}
+	if err := f.st.ExecForTest(ctx, `UPDATE email_events SET occurred_at = now() - interval '8 days'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.EvaluateBrand(ctx, f.brand.ID); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := f.state(t); s != "slowed" {
+		t.Fatalf("an empty week loosened the brake: %s", s)
+	}
+	f.events(t, "delivery", "", 975, "1 hour")
 	// Then complaints: 8 in 975 delivered (0.8%) → paused, brand stopped.
 	f.events(t, "complaint", "abuse", 8, "1 hour")
 	if err := f.svc.EvaluateBrand(ctx, f.brand.ID); err != nil {
@@ -172,7 +184,7 @@ func TestBrandBrakeTightensAndOnlyRelaxesBelowPaused(t *testing.T) {
 		t.Fatalf("paused brand relaxed on its own: %s", s)
 	}
 	evs, _ := f.st.SafetyEvents(ctx, f.brand.ID, 10)
-	if len(evs) != 3 || evs[0].Action != "paused" || evs[1].Action != "cleared" || evs[2].Action != "slowed" {
+	if len(evs) != 2 || evs[0].Action != "paused" || evs[1].Action != "slowed" {
 		t.Fatalf("safety events: %+v", evs)
 	}
 	alerts, _ := f.st.ListAlerts(ctx, true, 10)

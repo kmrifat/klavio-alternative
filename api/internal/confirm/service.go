@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/kmrifat/klavio-alternative/api/internal/brakes"
 	"github.com/kmrifat/klavio-alternative/api/internal/freqcap"
 	"github.com/kmrifat/klavio-alternative/api/internal/limits"
 	"github.com/kmrifat/klavio-alternative/api/internal/mailer"
@@ -40,6 +41,7 @@ type Service struct {
 	sender   mailer.Sender
 	caps     *freqcap.Service
 	warm     *warmup.Service
+	gate     Gate
 	override string // PUBLIC_BASE_URL_OVERRIDE (development)
 	log      *slog.Logger
 	now      func() time.Time
@@ -63,6 +65,31 @@ func NewService(d Deps) *Service {
 
 // SetSender swaps the sender (the SES sender, once it exists).
 func (s *Service) SetSender(m mailer.Sender) { s.sender = m }
+
+// Gate is the brakes' say (M4's *brakes.Service).
+type Gate interface {
+	CheckGate(ctx context.Context, tx *store.Store, brandID uuid.UUID) (brakes.Gate, error)
+}
+
+// SetGate makes these emails respect the brakes: confirmations stop under
+// the account brake or a paused brand; re-permission emails (the riskiest
+// mail there is) go out only while the brand's brake is off.
+func (s *Service) SetGate(g Gate) { s.gate = g }
+
+// allowed asks the brakes; healthyOnly also refuses watch and slowed.
+func (s *Service) allowed(ctx context.Context, brandID uuid.UUID, healthyOnly bool) (bool, string, error) {
+	if s.gate == nil {
+		return true, "", nil
+	}
+	g, err := s.gate.CheckGate(ctx, nil, brandID)
+	if err != nil {
+		return false, "", err
+	}
+	if !g.Allowed || (healthyOnly && (g.RateFactor < 1 || g.BlockInactive || g.NeedsApproval)) {
+		return false, g.Reason, nil
+	}
+	return true, "", nil
+}
 
 type emailData struct {
 	Brand      store.Brand
@@ -108,6 +135,12 @@ func (s *Service) SendConfirmation(ctx context.Context, brandID, contactID, requ
 	}
 	if c.SuppressionReason != nil {
 		return nil
+	}
+	if ok, why, err := s.allowed(ctx, b.ID, false); err != nil || !ok {
+		if err == nil {
+			s.log.WarnContext(ctx, "confirmation email not sent: brakes", "brand", b.Slug, "reason", why)
+		}
+		return err
 	}
 	now := s.now()
 	claims := Claims{BrandID: b.ID, ContactID: c.ID, Purpose: PurposeOptIn, IssuedAt: now.Truncate(time.Second)}
@@ -185,6 +218,13 @@ func (s *Service) SendRepermissions(ctx context.Context) error {
 	var errs []error
 	for _, b := range all {
 		if !b.RepermissionOn || b.Status != store.BrandReady {
+			continue
+		}
+		if ok, why, err := s.allowed(ctx, b.ID, true); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", b.Slug, err))
+			continue
+		} else if !ok {
+			s.log.InfoContext(ctx, "re-permission emails held back by the brakes", "brand", b.Slug, "reason", why)
 			continue
 		}
 		if err := s.repermissionBrand(ctx, b); err != nil {

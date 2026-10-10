@@ -62,9 +62,10 @@ func (s *Service) Evaluate(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// EvaluateBrand moves the brand's brake to what its last 7 days call for.
-// It tightens at once and relaxes watch/slowed when the rates recover; a
-// paused brand stays paused until the S8 recovery flow resumes it.
+// EvaluateBrand tightens the brand's brake when its last 7 days call for
+// it. It never loosens one (§6.4: loosen only with a second admin): that
+// goes through the recovery flow (Recovery), whatever the rates say, since
+// a brand that stops sending soon has too few emails to judge.
 func (s *Service) EvaluateBrand(ctx context.Context, brandID uuid.UUID) error {
 	now := s.now()
 	return s.store.InTx(ctx, func(tx *store.Store) error {
@@ -99,13 +100,10 @@ func (s *Service) EvaluateBrand(ctx context.Context, brandID uuid.UUID) error {
 		}
 		c := counts(f)
 		target, reasons := Brand(c, gmail, l)
-		if target == current {
-			return nil
+		if !Worse(target, current) {
+			return nil // only tighten
 		}
 		action := string(target)
-		if !Worse(target, current) {
-			action, reasons = "cleared", []string{"7-day rates are back under the " + string(current) + " line"}
-		}
 		if err := tx.SetBrakeState(ctx, b.ID, string(target)); err != nil {
 			return err
 		}

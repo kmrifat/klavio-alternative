@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
@@ -65,6 +66,24 @@ func TestBrandRecovery(t *testing.T) {
 	g, _ := f.a.Brakes.CheckGate(ctx, nil, f.brandID)
 	if !g.Allowed || !g.BlockInactive {
 		t.Fatalf("resumed on watch: %+v", g)
+	}
+	// Watch doesn't lift itself either: one more approved step to healthy.
+	if err := f.a.Brakes.Evaluate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := f.a.Store.BrandByID(ctx, f.brandID); b.BrakeState != "watch" {
+		t.Fatalf("watch loosened on its own: %s", b.BrakeState)
+	}
+	req2 := f.owner.must(202, f.owner.do("POST", "/admin/v1/brands/brightside/recovery/resume", body))
+	if !strings.Contains(req2.body["approval"].(map[string]any)["summary"].(string), "watch → healthy") {
+		t.Fatalf("summary: %s", req2.raw)
+	}
+	bo.must(200, bo.do("POST", "/admin/v1/approvals/"+req2.body["approval"].(map[string]any)["id"].(string)+"/approve", map[string]any{}))
+	if b, _ := f.a.Store.BrandByID(ctx, f.brandID); b.BrakeState != "healthy" || b.Status != store.BrandReady {
+		t.Fatalf("after the second step: %s %s", b.BrakeState, b.Status)
+	}
+	if r := f.owner.do("POST", "/admin/v1/brands/brightside/recovery/resume", body); r.errCode() != "not_braked" {
+		t.Fatalf("nothing to loosen: %d %s", r.status, r.raw)
 	}
 
 	// The account brake: stopped for everyone until an owner's request is approved.

@@ -14,6 +14,7 @@ CREATE TABLE email_events (
     ses_message_id text NOT NULL,
     send_id        bigint REFERENCES sends ON DELETE SET NULL, -- from the send_id tag, when it's one of ours
     email_hash     bytea NOT NULL DEFAULT '\x', -- the recipient this row is about ('' = not recipient-specific)
+    feedback_id    text NOT NULL DEFAULT '',     -- SES's id of a bounce or complaint notification
     occurred_at    timestamptz NOT NULL,
     received_at    timestamptz NOT NULL DEFAULT now(),
     detail         jsonb NOT NULL DEFAULT '{}',
@@ -23,6 +24,11 @@ CREATE INDEX email_events_brand ON email_events (brand_id, type, occurred_at);
 CREATE INDEX email_events_message ON email_events (ses_message_id);
 CREATE INDEX email_events_person ON email_events (email_hash, type, occurred_at);
 CREATE INDEX email_events_send ON email_events (send_id, type) WHERE send_id IS NOT NULL;
+CREATE INDEX email_events_at ON email_events (occurred_at); -- account-wide brake counts
+-- The same notification can reach us under two EventBridge ids (a replay):
+-- dedupe on SES's own ids too.
+CREATE UNIQUE INDEX email_events_feedback ON email_events (feedback_id, email_hash) WHERE feedback_id <> '';
+CREATE UNIQUE INDEX email_events_delivery ON email_events (ses_message_id, email_hash) WHERE type = 'delivery';
 
 -- Feedback that removes people: soft bounces (3 in 30 days) suppress too.
 ALTER TABLE suppressions DROP CONSTRAINT suppressions_reason_check;
@@ -49,9 +55,13 @@ CREATE TABLE clicks (
     ip         text NOT NULL DEFAULT '',
     user_agent text NOT NULL DEFAULT '',
     is_bot     boolean NOT NULL DEFAULT false,
-    bot_reason text NOT NULL DEFAULT ''
+    bot_reason text NOT NULL DEFAULT '',
+    -- When it was counted as engagement (or confirmed a bot): a minute after
+    -- the click, once later clicks can't show it was a scanner any more.
+    settled_at timestamptz
 );
 CREATE INDEX clicks_send ON clicks (send_id, at);
+CREATE INDEX clicks_unsettled ON clicks (at) WHERE settled_at IS NULL;
 CREATE INDEX clicks_brand ON clicks (brand_id, at);
 
 CREATE TABLE opens (
@@ -96,6 +106,12 @@ ALTER TABLE company_state DROP COLUMN account_brake_at;
 ALTER TABLE brands DROP COLUMN brake_state;
 DROP TABLE opens;
 DROP TABLE clicks;
+-- Rows using the new values can't stay (consent records are append-only, so
+-- the trigger is set aside for this cleanup only).
+ALTER TABLE consent_records DISABLE TRIGGER consent_records_append_only;
+DELETE FROM consent_records WHERE kind IN ('complained', 'bounced') OR method = 'ses';
+ALTER TABLE consent_records ENABLE TRIGGER consent_records_append_only;
+DELETE FROM suppressions WHERE reason = 'soft_bounce';
 ALTER TABLE consent_records DROP CONSTRAINT consent_records_method_check;
 ALTER TABLE consent_records ADD CONSTRAINT consent_records_method_check
     CHECK (method IN ('import', 'manual', 'api', 'link', 'header'));

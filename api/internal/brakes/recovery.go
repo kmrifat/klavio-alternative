@@ -19,12 +19,12 @@ import (
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
 )
 
-// Recovery (S8): a paused brand, or the stopped account, only sends again
-// after someone works through what went wrong, asks to resume, and a second
-// admin agrees (approvals.KindBrandResume). A brand comes back on watch, so
-// inactive audiences stay blocked while it proves itself; and only once its
-// 7-day rates are back under the pause line, or the next evaluation would
-// pause it again at once.
+// Recovery (S8): brakes only tighten on their own. Loosening one, from
+// paused, slowed or watch, takes someone working through what went wrong,
+// asking, and a second admin agreeing (approvals.KindBrandResume); the same
+// goes for the stopped account. It loosens one step at a time (paused and
+// slowed come back on watch, watch to healthy) and only while the 7-day
+// rates don't call for the current level any more.
 
 type stepUpper interface {
 	RequireStepUp(r *http.Request) (*auth.Principal, error)
@@ -71,8 +71,25 @@ func (rc *Recovery) RegisterApprovals() {
 	})
 }
 
-// stillOver: would the brand pause again right away?
+// next: the level a brake loosens to.
+func next(s State) State {
+	if s == Watch {
+		return Healthy
+	}
+	return Watch
+}
+
+// stillOver: do the rates still call for the brand's current level (or
+// worse)? Too few emails to judge counts as no.
 func (rc *Recovery) stillOver(ctx context.Context, q *store.Store, brandID uuid.UUID) (bool, string, error) {
+	b, err := q.BrandByID(ctx, brandID)
+	if err != nil {
+		return false, "", err
+	}
+	current := State(b.BrakeState)
+	if b.Status == store.BrandPaused {
+		current = Paused
+	}
 	f, err := q.FeedbackCounts(ctx, &brandID, rc.Service.now().Add(-Window))
 	if err != nil {
 		return false, "", err
@@ -91,7 +108,12 @@ func (rc *Recovery) stillOver(ctx context.Context, q *store.Store, brandID uuid.
 		return false, "", err
 	}
 	state, reasons := Brand(counts(f), gmail, l)
-	return state == Paused, strings.Join(reasons, "; "), nil
+	return current != Healthy && !Worse(current, state), strings.Join(reasons, "; "), nil
+}
+
+// braked: is the brand's brake on at all?
+func braked(b store.Brand) bool {
+	return (b.BrakeState != "" && b.BrakeState != string(Healthy)) || b.Status == store.BrandPaused
 }
 
 func (rc *Recovery) resumeBrand(ctx context.Context, tx *store.Store, brandID uuid.UUID, a store.Approval) error {
@@ -99,14 +121,19 @@ func (rc *Recovery) resumeBrand(ctx context.Context, tx *store.Store, brandID uu
 	if err != nil {
 		return err
 	}
-	if b.BrakeState != string(Paused) && b.Status != store.BrandPaused {
-		return approvals.Reject("%s isn't paused any more", b.Name)
+	if !braked(b) {
+		return approvals.Reject("%s's brake is already off", b.Name)
 	}
 	if still, why, err := rc.stillOver(ctx, tx, brandID); err != nil {
 		return err
 	} else if still {
-		return approvals.Reject("its 7-day rates are still over the pause line (%s); ask again once they've come down", why)
+		return approvals.Reject("its 7-day rates still call for this level (%s); ask again once they've come down", why)
 	}
+	from := State(b.BrakeState)
+	if b.Status == store.BrandPaused {
+		from = Paused
+	}
+	to := next(from)
 	// Back to ready only if DNS and SES are still right; otherwise to setup.
 	recs, err := tx.DNSRecords(ctx, b.ID)
 	if err != nil {
@@ -121,11 +148,14 @@ func (rc *Recovery) resumeBrand(ctx context.Context, tx *store.Store, brandID uu
 	if b.SESIdentityStatus != "SUCCESS" {
 		status = store.BrandSetup
 	}
-	if err := tx.ResumeBrand(ctx, b.ID, string(Watch), status); err != nil {
+	if from != Paused && b.Status != store.BrandPaused {
+		status = b.Status // a slowed or watched brand keeps its DNS-based status
+	}
+	if err := tx.ResumeBrand(ctx, b.ID, string(to), status); err != nil {
 		return err
 	}
 	return tx.AddSafetyEvent(ctx, store.SafetyEvent{Scope: "brand", BrandID: &b.ID, Action: "cleared",
-		FromState: string(Paused), ToState: string(Watch), Reason: "resumed after recovery, approved by a second admin"},
+		FromState: string(from), ToState: string(to), Reason: "brake loosened after recovery, approved by a second admin"},
 		map[string]any{"approval_id": a.ID, "status": status})
 }
 
@@ -171,7 +201,10 @@ var BrandSteps = []Step{
 type recoveryView struct {
 	Brand     store.Brand         `json:"brand"`
 	Paused    bool                `json:"paused"`
-	Event     *store.SafetyEvent  `json:"event"` // what paused it
+	Braked    bool                `json:"braked"`  // any brake on (paused, slowed, watch)
+	Current   State               `json:"current"` // the brake level now
+	Next      State               `json:"next"`    // what approval would loosen it to
+	Event     *store.SafetyEvent  `json:"event"`   // what paused it
 	Counts    Counts              `json:"counts"`
 	StillOver bool                `json:"still_over"`
 	Why       string              `json:"why"`
@@ -186,12 +219,17 @@ func (rc *Recovery) view(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	ctx := r.Context()
-	v := recoveryView{Brand: b, Paused: b.BrakeState == string(Paused) || b.Status == store.BrandPaused, Steps: BrandSteps}
+	v := recoveryView{Brand: b, Paused: b.BrakeState == string(Paused) || b.Status == store.BrandPaused, Braked: braked(b), Steps: BrandSteps}
+	v.Current = State(b.BrakeState)
+	if v.Paused {
+		v.Current = Paused
+	}
+	v.Next = next(v.Current)
 	if v.Events, err = rc.Store.SafetyEvents(ctx, b.ID, 20); err != nil {
 		return err
 	}
 	for i := range v.Events {
-		if e := v.Events[i]; e.Scope == "brand" && e.Action == "paused" {
+		if e := v.Events[i]; e.Scope == "brand" && e.Action != "cleared" {
 			v.Event = &v.Events[i]
 			break
 		}
@@ -257,8 +295,8 @@ func (rc *Recovery) requestBrand(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.ReadJSON(r, &in); err != nil {
 		return err
 	}
-	if b.BrakeState != string(Paused) && b.Status != store.BrandPaused {
-		return httpx.Errorf(http.StatusConflict, "not_paused", "%s isn't paused", b.Name)
+	if !braked(b) {
+		return httpx.Errorf(http.StatusConflict, "not_braked", "%s's brake is off", b.Name)
 	}
 	if err := in.check(BrandSteps); err != nil {
 		return err
@@ -268,9 +306,13 @@ func (rc *Recovery) requestBrand(w http.ResponseWriter, r *http.Request) error {
 		return err
 	} else if still {
 		return httpx.Errorf(http.StatusConflict, "still_over_limit",
-			"the 7-day rates are still over the pause line (%s). They come down as the window moves on while nothing is sent.", why)
+			"the 7-day rates still call for this level (%s). They come down as the window moves on.", why)
 	}
-	return rc.request(w, r, p, &b, in, fmt.Sprintf("Resume sending for %s (paused by its brake)", b.Name))
+	from := State(b.BrakeState)
+	if b.Status == store.BrandPaused {
+		from = Paused
+	}
+	return rc.request(w, r, p, &b, in, fmt.Sprintf("Loosen %s's brake: %s → %s", b.Name, from, next(from)))
 }
 
 func (rc *Recovery) accountView(w http.ResponseWriter, r *http.Request) error {

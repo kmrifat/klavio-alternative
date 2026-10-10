@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useParams } from "react-router";
 import { ArrowLeft, CheckCircle2, Clock, OctagonPause } from "lucide-react";
 import {
+  brakeInfo,
   useAccountBrake,
   useRecovery,
   useRequestAccountRelease,
@@ -33,22 +34,32 @@ export function RecoveryPage() {
       </Link>
       <PageHeader title="Recovery" description={`${d.brand.name}: why sending stopped, and how to start again safely.`} />
 
-      {!d.paused ? (
+      {!d.braked ? (
         <p className="flex items-center gap-2 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
-          <CheckCircle2 className="size-4" /> {d.brand.name} isn't paused.
+          <CheckCircle2 className="size-4" /> {d.brand.name}'s brake is off.
         </p>
       ) : (
         <>
-          <section className="flex gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-900" aria-label="Why it stopped">
+          <section
+            className={`flex gap-3 rounded-xl border p-4 text-sm ${d.paused ? "border-red-200 bg-red-50 text-red-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}
+            aria-label={d.paused ? "Why it stopped" : "Why the brake is on"}
+          >
             <OctagonPause className="mt-0.5 size-5 shrink-0" />
             <div>
-              <p className="font-semibold">All marketing email for {d.brand.name} is stopped.</p>
+              <p className="font-semibold">
+                {d.paused
+                  ? `All marketing email for ${d.brand.name} is stopped.`
+                  : `${d.brand.name}'s brake is on: ${brakeInfo[d.current].label.replace("Brake: ", "")}. ${brakeInfo[d.current].help}`}
+              </p>
+              <p className="mt-1">
+                Brakes tighten on their own but never loosen on their own: an approved request moves it to {brakeInfo[d.next].label.replace("Brake: ", "").toLowerCase()}.
+              </p>
               {d.event && (
                 <p className="mt-1">
-                  The brake paused it {timeAgo(d.event.at)}: {d.event.reason}.
+                  The brake moved {timeAgo(d.event.at)}: {d.event.reason}.
                 </p>
               )}
-              <p className="mt-1 text-red-800">
+              <p className="mt-1">
                 Last 7 days: {d.counts.delivered.toLocaleString()} delivered, {d.counts.bounces.toLocaleString()} hard bounces,{" "}
                 {d.counts.complaints.toLocaleString()} complaints.
               </p>
@@ -70,6 +81,7 @@ export function RecoveryPage() {
               why={d.why}
               canRequest={isAdmin}
               whoCan="A brand admin"
+              action={d.paused ? "Ask to resume" : "Ask to loosen the brake"}
               pending={resume.isPending}
               error={resume.error}
               done={resume.isSuccess}
@@ -84,9 +96,10 @@ export function RecoveryPage() {
   );
 }
 
-function ResumeForm({ steps, stillOver, why, canRequest, whoCan, pending, error, done, onSubmit }: {
+function ResumeForm({ steps, stillOver, why, canRequest, whoCan, action = "Ask to resume", pending, error, done, onSubmit }: {
   steps: RecoveryStep[];
   whoCan: string;
+  action?: string;
   stillOver: boolean;
   why: string;
   canRequest: boolean;
@@ -130,8 +143,7 @@ function ResumeForm({ steps, stillOver, why, canRequest, whoCan, pending, error,
       <div className="space-y-3 border-t border-zinc-200 px-5 py-4">
         {stillOver && (
           <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900">
-            The 7-day rates are still over the pause line ({why}). They come down as the window moves on while nothing is sent; you can ask to resume
-            once they have.
+            The 7-day rates still call for this level ({why}). They come down as the window moves on; you can ask once they have.
           </p>
         )}
         {canRequest ? (
@@ -151,7 +163,7 @@ function ResumeForm({ steps, stillOver, why, canRequest, whoCan, pending, error,
                 disabled={stillOver || checked.length !== steps.length || reason.trim().length < 10 || pending}
                 onClick={() => onSubmit(checked, reason)}
               >
-                {pending ? "Sending…" : "Ask to resume"}
+                {pending ? "Sending…" : action}
               </Button>
             </div>
           </>

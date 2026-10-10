@@ -113,7 +113,7 @@ func (s *Store) CampaignLinks(ctx context.Context, campaignID uuid.UUID, limit i
 	rows, err := s.db.Query(ctx, `
 		SELECT k.link_no, min(k.url) AS url, count(*) FILTER (WHERE NOT k.is_bot) AS human_clicks,
 			count(DISTINCT k.contact_id) FILTER (WHERE NOT k.is_bot) AS unique_clickers, count(*) FILTER (WHERE k.is_bot) AS bot_clicks
-		FROM clicks k JOIN sends s ON s.id = k.send_id WHERE s.campaign_id = $1
+		FROM clicks k JOIN sends s ON s.id = k.send_id WHERE s.campaign_id = $1 AND k.link_no > 0
 		GROUP BY k.link_no ORDER BY 3 DESC, 1 LIMIT $2`, campaignID, limit)
 	return all[LinkStat](rows, err)
 }

@@ -154,6 +154,10 @@ func TestCampaignBrakes(t *testing.T) {
 	if len(evs) != 1 || evs[0].Scope != "campaign" || evs[0].Action != "paused" {
 		t.Fatalf("campaign safety events: %+v", evs)
 	}
+	// Its results so far would pause it again at once: no resuming it.
+	if r := w.owner.do("POST", campaignBase+"/campaigns/"+id+"/resume", map[string]any{}); r.status != 409 || r.errCode() != "campaign_brake" {
+		t.Fatalf("resume a brake-paused campaign: %d %s", r.status, r.raw)
+	}
 
 	// 2. The brand brake pauses a running campaign at the next batch.
 	id2 := w.draft(map[string]any{"name": "Second"})["id"].(string)

@@ -57,7 +57,7 @@ func (p *Processor) Process(ctx context.Context, e Event) (Outcome, error) {
 				return err
 			}
 		}
-		row := store.EmailEvent{EventID: e.ID, Type: string(e.Type), Subtype: e.Subtype, BrandID: brandID,
+		row := store.EmailEvent{EventID: e.ID, FeedbackID: e.FeedbackID, Type: string(e.Type), Subtype: e.Subtype, BrandID: brandID,
 			SESMessageID: e.MessageID, SendID: sendID, OccurredAt: e.OccurredAt, Detail: e.Detail}
 
 		recipients := e.Recipients

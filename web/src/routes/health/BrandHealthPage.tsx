@@ -63,6 +63,17 @@ export function BrandHealthPage() {
           <span className="font-medium whitespace-nowrap">Start recovery →</span>
         </Link>
       )}
+      {(brake === "slowed" || brake === "watch") && (
+        <Link
+          to="recovery"
+          className="flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 hover:bg-amber-100"
+        >
+          <span>
+            <strong>{brakeInfo[brake].label}.</strong> {brakeInfo[brake].help} It only loosens with a second admin's approval.
+          </span>
+          <span className="font-medium whitespace-nowrap">Ask to loosen →</span>
+        </Link>
+      )}
 
       <section className="flex flex-wrap items-center gap-6 rounded-xl border border-zinc-200 bg-white p-5" aria-label="Health score">
         <div>

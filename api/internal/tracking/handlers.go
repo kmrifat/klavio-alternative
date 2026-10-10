@@ -58,7 +58,8 @@ func (r *Recorder) enqueue(ctx context.Context, job func(context.Context)) {
 }
 
 // Click records one click: classify it against the email's other recent
-// clicks, store it, and count a person's click as engagement.
+// clicks (marking earlier ones as bots if this one gives them away) and
+// store it. It becomes engagement when it settles.
 func (r *Recorder) Click(ctx context.Context, l Link, h Hit) error {
 	return r.Store.InTx(ctx, func(tx *store.Store) error {
 		// The token is signed, but the send may have been deleted since.
@@ -75,13 +76,13 @@ func (r *Recorder) Click(ctx context.Context, l Link, h Hit) error {
 		if h.DeliveredAt, err = tx.DeliveredAt(ctx, l.SendID); err != nil {
 			return err
 		}
-		prior, err := tx.ClicksSince(ctx, l.SendID, h.At.Add(-BurstWindow))
+		prior, err := tx.ClicksSince(ctx, l.SendID, h.At.Add(-max(BurstWindow, TaintWindow)))
 		if err != nil {
 			return err
 		}
 		pc := make([]PriorClick, len(prior))
 		for i, p := range prior {
-			pc[i] = PriorClick{ID: p.ID, At: p.At, LinkNo: p.LinkNo, IsBot: p.IsBot}
+			pc[i] = PriorClick{ID: p.ID, At: p.At, LinkNo: p.LinkNo, IsBot: p.IsBot, IP: p.IP, UserAgent: p.UserAgent}
 		}
 		bot, reason, burst := r.Classifier.Click(h, pc)
 		if len(burst) > 0 {
@@ -89,15 +90,18 @@ func (r *Recorder) Click(ctx context.Context, l Link, h Hit) error {
 				return err
 			}
 		}
-		if _, err := tx.InsertClick(ctx, store.Click{SendID: l.SendID, BrandID: l.BrandID, ContactID: l.ContactID, LinkNo: l.LinkNo,
-			URL: l.URL, At: h.At, Method: h.Method, IP: ipString(h.IP), UserAgent: truncate(h.UserAgent, 500), IsBot: bot, BotReason: reason}); err != nil {
-			return err
-		}
-		if bot {
-			return nil
-		}
-		return tx.RecordEngagement(ctx, l.BrandID, l.ContactID, h.At)
+		// Engagement comes later, when the click settles (Settle): until
+		// then a burst or the honeypot can still show it was a scanner.
+		_, err = tx.InsertClick(ctx, store.Click{SendID: l.SendID, BrandID: l.BrandID, ContactID: l.ContactID, LinkNo: l.LinkNo,
+			URL: l.URL, At: h.At, Method: h.Method, IP: ipString(h.IP), UserAgent: truncate(h.UserAgent, 500), IsBot: bot, BotReason: reason})
+		return err
 	})
+}
+
+// Settle is the minutely job: clicks past the settle window are final, and
+// the people behind the human ones count as engaged.
+func (r *Recorder) Settle(ctx context.Context) error {
+	return r.Store.SettleClicks(ctx, time.Now().Add(-SettleWindow))
 }
 
 // Open records a pixel load (never used for tiers or brakes).

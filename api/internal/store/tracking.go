@@ -33,20 +33,37 @@ func (s *Store) InsertClick(ctx context.Context, c Click) (int64, error) {
 }
 
 type PriorClick struct {
-	ID     int64     `db:"id"`
-	At     time.Time `db:"at"`
-	LinkNo int       `db:"link_no"`
-	IsBot  bool      `db:"is_bot"`
+	ID        int64     `db:"id"`
+	At        time.Time `db:"at"`
+	LinkNo    int       `db:"link_no"`
+	IsBot     bool      `db:"is_bot"`
+	IP        string    `db:"ip"`
+	UserAgent string    `db:"user_agent"`
 }
 
 // ClicksSince: the email's clicks from `since` on.
 func (s *Store) ClicksSince(ctx context.Context, sendID int64, since time.Time) ([]PriorClick, error) {
-	rows, err := s.db.Query(ctx, `SELECT id, at, link_no, is_bot FROM clicks WHERE send_id = $1 AND at >= $2 ORDER BY at`, sendID, since)
+	rows, err := s.db.Query(ctx, `SELECT id, at, link_no, is_bot, ip, user_agent FROM clicks WHERE send_id = $1 AND at >= $2 ORDER BY at`, sendID, since)
 	return all[PriorClick](rows, err)
 }
 
+// MarkClicksBot turns unsettled clicks into bot clicks (settled ones were
+// already counted, and are past the windows that could change them).
 func (s *Store) MarkClicksBot(ctx context.Context, ids []int64, reason string) error {
-	_, err := s.db.Exec(ctx, `UPDATE clicks SET is_bot = true, bot_reason = $2 WHERE id = ANY($1) AND NOT is_bot`, ids, reason)
+	_, err := s.db.Exec(ctx, `UPDATE clicks SET is_bot = true, bot_reason = $2 WHERE id = ANY($1) AND NOT is_bot AND settled_at IS NULL`, ids, reason)
+	return err
+}
+
+// SettleClicks: clicks older than `before` are final. Each contact's newest
+// human click among them becomes engagement (only with tracking consent).
+func (s *Store) SettleClicks(ctx context.Context, before time.Time) error {
+	_, err := s.db.Exec(ctx, `
+		WITH settled AS (
+			UPDATE clicks SET settled_at = now() WHERE settled_at IS NULL AND at < $1
+			RETURNING brand_id, contact_id, at, is_bot),
+		human AS (SELECT brand_id, contact_id, max(at) AS at FROM settled WHERE NOT is_bot GROUP BY 1, 2)
+		UPDATE contacts c SET last_click_at = GREATEST(c.last_click_at, h.at), last_engaged_at = GREATEST(c.last_engaged_at, h.at)
+		FROM human h WHERE c.brand_id = h.brand_id AND c.id = h.contact_id AND c.tracking_allowed`, before)
 	return err
 }
 
@@ -62,14 +79,6 @@ func (s *Store) DeliveredAt(ctx context.Context, sendID int64) (*time.Time, erro
 	var t *time.Time
 	err := s.db.QueryRow(ctx, `SELECT min(occurred_at) FROM email_events WHERE send_id = $1 AND type = 'delivery'`, sendID).Scan(&t)
 	return t, err
-}
-
-// RecordEngagement: a person clicked. It's the sign of life engagement
-// tiers are built on (only contacts who allowed tracking get here).
-func (s *Store) RecordEngagement(ctx context.Context, brandID, contactID uuid.UUID, at time.Time) error {
-	_, err := s.db.Exec(ctx, `UPDATE contacts SET last_click_at = GREATEST(last_click_at, $3), last_engaged_at = GREATEST(last_engaged_at, $3)
-		WHERE brand_id = $1 AND id = $2 AND tracking_allowed`, brandID, contactID, at)
-	return err
 }
 
 type Open struct {

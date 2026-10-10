@@ -21,10 +21,12 @@ type Hit struct {
 
 // PriorClick is an earlier click on the same email.
 type PriorClick struct {
-	ID     int64
-	At     time.Time
-	LinkNo int
-	IsBot  bool
+	ID        int64
+	At        time.Time
+	LinkNo    int
+	IsBot     bool
+	IP        string
+	UserAgent string
 }
 
 // Thresholds for the click heuristics.
@@ -35,6 +37,12 @@ const (
 	BurstWindow    = 10 * time.Second
 	BurstMinLinks  = 3
 	botHeadRequest = "head_request"
+	// SettleWindow: a click becomes engagement only this long after it
+	// happened, once later clicks (a burst, the honeypot) can no longer
+	// show it was a scanner. TaintWindow, how far back a honeypot hit
+	// marks the same visitor's clicks, must not be longer.
+	SettleWindow = time.Minute
+	TaintWindow  = SettleWindow
 )
 
 // scannerAgents are user-agent fragments of mail security scanners, link
@@ -73,11 +81,32 @@ func scannerUA(ua string) bool {
 }
 
 // Click decides whether a click came from a person. burst lists earlier
-// clicks (by id) that this click shows to be a bot burst too.
+// clicks (by id) that this click shows to be bots too: the rest of a burst,
+// or whatever the same visitor clicked before following the honeypot.
 func (c Classifier) Click(h Hit, prior []PriorClick) (bot bool, reason string, burst []int64) {
+	ip := ""
+	if h.IP.IsValid() {
+		ip = h.IP.String()
+	}
+	sameVisitor := func(p PriorClick) bool {
+		return h.At.Sub(p.At) >= 0 && h.At.Sub(p.At) <= TaintWindow &&
+			((ip != "" && p.IP == ip) || (h.UserAgent != "" && p.UserAgent == h.UserAgent))
+	}
+	if h.Flags&Honeypot != 0 {
+		for _, p := range prior {
+			if sameVisitor(p) && !p.IsBot {
+				burst = append(burst, p.ID)
+			}
+		}
+		return true, "honeypot_link", burst
+	}
+	// The same visitor already followed the honeypot: a scanner.
+	for _, p := range prior {
+		if p.LinkNo == 0 && sameVisitor(p) {
+			return true, "honeypot_link", nil
+		}
+	}
 	switch {
-	case h.Flags&Honeypot != 0:
-		return true, "honeypot_link", nil
 	case h.Method == http.MethodHead:
 		return true, botHeadRequest, nil
 	case strings.TrimSpace(h.UserAgent) == "":
@@ -93,6 +122,9 @@ func (c Classifier) Click(h Hit, prior []PriorClick) (bot bool, reason string, b
 	links := map[int]bool{h.LinkNo: true}
 	var inBurst []int64
 	for _, p := range prior {
+		if p.LinkNo == 0 {
+			continue // the honeypot isn't one of the email's links
+		}
 		if d := h.At.Sub(p.At); d >= 0 && d <= BurstWindow {
 			links[p.LinkNo] = true
 			if !p.IsBot {

@@ -24,6 +24,9 @@ export type RecoveryStep = { id: string; title: string; help: string };
 export type Recovery = {
   brand: Brand & { brake_state: BrakeState };
   paused: boolean;
+  braked: boolean; // any brake on: paused, slowed or watch
+  current: BrakeState;
+  next: BrakeState; // what an approved request loosens it to
   event: SafetyEvent | null;
   counts: { delivered: number; bounces: number; complaints: number; unsubscribes: number };
   still_over: boolean;

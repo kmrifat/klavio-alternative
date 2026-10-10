@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kmrifat/klavio-alternative/api/internal/events"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
@@ -59,8 +60,14 @@ func TestFeedbackLoop(t *testing.T) {
 	if res.StatusCode != 302 || res.Header.Get("Location") != "https://brightside.co/sale" {
 		t.Fatalf("click: %d %s", res.StatusCode, res.Header.Get("Location"))
 	}
+	if got, _ := f.a.Store.ContactByID(ctx, f.brandID, bob); got.LastClickAt != nil {
+		t.Fatal("a click counted as engagement before it settled")
+	}
+	if err := f.a.Store.SettleClicks(ctx, time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	if got, _ := f.a.Store.ContactByID(ctx, f.brandID, bob); got.LastClickAt == nil {
-		t.Fatal("click not recorded as engagement")
+		t.Fatal("a settled click not recorded as engagement")
 	}
 
 	// 7 days of feedback: 2.5% hard bounces → the brand brake slows it down,

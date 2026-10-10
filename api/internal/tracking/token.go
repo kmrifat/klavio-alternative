@@ -36,7 +36,7 @@ type Link struct {
 	BrandID   uuid.UUID
 	ContactID uuid.UUID
 	SendID    int64
-	LinkNo    int // 1-based position in the email
+	LinkNo    int // 1-based position in the email; 0 = the honeypot
 	LinkCount int // links in the email (to spot "clicked everything")
 	URL       string
 	Flags     byte
@@ -120,7 +120,9 @@ func (s *Signer) ClickToken(l Link) (string, error) {
 	if err := SafeURL(l.URL); err != nil {
 		return "", err
 	}
-	if l.LinkNo < 1 || l.LinkNo > 65535 || l.LinkCount < l.LinkNo || l.LinkCount > 65535 {
+	// The honeypot is link 0: not one of the email's links.
+	honeypot := l.Flags&Honeypot != 0
+	if (honeypot && l.LinkNo != 0) || (!honeypot && (l.LinkNo < 1 || l.LinkCount < l.LinkNo)) || l.LinkCount > 65535 {
 		return "", fmt.Errorf("tracking: link %d of %d", l.LinkNo, l.LinkCount)
 	}
 	p := make([]byte, 0, clickFixed+len(l.URL)+macLen)

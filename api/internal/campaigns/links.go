@@ -111,7 +111,7 @@ func (s *Service) extras(b store.Brand, cs store.ClaimedSend, base string, count
 	var e strings.Builder
 	if s.honeypot {
 		if link, err := s.tracking.ClickURL(base, tracking.Link{BrandID: b.ID, ContactID: cs.ContactID, SendID: cs.ID,
-			LinkNo: 1, LinkCount: max(count, 1), URL: base + "/", Flags: tracking.Honeypot}); err == nil {
+			LinkNo: 0, LinkCount: count, URL: base + "/", Flags: tracking.Honeypot}); err == nil {
 			e.WriteString(`<a href="` + html.EscapeString(link) + `" style="display:none" aria-hidden="true" tabindex="-1"></a>`)
 		}
 	}

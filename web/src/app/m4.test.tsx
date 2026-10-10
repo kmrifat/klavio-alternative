@@ -45,6 +45,9 @@ function recovery(extra: Partial<Recovery> = {}): Recovery {
   return {
     brand: paused,
     paused: true,
+    braked: true,
+    current: "paused",
+    next: "watch",
     event: pausedEvent,
     counts: { delivered: 960, bounces: 40, complaints: 0, unsubscribes: 3 },
     still_over: false,
@@ -89,8 +92,21 @@ describe("recovery (S8)", () => {
       "GET /admin/v1/brands/brightside/recovery": { status: 200, body: recovery({ still_over: true, why: "7-day bounces 4% ≥ 3%" }) },
     });
     renderAt("/b/brightside/health/recovery");
-    expect(await screen.findByText(/still over the pause line/)).toBeInTheDocument();
+    expect(await screen.findByText(/still call for this level/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Ask to resume" })).toBeDisabled();
+  });
+
+  it("offers to loosen a slowed brake (it never loosens on its own)", async () => {
+    fakeApi({
+      ...signedIn,
+      "GET /admin/v1/brands/brightside/recovery": {
+        status: 200,
+        body: recovery({ brand: { ...brightside, status: "ready", brake_state: "slowed" }, paused: false, current: "slowed", next: "watch" }),
+      },
+    });
+    renderAt("/b/brightside/health/recovery");
+    expect(await screen.findByRole("region", { name: "Why the brake is on" })).toHaveTextContent("never loosen on their own");
+    expect(screen.getByRole("button", { name: "Ask to loosen the brake" })).toBeDisabled();
   });
 
   it("shows a waiting request instead of the form", async () => {

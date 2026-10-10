@@ -44,6 +44,7 @@ var sesTypes = map[string]Type{
 // Event is one SES event, flattened.
 type Event struct {
 	ID               string // EventBridge event id: the dedupe key
+	FeedbackID       string // SES's id of a bounce or complaint (a second dedupe key)
 	Type             Type
 	Subtype          string // bounce: "permanent/General"; complaint: feedback type; delay: delay type
 	MessageID        string // SES message id
@@ -97,12 +98,14 @@ type sesEvent struct {
 		Tags        map[string][]string `json:"tags"`
 	} `json:"mail"`
 	Bounce *struct {
+		FeedbackID        string    `json:"feedbackId"`
 		BounceType        string    `json:"bounceType"`
 		BounceSubType     string    `json:"bounceSubType"`
 		BouncedRecipients []address `json:"bouncedRecipients"`
 		Timestamp         time.Time `json:"timestamp"`
 	} `json:"bounce"`
 	Complaint *struct {
+		FeedbackID            string    `json:"feedbackId"`
 		ComplainedRecipients  []address `json:"complainedRecipients"`
 		ComplaintFeedbackType string    `json:"complaintFeedbackType"`
 		Timestamp             time.Time `json:"timestamp"`
@@ -177,10 +180,10 @@ func Parse(body []byte) (Event, error) {
 	switch {
 	case se.Bounce != nil:
 		e.Subtype = strings.ToLower(se.Bounce.BounceType) + "/" + se.Bounce.BounceSubType
-		e.Recipients, at = addrs(se.Bounce.BouncedRecipients), se.Bounce.Timestamp
+		e.Recipients, at, e.FeedbackID = addrs(se.Bounce.BouncedRecipients), se.Bounce.Timestamp, se.Bounce.FeedbackID
 	case se.Complaint != nil:
 		e.Subtype = se.Complaint.ComplaintFeedbackType
-		e.Recipients, at = addrs(se.Complaint.ComplainedRecipients), se.Complaint.Timestamp
+		e.Recipients, at, e.FeedbackID = addrs(se.Complaint.ComplainedRecipients), se.Complaint.Timestamp, se.Complaint.FeedbackID
 	case se.Delivery != nil:
 		e.Recipients, at = se.Delivery.Recipients, se.Delivery.Timestamp
 	case se.DeliveryDelay != nil:

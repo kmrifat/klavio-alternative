@@ -17,6 +17,7 @@ func (s *Store) BrandByConfigurationSet(ctx context.Context, name string) (Brand
 
 type EmailEvent struct {
 	EventID      string
+	FeedbackID   string // SES's bounce/complaint id ("" = none)
 	Type         string
 	Subtype      string
 	BrandID      *uuid.UUID
@@ -28,7 +29,8 @@ type EmailEvent struct {
 }
 
 // InsertEmailEvent stores an event row; false when it was stored before
-// (SQS delivered the message again).
+// (SQS delivered the message again, or the same notification came under
+// another EventBridge id: same feedback id, or a delivery already recorded).
 func (s *Store) InsertEmailEvent(ctx context.Context, e EmailEvent) (bool, error) {
 	if e.EmailHash == nil {
 		e.EmailHash = []byte{}
@@ -37,9 +39,9 @@ func (s *Store) InsertEmailEvent(ctx context.Context, e EmailEvent) (bool, error
 		e.Detail = json.RawMessage(`{}`)
 	}
 	tag, err := s.db.Exec(ctx, `
-		INSERT INTO email_events (event_id, type, subtype, brand_id, ses_message_id, send_id, email_hash, occurred_at, detail)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (event_id, email_hash) DO NOTHING`,
-		e.EventID, e.Type, e.Subtype, e.BrandID, e.SESMessageID, e.SendID, e.EmailHash, e.OccurredAt, e.Detail)
+		INSERT INTO email_events (event_id, feedback_id, type, subtype, brand_id, ses_message_id, send_id, email_hash, occurred_at, detail)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT DO NOTHING`,
+		e.EventID, e.FeedbackID, e.Type, e.Subtype, e.BrandID, e.SESMessageID, e.SendID, e.EmailHash, e.OccurredAt, e.Detail)
 	return tag.RowsAffected() == 1, err
 }
 

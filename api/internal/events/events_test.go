@@ -31,7 +31,7 @@ func quoteAll(s []string) string {
 }
 
 func bounce(id, typ, sub, to string) []byte {
-	return sesBody(id, "Bounce", fmt.Sprintf(`,"bounce":{"bounceType":%q,"bounceSubType":%q,"bouncedRecipients":[{"emailAddress":%q}],"timestamp":"2026-10-10T09:00:01Z"}`, typ, sub, to), to)
+	return sesBody(id, "Bounce", fmt.Sprintf(`,"bounce":{"feedbackId":"fb-%s","bounceType":%q,"bounceSubType":%q,"bouncedRecipients":[{"emailAddress":%q}],"timestamp":"2026-10-10T09:00:01Z"}`, id, typ, sub, to), to)
 }
 
 func complaint(id, to string) []byte {
@@ -176,5 +176,19 @@ func TestReaderPoisonGoesToDLQ(t *testing.T) {
 	}
 	if f.suppressed(t, "ann@example.com") == nil {
 		t.Fatal("good message wasn't processed")
+	}
+}
+
+func TestSameNotificationUnderAnotherEventID(t *testing.T) {
+	f := setup(t)
+	f.process(t, bounce("s1", "Transient", "MailboxFull", "ann@example.com"))
+	// A replay: same SES feedback id, new EventBridge id.
+	again := strings.Replace(string(bounce("s1", "Transient", "MailboxFull", "ann@example.com")), `"id":"s1"`, `"id":"s1-replay"`, 1)
+	if out := f.process(t, []byte(again)); !out.Duplicate {
+		t.Fatal("replayed notification counted again")
+	}
+	n, _ := f.st.SoftBouncesSince(context.Background(), store.EmailHash("ann@example.com"), time.Time{})
+	if n != 1 {
+		t.Fatalf("%d soft bounces stored", n)
 	}
 }

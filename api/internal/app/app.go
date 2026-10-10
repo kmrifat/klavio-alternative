@@ -236,6 +236,7 @@ func New(d Deps) (*App, error) {
 	a.Brakes = brakes.NewService(st, d.SES, d.Log)
 	a.Health.SetReputationSource(a.Brakes)
 	a.Campaigns.SetBrakes(a.Brakes)
+	a.Confirm.SetGate(a.Brakes)
 	a.Campaigns.SetTracking(a.Tracking, d.Config.TrackingHoneypot)
 	a.recovery = &brakes.Recovery{Service: a.Brakes, Store: st, Auth: authSvc, Approvals: a.Approvals, Log: d.Log}
 	a.recovery.RegisterApprovals()
@@ -370,7 +371,7 @@ func (a *App) ServeHTTP(ctx context.Context) error {
 // RunWorker works background jobs until ctx is cancelled.
 func (a *App) RunWorker(ctx context.Context) error {
 	log := a.deps.Log
-	client, err := jobs.NewWorker(a.deps.Pool, log, jobs.Deps{Brands: a.Brands, Sessions: a.Store, Imports: a.Imports, ImportFiles: a.Store, Templates: a.Templates, Governance: governanceJobs{a}, Campaigns: a.Campaigns, Health: a.Health, Opt: optJobs{a}, Brakes: a.Brakes})
+	client, err := jobs.NewWorker(a.deps.Pool, log, jobs.Deps{Brands: a.Brands, Sessions: a.Store, Imports: a.Imports, ImportFiles: a.Store, Templates: a.Templates, Governance: governanceJobs{a}, Campaigns: a.Campaigns, Health: a.Health, Opt: optJobs{a}, Brakes: a.Brakes, Clicks: a.recorder})
 	if err != nil {
 		return err
 	}

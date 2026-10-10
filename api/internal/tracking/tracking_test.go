@@ -24,7 +24,7 @@ const secret = "tracking-test-secret-aaaaaaaaaaaaaaaaaaaa"
 func TestTokens(t *testing.T) {
 	s, _ := NewSigner(secret)
 	l := Link{BrandID: uuid.New(), ContactID: uuid.New(), SendID: 1234567890123, LinkNo: 2, LinkCount: 5,
-		URL: "https://brightside.co/sale?utm_source=email&x=ü", Flags: Honeypot}
+		URL: "https://brightside.co/sale?utm_source=email&x=ü", Flags: NoTrack}
 	tok, err := s.ClickToken(l)
 	if err != nil {
 		t.Fatal(err)
@@ -111,6 +111,24 @@ type fixture struct {
 	brand   store.Brand
 	contact uuid.UUID
 	send    int64
+	rec     *Recorder
+}
+
+// settle makes every click so far old enough to settle, then settles.
+func (f fixture) settle(t *testing.T) store.Contact {
+	t.Helper()
+	ctx := context.Background()
+	if err := f.st.ExecForTest(ctx, `UPDATE clicks SET at = at - interval '2 minutes' WHERE settled_at IS NULL`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.rec.Settle(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c, err := f.st.ContactByID(ctx, f.brand.ID, f.contact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
 }
 
 func setup(t *testing.T) fixture {
@@ -134,10 +152,11 @@ func setup(t *testing.T) fixture {
 	s, _ := NewSigner(secret)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mux := http.NewServeMux()
-	(&Handlers{Signer: s, Recorder: &Recorder{Store: st, Log: log}, Log: log}).Routes(mux)
+	rec := &Recorder{Store: st, Log: log}
+	(&Handlers{Signer: s, Recorder: rec, Log: log}).Routes(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return fixture{st: st, signer: s, srv: srv, brand: b, contact: cid, send: send}
+	return fixture{st: st, signer: s, srv: srv, brand: b, contact: cid, send: send, rec: rec}
 }
 
 var noFollow = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -193,9 +212,9 @@ func TestRedirectAndRecording(t *testing.T) {
 	if h, b := f.clicks(t); h != 1 || b != 0 {
 		t.Fatalf("first click: %d humans %d bots", h, b)
 	}
-	c, _ := f.st.ContactByID(ctx, f.brand.ID, f.contact)
-	if c.LastClickAt == nil || c.Tier != store.TierActive {
-		t.Fatalf("a human click is engagement: %+v", c)
+	// Not engagement yet: later clicks could still show it was a scanner.
+	if c, _ := f.st.ContactByID(ctx, f.brand.ID, f.contact); c.LastClickAt != nil {
+		t.Fatal("a click counted before it settled")
 	}
 
 	if res := f.get(t, "GET", ClickPath+"not-a-token", chrome); res.StatusCode != 404 {
@@ -223,6 +242,15 @@ func TestRedirectAndRecording(t *testing.T) {
 	if h, b := f.clicks(t); h != 0 || b != 4 {
 		t.Fatalf("after a burst: %d humans %d bots", h, b)
 	}
+	// The scanner walking every link a minute after delivery moves no tier.
+	if c := f.settle(t); c.LastClickAt != nil {
+		t.Fatalf("scanner clicks became engagement: %v", c.LastClickAt)
+	}
+	// A person's lone click does, once settled.
+	f.get(t, "GET", f.link(t, 2, 0), chrome)
+	if c := f.settle(t); c.LastClickAt == nil || c.Tier != store.TierActive {
+		t.Fatalf("a settled human click is engagement: %+v", c)
+	}
 
 	// Pixel: always a GIF; Apple's proxy is a machine open.
 	res = f.get(t, "GET", OpenPath+f.signer.OpenToken(Pixel{BrandID: f.brand.ID, ContactID: f.contact, SendID: f.send})+".gif", "Mozilla/5.0")
@@ -248,5 +276,49 @@ func TestTooFastAfterDelivery(t *testing.T) {
 	c, _ := f.st.ContactByID(ctx, f.brand.ID, f.contact)
 	if c.LastClickAt != nil {
 		t.Fatal("a scanner click counted as engagement")
+	}
+}
+
+func TestHoneypotTaintsTheVisitorsClicks(t *testing.T) {
+	f := setup(t)
+	f.get(t, "GET", f.link(t, 1, 0), chrome)
+	tok, err := f.signer.ClickToken(Link{BrandID: f.brand.ID, ContactID: f.contact, SendID: f.send, LinkNo: 0, LinkCount: 3,
+		URL: "https://go.acme.test/", Flags: Honeypot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.get(t, "GET", ClickPath+tok, chrome)
+	if h, b := f.clicks(t); h != 0 || b != 2 {
+		t.Fatalf("after the honeypot: %d humans %d bots", h, b)
+	}
+	if c := f.settle(t); c.LastClickAt != nil {
+		t.Fatal("a scanner's click became engagement")
+	}
+	// Honeypot tokens are link 0; real links can't be.
+	if _, err := f.signer.ClickToken(Link{SendID: 1, LinkNo: 0, LinkCount: 1, URL: "https://x.test/"}); err == nil {
+		t.Fatal("link 0 without the honeypot flag")
+	}
+}
+
+func TestHoneypotClassifier(t *testing.T) {
+	now := time.Now()
+	ip := netip.MustParseAddr("198.51.100.4")
+	prior := []PriorClick{
+		{ID: 1, At: now.Add(-5 * time.Second), LinkNo: 1, IP: "198.51.100.4", UserAgent: "x"},
+		{ID: 2, At: now.Add(-5 * time.Second), LinkNo: 2, IP: "203.0.113.1", UserAgent: "someone else"}, // another visitor
+		{ID: 3, At: now.Add(-2 * time.Minute), LinkNo: 1, IP: "198.51.100.4", UserAgent: "x"},           // too long ago
+	}
+	bot, reason, burst := Classifier{}.Click(Hit{At: now, Method: "GET", UserAgent: "x", IP: ip, Flags: Honeypot}, prior)
+	if !bot || reason != "honeypot_link" || len(burst) != 1 || burst[0] != 1 {
+		t.Fatalf("honeypot: %v %q %v", bot, reason, burst)
+	}
+	// A click after the same visitor hit the honeypot is a bot too; someone
+	// else's honeypot hit doesn't count against this click.
+	h := Hit{At: now, Method: "GET", UserAgent: "Mozilla/5.0 (X11) Chrome/129", IP: ip, LinkNo: 1, LinkCount: 2}
+	if bot, r, _ := (Classifier{}).Click(h, []PriorClick{{ID: 9, At: now.Add(-time.Second), LinkNo: 0, IP: "198.51.100.4"}}); !bot || r != "honeypot_link" {
+		t.Fatalf("after the honeypot: %v %q", bot, r)
+	}
+	if bot, _, _ := (Classifier{}).Click(h, []PriorClick{{ID: 9, At: now.Add(-time.Second), LinkNo: 0, IP: "203.0.113.50", UserAgent: "other"}}); bot {
+		t.Fatal("another visitor's honeypot hit marked this click")
 	}
 }
