@@ -97,6 +97,23 @@ func (s *Store) SaveBlocklistResult(ctx context.Context, r BlocklistResult) erro
 	return err
 }
 
+// ClaimBlocklistCheck atomically claims the brand's next blocklist lookup:
+// true when the last claim is older than minAge (or there was none). Only
+// one of many concurrent callers gets true.
+func (s *Store) ClaimBlocklistCheck(ctx context.Context, brandID uuid.UUID, minAge time.Duration) (bool, error) {
+	rows, err := s.db.Query(ctx, `
+		INSERT INTO blocklist_checks (brand_id, claimed_at) VALUES ($1, now())
+		ON CONFLICT (brand_id) DO UPDATE SET claimed_at = now()
+		WHERE blocklist_checks.claimed_at < now() - make_interval(secs => $2)
+		RETURNING brand_id`, brandID, minAge.Seconds())
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	claimed := rows.Next()
+	return claimed, rows.Err()
+}
+
 func (s *Store) BlocklistResults(ctx context.Context, brandID uuid.UUID) ([]BlocklistResult, error) {
 	rows, err := s.db.Query(ctx, `SELECT brand_id, zone, domain, status, detail, checked_at FROM blocklist_results
 		WHERE brand_id = $1 ORDER BY domain, zone`, brandID)

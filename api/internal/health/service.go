@@ -143,26 +143,15 @@ func (s *Service) eachBrand(ctx context.Context, f func(store.Brand) error) erro
 // BlocklistsOn reports whether blocklist checks are configured.
 func (s *Service) BlocklistsOn() bool { return s.cfg.Blocklists != nil }
 
-// CheckBlocklists looks up the brand's sending and link domains, unless the
-// cached results are younger than maxAge.
-func (s *Service) CheckBlocklists(ctx context.Context, b store.Brand, maxAge time.Duration) error {
+// CheckBlocklists looks up the brand's sending and link domains, unless
+// they were looked up less than minAge ago. The claim is atomic, so parallel
+// re-checks can't multiply queries to the lists.
+func (s *Service) CheckBlocklists(ctx context.Context, b store.Brand, minAge time.Duration) error {
 	if s.cfg.Blocklists == nil {
 		return nil
 	}
-	prev, err := s.store.BlocklistResults(ctx, b.ID)
-	if err != nil {
+	if ok, err := s.store.ClaimBlocklistCheck(ctx, b.ID, minAge); err != nil || !ok {
 		return err
-	}
-	if len(prev) > 0 {
-		oldest := prev[0].CheckedAt
-		for _, p := range prev {
-			if p.CheckedAt.Before(oldest) {
-				oldest = p.CheckedAt
-			}
-		}
-		if s.now().Sub(oldest) < maxAge {
-			return nil
-		}
 	}
 	// Lists mostly list the registered domain (brand.com), sometimes a
 	// subdomain: look up both for the sending and the link domain.
@@ -180,8 +169,11 @@ func (s *Service) CheckBlocklists(ctx context.Context, b store.Brand, maxAge tim
 	}
 	for _, d := range domains {
 		for _, r := range s.cfg.Blocklists.Check(ctx, d) {
-			if r.Status == blocklist.Listed {
+			switch {
+			case r.Status == blocklist.Listed:
 				s.log.WarnContext(ctx, "domain is blocklisted", "brand", b.Slug, "domain", d, "list", r.Zone, "detail", r.Detail)
+			case r.Cause != "":
+				s.log.WarnContext(ctx, "blocklist lookup failed", "brand", b.Slug, "domain", d, "list", r.Zone, "err", r.Cause)
 			}
 			err := s.store.SaveBlocklistResult(ctx, store.BlocklistResult{
 				BrandID: b.ID, Zone: r.Zone, Domain: r.Domain, Status: string(r.Status), Detail: r.Detail,
@@ -227,8 +219,10 @@ func (s *Service) PullPostmaster(ctx context.Context) error {
 			return s.store.SetPostmasterStatus(ctx, b.ID, "domain_not_found",
 				"Add "+b.SendingDomain+" in Postmaster Tools and give the service account access")
 		case err != nil:
+			// The error can carry URLs and token-endpoint replies: log it, show
+			// brand viewers something generic.
 			s.log.WarnContext(ctx, "postmaster tools", "brand", b.Slug, "err", err)
-			return s.store.SetPostmasterStatus(ctx, b.ID, "error", err.Error())
+			return s.store.SetPostmasterStatus(ctx, b.ID, "error", "the request failed; the worker log has details")
 		}
 		for _, st := range stats {
 			err := s.store.SavePostmasterStat(ctx, store.PostmasterStat{

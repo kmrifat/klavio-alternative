@@ -2,10 +2,13 @@ package app_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/kmrifat/klavio-alternative/api/internal/store"
 )
 
 func attentionKinds(sc resp) map[string]map[string]any {
@@ -102,14 +105,14 @@ func TestHealthAndSafetyCenter(t *testing.T) {
 
 	// A listing is cached: a recheck within the hour doesn't query again…
 	dns.mu.Lock()
-	dns.answers["brightside.co.dbl.spamhaus.org"] = []string{"127.0.1.2"}
+	dns.answers["brightside.co.dbl.spamhaus.org."] = []string{"127.0.1.2"}
 	dns.mu.Unlock()
 	h = owner.must(200, owner.do("POST", "/admin/v1/brands/brightside/health/recheck", nil))
 	if component(t, h.body["health"].(map[string]any), "reputation")["score"].(float64) != 100 {
 		t.Fatalf("blocklists re-queried within the hour: %s", h.raw)
 	}
 	// …but the periodic job (results older than the interval) does.
-	if err := a.Store.ExecForTest(ctx, `UPDATE blocklist_results SET checked_at = now() - interval '7 hours'`); err != nil {
+	if err := a.Store.ExecForTest(ctx, `UPDATE blocklist_checks SET claimed_at = now() - interval '7 hours'`); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.Health.CheckAllBlocklists(ctx); err != nil {
@@ -129,7 +132,11 @@ func TestHealthAndSafetyCenter(t *testing.T) {
 	}
 
 	// Warm-up shows on S1 once the brand sends.
-	if _, err := a.Warmup.Reserve(ctx, a.Store, brandID, time.Now(), 150); err != nil {
+	err := a.Store.InTx(ctx, func(tx *store.Store) error {
+		_, err := a.Warmup.Reserve(ctx, tx, brandID, time.Now(), 150)
+		return err
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	sc = owner.must(200, owner.do("GET", "/admin/v1/safety-center", nil))
@@ -141,18 +148,46 @@ func TestHealthAndSafetyCenter(t *testing.T) {
 		t.Fatalf("today's sends: %s", sc.raw)
 	}
 
-	// A member without a role on the brand sees no cards and no brand health.
+	// S1 is company-level: brand members get 403, whatever their brand roles.
+	// A member without a role on the brand doesn't see its health either.
 	inv := owner.must(201, owner.do("POST", "/admin/v1/team/invites", map[string]any{
 		"email": "mel@acme.test", "name": "Mel Member", "company_role": "member",
 	}))
 	mel := newBrowser(t, srv.URL)
 	mel.must(200, mel.acceptInvite(inv.body["invite_url"].(string)))
-	msc := mel.must(200, mel.do("GET", "/admin/v1/safety-center", nil))
-	if len(msc.body["brands"].([]any)) != 0 || attentionKinds(msc)["blocklisted"] != nil || attentionKinds(msc)["postmaster_not_connected"] != nil {
-		t.Fatalf("member sees other brands: %s", msc.raw)
-	}
+	mel.must(403, mel.do("GET", "/admin/v1/safety-center", nil))
 	mel.must(404, mel.do("GET", "/admin/v1/brands/brightside/health", nil))
 	mel.must(404, mel.do("POST", "/admin/v1/brands/brightside/health/recheck", nil))
+
+	// A viewer sees the brand's health but can't trigger outside lookups.
+	inv = owner.must(201, owner.do("POST", "/admin/v1/team/invites", map[string]any{
+		"email": "vic@acme.test", "name": "Vic Viewer", "company_role": "member",
+		"brand_roles": map[string]any{brandID.String(): "viewer"},
+	}))
+	vic := newBrowser(t, srv.URL)
+	vic.must(200, vic.acceptInvite(inv.body["invite_url"].(string)))
+	vic.must(403, vic.do("GET", "/admin/v1/safety-center", nil))
+	vic.must(200, vic.do("GET", "/admin/v1/brands/brightside/health", nil))
+	vic.must(403, vic.do("POST", "/admin/v1/brands/brightside/health/recheck", nil))
+
+	// Parallel re-checks claim the lookup once: 3 domains × 3 lists = 9 queries.
+	if err := a.Store.ExecForTest(ctx, `UPDATE blocklist_checks SET claimed_at = now() - interval '2 hours'`); err != nil {
+		t.Fatal(err)
+	}
+	dns.mu.Lock()
+	dns.blocklistQueries = 0
+	dns.mu.Unlock()
+	var wg sync.WaitGroup
+	for range 30 {
+		wg.Go(func() { owner.do("POST", "/admin/v1/brands/brightside/health/recheck", nil) })
+	}
+	wg.Wait()
+	dns.mu.Lock()
+	n := dns.blocklistQueries
+	dns.mu.Unlock()
+	if n != 9 {
+		t.Fatalf("30 parallel re-checks made %d blocklist queries, want 9", n)
+	}
 
 	// The hourly job saves a score for every brand.
 	if err := a.Store.ExecForTest(ctx, `DELETE FROM brand_health`); err != nil {

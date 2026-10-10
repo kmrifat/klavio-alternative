@@ -43,6 +43,9 @@ func (s *Store) InTx(ctx context.Context, fn func(tx *Store) error) error {
 	})
 }
 
+// InTransaction reports whether the store is bound to a transaction.
+func (s *Store) InTransaction() bool { return s != nil && s.pool == nil }
+
 // translate maps driver errors to store errors.
 func translate(err error) error {
 	if errors.Is(err, pgx.ErrNoRows) {

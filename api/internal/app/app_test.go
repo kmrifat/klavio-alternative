@@ -42,7 +42,9 @@ type fakeDNS struct {
 	hosts map[string]bool // domains with an A record but no MX
 	// answers: A records by name (blocklist zones answer 127.0.x.y when listed)
 	answers map[string][]string
-	hang    bool // MX lookups wait until the context ends (a stuck DNS server)
+	// blocklistQueries counts fully qualified lookups (only blocklists use them).
+	blocklistQueries int
+	hang             bool // MX lookups wait until the context ends (a stuck DNS server)
 }
 
 func nx(name string) error { return &net.DNSError{Err: "no such host", Name: name, IsNotFound: true} }
@@ -83,6 +85,9 @@ func (f *fakeDNS) LookupTXT(_ context.Context, n string) ([]string, error) {
 func (f *fakeDNS) LookupHost(_ context.Context, h string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if strings.HasSuffix(h, ".") {
+		f.blocklistQueries++
+	}
 	if v, ok := f.answers[h]; ok {
 		return v, nil
 	}

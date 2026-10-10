@@ -144,6 +144,23 @@ describe("safety center (S1)", () => {
   });
 });
 
+describe("brand members", () => {
+  it("start at their brand's health and don't see the Safety center", async () => {
+    const member = { ...ownerMe, user: { ...ownerMe.user, company_role: "member" as const }, brand_roles: { "b-brightside": "viewer" as const } };
+    fakeApi({
+      ...signedIn,
+      "GET /admin/v1/me": { status: 200, body: member },
+      "GET /admin/v1/brands/brightside/health": { status: 200, body: brandHealth() },
+    });
+    const router = renderAt("/");
+    expect(await screen.findByRole("heading", { name: "Brand health" })).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/b/brightside/health");
+    expect(within(screen.getByRole("navigation", { name: "Company" })).queryByText("Safety center")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: /Sending as/ }));
+    expect(screen.queryByRole("menuitemradio", { name: /company view/i })).toBeNull();
+  });
+});
+
 describe("brand health (S2)", () => {
   it("shows the score, its parts, warm-up and blocklists, and re-checks", async () => {
     let rechecked = false;

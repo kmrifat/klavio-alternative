@@ -89,10 +89,15 @@ type safetyCenter struct {
 	Protections    []protection  `json:"protections"`
 }
 
+// safetyCenter is company-level: account quota, all-brand volume and the
+// suppression count are for owners and approvers, not brand members.
 func (h *Handlers) safetyCenter(w http.ResponseWriter, r *http.Request) error {
 	p, err := auth.Require(r)
 	if err != nil {
 		return err
+	}
+	if !p.SeesAllBrands() {
+		return httpx.ErrForbidden
 	}
 	ctx := r.Context()
 	s := h.Service
@@ -225,6 +230,10 @@ func brandAttention(b store.Brand, r Result) []Attention {
 			case c.Key == "authentication" && ch.Label == "DMARC" && ch.Status == Warning && b.Status == store.BrandReady:
 				out = append(out, Attention{Severity: "info", Kind: "dmarc_none", Brand: b.Slug,
 					Title: b.Name + ": tighten DMARC", Detail: ch.Detail, Link: settings})
+			case ch.Label == "Blocklists" && ch.Status == Unknown && ch.Detail != notCheckedYet:
+				// A resolver problem, not a listing: no alert, just a note.
+				out = append(out, Attention{Severity: "info", Kind: "blocklist_lookups_failing", Brand: b.Slug,
+					Title: b.Name + ": blocklist lookups aren't working", Detail: ch.Detail, Link: health})
 			case ch.Label == "Blocklists" && ch.Status == Failing:
 				out = append(out, Attention{Severity: "critical", Kind: "blocklisted", Brand: b.Slug,
 					Title: b.Name + " is on a blocklist", Detail: ch.Detail + ". Find what caused it, then ask the list to remove it.", Link: health})
@@ -336,8 +345,10 @@ func (h *Handlers) brandHealth(w http.ResponseWriter, r *http.Request) error {
 	return h.writeHealth(w, r, b, saved)
 }
 
+// recheck makes outside lookups (DNS, blocklists), so it needs editor or
+// above; viewers see the last results.
 func (h *Handlers) recheck(w http.ResponseWriter, r *http.Request) error {
-	b, _, err := brands.Visible(r, h.Store)
+	b, _, err := brands.WithRole(r, h.Store, store.RoleEditor)
 	if err != nil {
 		return err
 	}

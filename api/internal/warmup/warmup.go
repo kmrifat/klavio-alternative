@@ -15,6 +15,7 @@ package warmup
 
 import (
 	"context"
+	"errors"
 	"math"
 	"time"
 
@@ -31,6 +32,9 @@ var Schedule = []int{
 
 // Days is the length of the warm-up.
 var Days = len(Schedule)
+
+// ErrNeedsTx: Reserve must run inside the transaction that queues the batch.
+var ErrNeedsTx = errors.New("warmup: Reserve needs a transaction (store.InTx)")
 
 // Unlimited is what CapFor returns once the warm-up is over.
 const Unlimited = math.MaxInt
@@ -115,6 +119,10 @@ func (s *Service) InWarmup(ctx context.Context, brandID uuid.UUID, day time.Time
 // up). Call it inside the transaction that queues the batch; the first
 // reservation starts the warm-up.
 func (s *Service) Reserve(ctx context.Context, tx *store.Store, brandID uuid.UUID, day time.Time, want int) (granted int, err error) {
+	if !tx.InTransaction() {
+		// The advisory lock lasts only as long as the transaction.
+		return 0, ErrNeedsTx
+	}
 	if want <= 0 {
 		return 0, nil
 	}

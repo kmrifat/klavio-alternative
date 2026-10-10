@@ -21,6 +21,7 @@ import { AuditPage } from "../routes/audit/AuditPage";
 import { SafetyLimits } from "../routes/settings/SafetyLimits";
 import { ImportWizard } from "../routes/contacts/ImportWizard";
 import { SafetyCenter } from "../routes/safety/SafetyCenter";
+import { Home } from "../routes/Home";
 import { BrandHealthPage } from "../routes/health/BrandHealthPage";
 import { brandScreens, companyScreens } from "../lib/screens";
 
@@ -62,7 +63,7 @@ export const routes: RouteObject[] = [
       {
         element: <AppLayout />,
         children: [
-          { index: true, element: <Navigate to="/safety" replace /> },
+          { index: true, element: <Home /> },
           ...companyScreens.map(
             (s) => builtCompanyScreens[s.path] ?? { path: s.path, element: <ScreenPlaceholder screen={s} /> },
           ),

@@ -29,6 +29,8 @@ const (
 	Unknown = "unknown"
 )
 
+const notCheckedYet = "Not checked yet"
+
 // Check is one line in a part's breakdown (S2).
 type Check struct {
 	Label  string `json:"label"`
@@ -250,11 +252,11 @@ func reputation(in Inputs) Component {
 				detail += fmt.Sprintf(", %d couldn't be checked", unknown)
 			}
 		default:
-			st, detail = Unknown, "Lookups were refused or failed; set BLOCKLIST_RESOLVER to your own DNS resolver"
+			st, detail = Unknown, "Lookups were refused or failed (resolver problem); point BLOCKLIST_RESOLVER at your own DNS resolver"
 		}
 		c.Checks = append(c.Checks, Check{Label: "Blocklists", Status: st, Detail: detail})
 	} else {
-		c.Checks = append(c.Checks, Check{Label: "Blocklists", Status: Unknown, Detail: "Not checked yet"})
+		c.Checks = append(c.Checks, Check{Label: "Blocklists", Status: Unknown, Detail: notCheckedYet})
 	}
 
 	// Gmail (Postmaster Tools).

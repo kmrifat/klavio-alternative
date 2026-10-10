@@ -9,6 +9,7 @@ import { brandScreens, companyScreens, settingsScreen, type Screen } from "../li
 import { lastBrand, rememberBrand } from "../lib/brands";
 import { brandRoleLabel, companyRoleLabel, initials } from "../lib/format";
 import { BrandSwitcher } from "./BrandSwitcher";
+import { seesCompany } from "../routes/Home";
 import { ApiStatus } from "./ApiStatus";
 import { HealthPill } from "./HealthPill";
 
@@ -18,6 +19,7 @@ export function AppLayout() {
   const brand = brands.find((b) => b.slug === params.brand);
   const linkBrand = brand ?? lastBrand(brands);
   const waitingCount = useApprovals("decide").data?.length;
+  const role = useMe().data?.user.company_role;
 
   useEffect(() => {
     if (brand) rememberBrand(brand.slug);
@@ -42,9 +44,11 @@ export function AppLayout() {
         </NavSection>
 
         <NavSection label="Company">
-          {companyScreens.map((s) => (
-            <NavItem key={s.id} screen={s} to={`/${s.path}`} count={s.path === "approvals" ? waitingCount : undefined} />
-          ))}
+          {companyScreens
+            .filter((s) => s.path !== "safety" || seesCompany(role))
+            .map((s) => (
+              <NavItem key={s.id} screen={s} to={`/${s.path}`} count={s.path === "approvals" ? waitingCount : undefined} />
+            ))}
         </NavSection>
 
         <div className="mt-auto border-t border-zinc-200 pt-2">

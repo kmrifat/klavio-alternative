@@ -12,6 +12,7 @@ CREATE TABLE brand_daily_sends (
     sent     int NOT NULL DEFAULT 0 CHECK (sent >= 0),
     PRIMARY KEY (brand_id, day)
 );
+CREATE INDEX brand_daily_sends_day ON brand_daily_sends (day); -- all-brand total for today (S1)
 
 -- The latest health score per brand (S2), recomputed hourly.
 CREATE TABLE brand_health (
@@ -30,6 +31,13 @@ CREATE TABLE blocklist_results (
     detail     text NOT NULL DEFAULT '',
     checked_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (brand_id, zone, domain)
+);
+
+-- When each brand's blocklists were last claimed for a lookup. Claimed with
+-- one conditional upsert, so concurrent re-checks can't multiply queries.
+CREATE TABLE blocklist_checks (
+    brand_id   uuid PRIMARY KEY REFERENCES brands ON DELETE CASCADE,
+    claimed_at timestamptz NOT NULL DEFAULT now()
 );
 
 -- Google Postmaster Tools daily stats for each brand's sending domain.
@@ -54,6 +62,7 @@ CREATE TABLE postmaster_status (
 -- +goose Down
 DROP TABLE postmaster_status;
 DROP TABLE postmaster_stats;
+DROP TABLE blocklist_checks;
 DROP TABLE blocklist_results;
 DROP TABLE brand_health;
 DROP TABLE brand_daily_sends;

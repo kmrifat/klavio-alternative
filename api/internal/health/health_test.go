@@ -4,12 +4,15 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/kmrifat/klavio-alternative/api/internal/auth"
+	"github.com/kmrifat/klavio-alternative/api/internal/blocklist"
 	"github.com/kmrifat/klavio-alternative/api/internal/postmaster"
 	"github.com/kmrifat/klavio-alternative/api/internal/ses"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
@@ -197,5 +200,61 @@ func TestPullPostmaster(t *testing.T) {
 	off := NewService(st, &ses.Fake{}, nil, warmup.NewService(st), Config{}, log)
 	if err := off.PullPostmaster(ctx); err != nil || off.PostmasterConnected() {
 		t.Fatal("not connected should be a no-op")
+	}
+}
+
+type failingResolver struct{}
+
+func (failingResolver) LookupHost(_ context.Context, host string) ([]string, error) {
+	return nil, &net.DNSError{Err: "connection refused", Name: host, Server: "10.0.0.53:53"}
+}
+
+func TestDQSKeyNeverReachesViewers(t *testing.T) {
+	const key = "SECRETDQSKEY123"
+	st := store.New(testdb.New(t))
+	ctx := context.Background()
+	b, err := st.CreateBrand(ctx, store.Brand{Slug: "acme", Name: "Acme", Color: "#000000", PostalAddress: "1 Main St",
+		SendingDomain: "news.acme.test", MailFromDomain: "bounce.news.acme.test", LinkDomain: "go.acme.test",
+		SESConfigurationSet: "acme", SESIdentityStatus: "SUCCESS", Status: store.BrandReady})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs strings.Builder
+	svc := NewService(st, &ses.Fake{}, nil, warmup.NewService(st), Config{
+		Blocklists: &blocklist.Checker{R: failingResolver{}, DQSKey: key},
+	}, slog.New(slog.NewTextHandler(&logs, nil)))
+	if err := svc.CheckBlocklists(ctx, b, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Recompute(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	(&Handlers{Service: svc, Store: st}).Routes(mux)
+	req := httptest.NewRequest("GET", "/admin/v1/brands/acme/health", nil)
+	req = req.WithContext(auth.WithPrincipalForTest(req.Context(), &auth.Principal{
+		User: store.User{CompanyRole: store.CompanyMember}, Roles: store.BrandRoles{b.ID: store.RoleViewer},
+	}))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	body := rec.Body.String()
+	if rec.Code != 200 || !strings.Contains(body, "lookup failed (resolver error)") {
+		t.Fatalf("health: %d %s", rec.Code, body)
+	}
+	if strings.Contains(body, key) || strings.Contains(body, "dq.spamhaus.net") {
+		t.Fatalf("API output leaks the DQS key: %s", body)
+	}
+	rows, err := st.BlocklistResults(ctx, b.ID)
+	if err != nil || len(rows) == 0 {
+		t.Fatal(rows, err)
+	}
+	for _, r := range rows {
+		if strings.Contains(r.Detail, key) {
+			t.Fatalf("stored detail leaks the key: %q", r.Detail)
+		}
+	}
+	if strings.Contains(logs.String(), key) || !strings.Contains(logs.String(), "<dqs-key>") {
+		t.Fatalf("log should have the error with the key redacted: %s", logs.String())
 	}
 }

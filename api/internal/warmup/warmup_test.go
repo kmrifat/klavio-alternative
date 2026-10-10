@@ -2,6 +2,7 @@ package warmup
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -38,6 +39,12 @@ func TestReserveIsAtomic(t *testing.T) {
 
 	if rem, _ := w.CapFor(ctx, b.ID, day1); rem != 200 {
 		t.Fatalf("not started: %d", rem)
+	}
+	if _, err := w.Reserve(ctx, st, b.ID, day1, 1); !errors.Is(err, ErrNeedsTx) {
+		t.Fatalf("outside a transaction: %v", err)
+	}
+	if _, err := w.Reserve(ctx, nil, b.ID, day1, 1); !errors.Is(err, ErrNeedsTx) {
+		t.Fatalf("nil store: %v", err)
 	}
 	// 10 workers each want 50 on day 1: exactly 200 granted in total.
 	var mu sync.Mutex
