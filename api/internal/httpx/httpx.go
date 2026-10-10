@@ -8,9 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
-	"strings"
 )
 
 // Error is an error with an HTTP status and a stable machine-readable code.
@@ -67,16 +65,4 @@ func ReadJSON(r *http.Request, v any) error {
 		return Errorf(http.StatusBadRequest, "bad_json", "invalid request body: %v", err)
 	}
 	return nil
-}
-
-// ClientIP prefers Cloudflare's header (the tunnel is the only way in), then the socket address.
-func ClientIP(r *http.Request) string {
-	if ip := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); ip != "" {
-		return ip
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }

@@ -26,6 +26,10 @@ const (
 type Service struct {
 	store *store.Store
 	log   *slog.Logger
+	// ExpectCountry is set when sign-ins come through Cloudflare, so every
+	// one should carry a country: a sign-in without one is flagged even if
+	// earlier sign-ins had none either.
+	ExpectCountry bool
 }
 
 func NewService(st *store.Store, log *slog.Logger) *Service { return &Service{store: st, log: log} }
@@ -52,7 +56,8 @@ func (s *Service) freezeOrWarn(ctx context.Context, tx *store.Store, u store.Use
 }
 
 // CheckSignIn records a passkey sign-in and decides whether it looks like a
-// stolen account. country is Cloudflare's CF-IPCountry ("" when unknown);
+// stolen account. country is Cloudflare's CF-IPCountry ("" when unknown or
+// not from a trusted proxy — never treated as a known country);
 // device identifies the passkey. Returns true if the account is now frozen.
 func (s *Service) CheckSignIn(ctx context.Context, tx *store.Store, u store.User, ip, country, device string) (bool, error) {
 	prev, err := tx.RecentSignIns(ctx, u.ID, time.Now().Add(-lookback))
@@ -83,9 +88,9 @@ func (s *Service) CheckSignIn(ctx context.Context, tx *store.Store, u store.User
 		details["known_countries"] = known
 		return s.freezeOrWarn(ctx, tx, u, "new_country", fmt.Sprintf("Sign-in for %s from a new country (%s)", u.Email, country), nil, details)
 	}
-	if country == "" && len(knownCountries) > 0 {
-		// Earlier sign-ins came through Cloudflare with a country; this one
-		// didn't. Unknown isn't "same": raise it.
+	if country == "" && (len(knownCountries) > 0 || s.ExpectCountry) {
+		// Earlier sign-ins came through Cloudflare with a country, or all of
+		// them should; this one didn't. Unknown isn't "same": raise it.
 		return false, tx.CreateAlert(ctx, store.Alert{
 			Kind: "unknown_country", Severity: "warning", UserID: &u.ID,
 			Message: fmt.Sprintf("%s signed in without country information (not through Cloudflare?)", u.Email),

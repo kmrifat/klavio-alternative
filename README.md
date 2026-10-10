@@ -128,6 +128,26 @@ per IP and per token; logs show `/u/[token]`.
 | `SPAMHAUS_DQS_KEY` | — | optional Spamhaus Data Query Service key |
 | `POSTMASTER_CREDENTIALS_FILE` | — | Google service-account JSON for Postmaster Tools (Gmail spam rate). Mount as a secret; never commit |
 | `PUBLIC_BASE_URL_OVERRIDE` | — | development only, e.g. `http://localhost:8080` instead of `https://<link domain>` |
+| `TRUST_CLOUDFLARE_HEADERS` | `false` (dev), `true` (prod) | believe `CF-Connecting-IP` / `CF-IPCountry` from `TRUSTED_PROXY_CIDRS` |
+| `TRUSTED_PROXY_CIDRS` | `127.0.0.1/32,::1/128` | comma-separated IPs/CIDRs of the `cloudflared` sidecar (docker-compose: `10.210.250.10/32`) |
+
+### Client IP and country
+
+The client IP feeds the per-IP rate limits on the public unsubscribe pages, consent records, sessions
+and the audit log; the country feeds the "sign-in from a new country → freeze" anomaly rule. Both come
+from Cloudflare's `CF-Connecting-IP` and `CF-IPCountry` headers — but any client can send those, so the
+API only believes them when `TRUST_CLOUDFLARE_HEADERS=true` **and** the TCP connection comes from an
+address in `TRUSTED_PROXY_CIDRS`. Otherwise the IP is the socket address and the country is unknown.
+
+- Behind Cloudflare Tunnel the API's peer is `cloudflared`, not a Cloudflare edge IP. List exactly the
+  sidecar's address: `127.0.0.1`/`::1` when it shares the host network, or a fixed container IP
+  (`docker-compose.yml` gives it `10.210.250.10` on the `edge` network). Don't list a whole Docker subnet:
+  its gateway address is where traffic to published ports comes from.
+- If you ever put the origin directly behind Cloudflare's proxy instead of a tunnel, list
+  [Cloudflare's IP ranges](https://www.cloudflare.com/ips/) — and firewall everything else.
+- A sign-in without a trusted country is never "same country": with trust on (or after earlier sign-ins
+  had a country) it raises an `unknown_country` warning. If you see those for every sign-in, or the log
+  line `ignoring Cloudflare headers from a peer outside TRUSTED_PROXY_CIDRS`, fix `TRUSTED_PROXY_CIDRS`.
 
 ## Deploying (M0 checklist — manual steps)
 
@@ -137,6 +157,7 @@ per IP and per token; logs show `/u/[token]`.
 3. **Database**: managed Postgres 17 + Redis (e.g. RDS `db.t4g.micro`). Run the image once with `-mode=migrate`.
 4. **Backend**: run the image with `-mode=all` (or one `api` + one `worker`) and a
    `cloudflared` sidecar using a Cloudflare Tunnel token (see `docker-compose.yml`, profile `tunnel`).
-   Route `admin-api.<your-domain>` → `http://app:8080` in the tunnel.
+   Route `admin-api.<your-domain>` → `http://app:8080` in the tunnel. Set `TRUSTED_PROXY_CIDRS` to the
+   sidecar's address (see [Client IP and country](#client-ip-and-country)); don't expose the API port otherwise.
 5. **Frontend**: `cd web && VITE_API_URL=https://admin-api.<your-domain> npm run build && npx wrangler deploy`.
 6. **Cloudflare Access**: protect `app.<your-domain>` and `admin-api.<your-domain>` with your Google Workspace.

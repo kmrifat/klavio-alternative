@@ -22,6 +22,7 @@ import (
 	"github.com/kmrifat/klavio-alternative/api/internal/dnscheck"
 	"github.com/kmrifat/klavio-alternative/api/internal/exports"
 	"github.com/kmrifat/klavio-alternative/api/internal/health"
+	"github.com/kmrifat/klavio-alternative/api/internal/httpx"
 	"github.com/kmrifat/klavio-alternative/api/internal/imports"
 	"github.com/kmrifat/klavio-alternative/api/internal/jobs"
 	"github.com/kmrifat/klavio-alternative/api/internal/limits"
@@ -128,6 +129,7 @@ func New(d Deps) (*App, error) {
 	a.Approvals = approvals.NewService(st, d.Log)
 	a.Limits = limits.NewService(st, a.Approvals, d.Log)
 	a.Anomaly = anomaly.NewService(st, d.Log)
+	a.Anomaly.ExpectCountry = d.Config.TrustCloudflareHeaders
 	a.exports = exports.NewService(st, a.Approvals, a.Anomaly, d.Log)
 	a.team = &team.Handlers{Store: st, Auth: authSvc, Approvals: a.Approvals, Log: d.Log}
 	a.team.RegisterApprovals()
@@ -189,6 +191,7 @@ func (a *App) Handler() http.Handler {
 		Version:         a.deps.Version,
 		Env:             string(a.deps.Config.Env),
 		AllowedOrigins:  a.deps.Config.AllowedOrigins,
+		Proxy:           httpx.ProxyTrust{Cloudflare: a.deps.Config.TrustCloudflareHeaders, Proxies: a.deps.Config.TrustedProxies},
 		AdminMiddleware: a.Auth.Middleware,
 		RegisterAdmin: func(mux *http.ServeMux) {
 			a.Auth.Routes(mux)

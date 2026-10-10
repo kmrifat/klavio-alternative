@@ -93,7 +93,8 @@ func run(ctx context.Context, f flags, cfg config.Config, log *slog.Logger) erro
 		return nil
 	}
 
-	log.Info("starting", "version", version, "env", cfg.Env, "ses", cfg.SESMode, "cloudflare_access", cfg.AccessTeamDomain != "")
+	log.Info("starting", "version", version, "env", cfg.Env, "ses", cfg.SESMode, "cloudflare_access", cfg.AccessTeamDomain != "",
+		"trust_cloudflare_headers", cfg.TrustCloudflareHeaders, "trusted_proxies", cfg.TrustedProxies)
 	g, ctx := errgroup.WithContext(ctx)
 	if f.mode == "api" || f.mode == "all" {
 		g.Go(func() error { return a.ServeHTTP(ctx) })
