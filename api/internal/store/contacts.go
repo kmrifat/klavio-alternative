@@ -273,6 +273,32 @@ func (s *Store) MergeImportedFields(ctx context.Context, id uuid.UUID, c NewCont
 	return err
 }
 
+// LockContact loads a contact and locks its row until the transaction ends,
+// so two unsubscribe clicks can't interleave.
+func (s *Store) LockContact(ctx context.Context, brandID, id uuid.UUID) (Contact, error) {
+	if _, err := s.db.Exec(ctx, `SELECT 1 FROM contacts WHERE brand_id = $1 AND id = $2 FOR UPDATE`, brandID, id); err != nil {
+		return Contact{}, err
+	}
+	return s.ContactByID(ctx, brandID, id)
+}
+
+// Resubscribe: the person opted back in themselves (preference center).
+// Their new consent counts as fresh engagement.
+func (s *Store) Resubscribe(ctx context.Context, id uuid.UUID, at time.Time) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE contacts SET status = 'subscribed', consented_at = $2,
+			last_engaged_at = GREATEST(last_engaged_at, $2), updated_at = now()
+		WHERE id = $1`, id, at)
+	return err
+}
+
+// CampaignUnsubscribes counts unsubscribes that came from a campaign (M4 brake input).
+func (s *Store) CampaignUnsubscribes(ctx context.Context, campaignID uuid.UUID) (int, error) {
+	var n int
+	err := s.db.QueryRow(ctx, `SELECT count(DISTINCT contact_id) FROM consent_records WHERE campaign_id = $1 AND kind = 'unsubscribed'`, campaignID).Scan(&n)
+	return n, err
+}
+
 func (s *Store) SetContactStatus(ctx context.Context, id uuid.UUID, status ContactStatus) error {
 	_, err := s.db.Exec(ctx, `UPDATE contacts SET status = $2, updated_at = now() WHERE id = $1`, id, status)
 	return err
@@ -321,6 +347,7 @@ type NewConsentRecord struct {
 	OccurredAt time.Time
 	RecordedBy *uuid.UUID
 	ImportID   *uuid.UUID
+	CampaignID *uuid.UUID // the email an unsubscribe came from
 }
 
 func (s *Store) AddConsentRecord(ctx context.Context, r NewConsentRecord) error {
@@ -328,10 +355,10 @@ func (s *Store) AddConsentRecord(ctx context.Context, r NewConsentRecord) error 
 		r.OccurredAt = time.Now()
 	}
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO consent_records (brand_id, contact_id, email_hash, kind, method, source, wording, page_url, ip, occurred_at, recorded_by, import_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		INSERT INTO consent_records (brand_id, contact_id, email_hash, kind, method, source, wording, page_url, ip, occurred_at, recorded_by, import_id, campaign_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		r.BrandID, r.ContactID, EmailHash(r.Email), r.Kind, r.Method, r.Source, r.Wording, r.PageURL, r.IP,
-		r.OccurredAt, r.RecordedBy, r.ImportID)
+		r.OccurredAt, r.RecordedBy, r.ImportID, r.CampaignID)
 	return err
 }
 

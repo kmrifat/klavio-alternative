@@ -153,3 +153,13 @@ func TestCSRF(t *testing.T) {
 		})
 	}
 }
+
+func TestRedactPath(t *testing.T) {
+	for in, want := range map[string]string{
+		"/u/abc123": "/u/[token]", "/p/xyz": "/p/[token]", "/admin/v1/me": "/admin/v1/me", "/u/": "/u/",
+	} {
+		if got := redactPath(in); got != want {
+			t.Errorf("redactPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

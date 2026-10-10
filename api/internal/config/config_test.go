@@ -42,6 +42,7 @@ func TestLoadProductionUsesJSONLogs(t *testing.T) {
 		"CF_ACCESS_AUD":         "aud123",
 		"SES_EVENT_BUS_ARN":     "arn:aws:events:us-east-1:123:event-bus/default",
 		"WEBAUTHN_RP_ID":        "example.com",
+		"UNSUBSCRIBE_SECRET":    "prod-secret-0123456789abcdef0123456789",
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -88,7 +89,7 @@ func TestLoadProductionRequiresSafetySettings(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected errors")
 	}
-	for _, want := range []string{"CF_ACCESS_TEAM_DOMAIN", "SES_MODE must be aws", "WEBAUTHN_RP_ID"} {
+	for _, want := range []string{"CF_ACCESS_TEAM_DOMAIN", "SES_MODE must be aws", "WEBAUTHN_RP_ID", "UNSUBSCRIBE_SECRET"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %s", err, want)
 		}
@@ -101,5 +102,16 @@ func TestLoadAccessNeedsBothSettings(t *testing.T) {
 	}))
 	if err == nil || !strings.Contains(err.Error(), "set both") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestUnsubscribeSecret(t *testing.T) {
+	cfg, err := Load(envFrom(map[string]string{"DATABASE_URL": "postgres://x", "REDIS_URL": "redis://x"}))
+	if err != nil || len(cfg.UnsubscribeSecret) < 32 {
+		t.Fatalf("dev default: %q %v", cfg.UnsubscribeSecret, err)
+	}
+	_, err = Load(envFrom(map[string]string{"DATABASE_URL": "postgres://x", "REDIS_URL": "redis://x", "UNSUBSCRIBE_SECRET": "short"}))
+	if err == nil || !strings.Contains(err.Error(), "UNSUBSCRIBE_SECRET must be at least 32") {
+		t.Fatalf("short secret: %v", err)
 	}
 }
