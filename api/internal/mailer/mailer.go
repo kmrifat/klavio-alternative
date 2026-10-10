@@ -33,6 +33,11 @@ type Sender interface {
 // ErrNotConfigured: no real sender yet.
 var ErrNotConfigured = errors.New("mailer: no email sender is configured")
 
+// ErrOutcomeUnknown: the sender may have taken the message (a timeout or a
+// dropped connection after the request went out). Treat it as sent, never
+// retry: a lost email can be asked for again, a duplicate can't be undone.
+var ErrOutcomeUnknown = errors.New("mailer: outcome unknown; the email may have gone out")
+
 // Unconfigured refuses every message (production until SES sending lands).
 type Unconfigured struct{}
 

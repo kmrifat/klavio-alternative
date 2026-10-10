@@ -2,6 +2,7 @@ package campaigns
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/kmrifat/klavio-alternative/api/internal/mailer"
@@ -34,5 +35,11 @@ func (m serviceMailer) Send(ctx context.Context, msg mailer.Message) error {
 		ConfigurationSet: b.SESConfigurationSet,
 		Tags:             map[string]string{"kind": msg.Kind, "brand_id": b.ID.String()},
 	})
+	// The same rule as campaign sends: only a certain "not sent" may be
+	// retried. Throttling and 503 can be; a refusal fails as it is; anything
+	// else may have gone out.
+	if err != nil && !ses.Retryable(err) && !errors.Is(err, ses.ErrRejected) && !errors.Is(err, ses.ErrSendingPaused) {
+		return fmt.Errorf("%w: %w", mailer.ErrOutcomeUnknown, err)
+	}
 	return err
 }

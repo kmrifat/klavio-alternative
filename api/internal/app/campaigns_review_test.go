@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -469,9 +470,21 @@ func TestCampaignMailerForConfirmations(t *testing.T) {
 		g.Tags["kind"] != "confirmation" || g.Headers["List-Unsubscribe"] == "" || strings.ContainsAny(g.Subject, "\r\n") {
 		t.Fatalf("message: %+v", g)
 	}
+	// A timeout may have been delivered: reported as unknown, not to retry.
+	// Throttling is a certain "not sent" and stays retryable.
+	flaky := msg
+	flaky.To = "flaky@example.com"
+	if err := m.Send(ctx, flaky); !errors.Is(err, mailer.ErrOutcomeUnknown) {
+		t.Fatalf("timeout: %v, want ErrOutcomeUnknown", err)
+	}
+	throttled := msg
+	throttled.To = "throttle@example.com"
+	if err := m.Send(ctx, throttled); errors.Is(err, mailer.ErrOutcomeUnknown) || !errors.Is(err, ses.ErrThrottled) {
+		t.Fatalf("throttle: %v, want a retryable ErrThrottled", err)
+	}
 	msg.Brand.Status = store.BrandSetup
-	if err := m.Send(ctx, msg); err == nil {
-		t.Fatal("sent for a brand that can't send")
+	if err := m.Send(ctx, msg); err == nil || errors.Is(err, mailer.ErrOutcomeUnknown) {
+		t.Fatalf("brand that can't send: %v", err)
 	}
 }
 
