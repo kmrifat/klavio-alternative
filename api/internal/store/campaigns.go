@@ -699,6 +699,78 @@ func (s *Store) SkipQueuedSends(ctx context.Context, campaignID uuid.UUID, reaso
 	return res, err
 }
 
+// CampaignStateShared reads a campaign's state and holds a share lock on its
+// row until the transaction ends, so a cancel (which updates the row) waits
+// for, or is seen by, whatever the caller does next.
+func (s *Store) CampaignStateShared(ctx context.Context, id uuid.UUID) (CampaignState, error) {
+	var st CampaignState
+	err := s.db.QueryRow(ctx, `SELECT state FROM campaigns WHERE id = $1 FOR SHARE`, id).Scan(&st)
+	return st, translate(err)
+}
+
+// CampaignStateForClaim is CampaignStateShared for a transaction that may
+// also update the campaign (the claim records why it's waiting). Taking the
+// campaign first keeps one lock order everywhere: campaign, then sends.
+func (s *Store) CampaignStateForClaim(ctx context.Context, id uuid.UUID) (CampaignState, error) {
+	var st CampaignState
+	err := s.db.QueryRow(ctx, `SELECT state FROM campaigns WHERE id = $1 FOR NO KEY UPDATE`, id).Scan(&st)
+	return st, translate(err)
+}
+
+// SkipClaimedSends ends sends of one claim that won't go out (their
+// campaign was cancelled), returning the reservations they held.
+func (s *Store) SkipClaimedSends(ctx context.Context, token uuid.UUID, ids []int64, reason string) ([]Reservation, error) {
+	rows, err := s.db.Query(ctx, `
+		WITH old AS (
+			SELECT id, contact_id, reserved_at FROM sends
+			WHERE id = ANY($1) AND claim_token = $2 AND status = 'sending' FOR UPDATE),
+		upd AS (
+			UPDATE sends s SET status = 'skipped', skip_reason = $3, reserved_at = NULL, claim_token = NULL
+			FROM old WHERE s.id = old.id RETURNING old.contact_id, old.reserved_at)
+		SELECT contact_id, reserved_at FROM upd WHERE reserved_at IS NOT NULL`, ids, token, reason)
+	return all[Reservation](rows, err)
+}
+
+// Leftover: a cancelled or finished campaign that still has sends waiting
+// (a worker crashed after the cancel, or put rows back as it happened).
+type Leftover struct {
+	CampaignID uuid.UUID     `db:"campaign_id"`
+	BrandID    uuid.UUID     `db:"brand_id"`
+	State      CampaignState `db:"state"`
+}
+
+func (s *Store) CampaignLeftovers(ctx context.Context, stuckAfter time.Duration) ([]Leftover, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT c.id AS campaign_id, c.brand_id, c.state FROM campaigns c
+		WHERE c.state IN ('cancelled', 'done') AND EXISTS (
+			SELECT 1 FROM sends s WHERE s.campaign_id = c.id
+			  AND (s.status = 'queued' OR (s.status = 'sending' AND s.claimed_at < now() - $1::interval)))`, stuckAfter.String())
+	return all[Leftover](rows, err)
+}
+
+// SkipLeftovers ends what a cancelled or finished campaign still has
+// waiting: queued sends, and sends stuck in 'sending' longer than stuckAfter
+// (those that reached SES become 'unknown' and keep their reservation; the
+// rest are skipped). Returns the reservations to give back.
+func (s *Store) SkipLeftovers(ctx context.Context, campaignID uuid.UUID, stuckAfter time.Duration, reason string) ([]Reservation, error) {
+	if _, err := s.db.Exec(ctx, `
+		UPDATE sends SET status = 'unknown', error = 'worker stopped while sending; not retried to avoid a duplicate'
+		WHERE campaign_id = $1 AND status = 'sending' AND called_at IS NOT NULL AND claimed_at < now() - $2::interval`,
+		campaignID, stuckAfter.String()); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(ctx, `
+		WITH old AS (
+			SELECT id, contact_id, reserved_at FROM sends
+			WHERE campaign_id = $1 AND (status = 'queued' OR (status = 'sending' AND called_at IS NULL AND claimed_at < now() - $2::interval))
+			FOR UPDATE),
+		upd AS (
+			UPDATE sends s SET status = 'skipped', skip_reason = $3, reserved_at = NULL, claim_token = NULL
+			FROM old WHERE s.id = old.id RETURNING old.contact_id, old.reserved_at)
+		SELECT contact_id, reserved_at FROM upd WHERE reserved_at IS NOT NULL`, campaignID, stuckAfter.String(), reason)
+	return all[Reservation](rows, err)
+}
+
 // RequeueSendUncounted is RequeueSend without counting the attempt (the
 // failure wasn't the message's fault, e.g. throttling).
 func (s *Store) RequeueSendUncounted(ctx context.Context, cl SendClaim, after time.Time, msg string) error {
