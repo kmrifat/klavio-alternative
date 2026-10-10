@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -301,6 +302,88 @@ func TestCampaignStepLeaseAndDeadline(t *testing.T) {
 	}
 	if n := w.count(`SELECT count(*) FROM sends WHERE campaign_id = $1 AND status = 'unknown'`, done.ID); n != 1 {
 		t.Fatalf("%d unknown sends, want 1", n)
+	}
+}
+
+// A worker that freezes mid-batch (VM suspend, SIGSTOP, a long GC) past its
+// lease and the stuck-send recovery must not send, when it wakes, the rows
+// another worker recovered and sent meanwhile.
+func TestCampaignStalledWorkerLosesItsClaim(t *testing.T) {
+	w := newCampaignWorld(t)
+	ctx := context.Background()
+	for i := range 12 {
+		w.contact(fmt.Sprintf("s%02d@example.com", i), store.ContactSubscribed, 24*time.Hour, true)
+	}
+	id := w.draft(nil)["id"].(string)
+	cid := uuid.MustParse(id)
+	w.schedule(id, 12)
+	w.runUntil(id, store.CampaignSending)
+	if err := w.a.Store.ForceCampaignDueForTest(ctx, cid); err != nil {
+		t.Fatal(err)
+	}
+	// One send isn't due yet, so the campaign is still sending when A wakes.
+	w.exec(`UPDATE sends SET send_after = now() + interval '1 day'
+		WHERE id = (SELECT max(id) FROM sends WHERE campaign_id = $1 AND status = 'queued')`, cid)
+
+	// Worker A freezes inside its first SES call, its batch claimed.
+	frozen, thaw := make(chan string), make(chan struct{})
+	var once sync.Once
+	w.hooks.set(func(m ses.Message) error {
+		first := false
+		once.Do(func() { first = true })
+		if first {
+			frozen <- m.To
+			<-thaw
+		}
+		return nil
+	})
+	aDone := make(chan error, 1)
+	go func() { aDone <- w.a.Campaigns.Step(ctx, cid) }()
+	stalled := <-frozen
+
+	// Time passes: A's lease runs out and its claims age past recovery.
+	w.exec(`UPDATE campaigns SET step_lease_until = now() - interval '1 second' WHERE id = $1`, cid)
+	w.exec(`UPDATE sends SET claimed_at = now() - interval '1 hour' WHERE campaign_id = $1 AND status = 'sending'`, cid)
+
+	// Worker B recovers A's rows and sends them.
+	if err := w.a.Campaigns.Sweep(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if c := w.campaign(id); c.State != store.CampaignSending {
+		t.Fatalf("campaign %s, want still sending", c.State)
+	}
+
+	// A wakes up and carries on with its batch: it must notice it lost it.
+	close(thaw)
+	if err := <-aDone; err != nil {
+		t.Fatal(err)
+	}
+	w.runUntil(id, store.CampaignDone)
+	seen := recipients(w.sender.Messages())
+	for to, n := range seen {
+		if n > 1 {
+			t.Errorf("%s got %d copies", to, n)
+		}
+	}
+	if len(seen) != 12 {
+		t.Errorf("%d people got it", len(seen))
+	}
+	// The frozen send was written off as unknown, then corrected when its
+	// answer finally came.
+	var status string
+	if err := w.a.Store.QueryRowForTest(ctx, `SELECT s.status FROM sends s JOIN contacts c ON c.id = s.contact_id
+		WHERE s.campaign_id = $1 AND c.email = $2`, &status, cid, stalled); err != nil {
+		t.Fatal(err)
+	}
+	if status != "sent" {
+		t.Errorf("the frozen send is %q, want sent", status)
+	}
+	var lease *time.Time
+	if err := w.a.Store.QueryRowForTest(ctx, `SELECT step_lease_until FROM campaigns WHERE id = $1`, &lease, cid); err != nil {
+		t.Fatal(err)
+	}
+	if lease != nil {
+		t.Errorf("lease left behind: %v", lease)
 	}
 }
 

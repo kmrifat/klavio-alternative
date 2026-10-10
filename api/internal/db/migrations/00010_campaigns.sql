@@ -34,7 +34,9 @@ CREATE TABLE campaigns (
     pause_reason     text NOT NULL DEFAULT '',
     waiting_reason   text NOT NULL DEFAULT '', -- why a sending campaign isn't sending right now (warm-up cap)
     -- One worker at a time: a step takes the lease, and others back off.
-    step_lease_until timestamptz,
+    -- The holder's token lets only that step give it up.
+    step_lease_until  timestamptz,
+    step_lease_holder uuid,
     version          integer NOT NULL DEFAULT 1, -- bumped on every edit, for conflicts
     -- Frozen at scheduling:
     html             text NOT NULL DEFAULT '',
@@ -98,6 +100,9 @@ CREATE TABLE sends (
     error          text NOT NULL DEFAULT '',
     ses_message_id text UNIQUE,
     claimed_at     timestamptz,
+    -- Which claim holds it: a worker that stalled and lost the row to
+    -- another can't mark, send or record it any more.
+    claim_token    uuid,
     -- Set right before SES is called. A send stuck in 'sending' without it
     -- never reached SES and can safely go back to the queue; with it, the
     -- outcome is unknown and it is never retried.

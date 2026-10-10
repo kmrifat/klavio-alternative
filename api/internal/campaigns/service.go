@@ -554,7 +554,7 @@ func (st *step) then(at time.Time) {
 // also checks the state it starts from, and sends are claimed with row
 // locks, so even a lease that expired early can't send anything twice.
 func (s *Service) Step(ctx context.Context, campaignID uuid.UUID) error {
-	ok, err := s.store.AcquireStepLease(ctx, campaignID, StepTimeout+time.Minute)
+	lease, ok, err := s.store.AcquireStepLease(ctx, campaignID, StepTimeout+time.Minute)
 	if err != nil || !ok {
 		return err // someone else is on it
 	}
@@ -582,10 +582,13 @@ func (s *Service) Step(ctx context.Context, campaignID uuid.UUID) error {
 		return nil // draft, needs approval, paused, done, cancelled: nothing to do
 	}()
 	bg := context.WithoutCancel(ctx)
-	if rerr := s.store.ReleaseStepLease(bg, campaignID); rerr != nil && err == nil {
+	held, rerr := s.store.ReleaseStepLease(bg, campaignID, lease)
+	if rerr != nil && err == nil {
 		err = rerr
 	}
-	if st.next != nil {
+	// A step that lost its lease (it stalled, and another step took over)
+	// leaves what's next to that one: one chain per campaign.
+	if st.next != nil && held {
 		s.queue(bg, campaignID, *st.next)
 	}
 	return err
@@ -595,7 +598,7 @@ func (s *Service) Step(ctx context.Context, campaignID uuid.UUID) error {
 // queue). One with a step already waiting or running is left alone, so
 // there is never more than one chain per campaign.
 func (s *Service) Sweep(ctx context.Context) error {
-	ids, err := s.store.CampaignsWithWork(ctx)
+	ids, err := s.store.CampaignsWithWork(ctx, stuckAfter)
 	if err != nil {
 		return err
 	}
@@ -735,11 +738,14 @@ func (s *Service) batch(ctx context.Context, c store.Campaign, stage string, st 
 	}
 	base := unsubscribe.BaseURL(b.LinkDomain, s.baseURL)
 	release := func(rest []store.ClaimedSend) error {
+		if len(rest) == 0 {
+			return nil
+		}
 		ids := make([]int64, len(rest))
 		for i, r := range rest {
 			ids[i] = r.ID
 		}
-		return s.store.ReleaseSends(bg, ids)
+		return s.store.ReleaseSends(bg, rest[0].Token, ids)
 	}
 	for i, cs := range claimed {
 		// Stop claiming time we don't have: put the rest back for the next step.
@@ -789,7 +795,7 @@ func (s *Service) claim(ctx context.Context, c store.Campaign, stage string) ([]
 					ids = append(ids, cs.ID)
 					after = append(after, sending.SendAfter(tomorrow, cs.Timezone))
 				}
-				if err := tx.DeferSends(ctx, ids, after); err != nil {
+				if err := tx.DeferSends(ctx, claimed[0].Token, ids, after); err != nil {
 					return err
 				}
 				claimed = claimed[:granted]
@@ -817,7 +823,7 @@ func (s *Service) claim(ctx context.Context, c store.Campaign, stage string) ([]
 		kept := claimed[:0]
 		for _, cs := range claimed {
 			if reason, out := excluded[cs.ContactID]; out {
-				if err := tx.MarkSendSkipped(ctx, cs.ID, reason); err != nil {
+				if err := tx.MarkSendSkipped(ctx, cs.Claim(), reason); err != nil {
 					return err
 				}
 				continue
@@ -838,50 +844,57 @@ func (s *Service) sendOne(ctx context.Context, b store.Brand, c store.Campaign, 
 	// erased while a campaign is under way.
 	switch {
 	case cs.Email == nil:
-		return false, s.store.MarkSendSkipped(bg, cs.ID, "erased")
+		return false, s.store.MarkSendSkipped(bg, cs.Claim(), "erased")
 	case cs.Suppressed:
-		return false, s.store.MarkSendSkipped(bg, cs.ID, "suppressed")
+		return false, s.store.MarkSendSkipped(bg, cs.Claim(), "suppressed")
 	case cs.Status == nil || *cs.Status != string(store.ContactSubscribed):
-		return false, s.store.MarkSendSkipped(bg, cs.ID, "no_longer_subscribed")
+		return false, s.store.MarkSendSkipped(bg, cs.Claim(), "no_longer_subscribed")
 	case !cs.InTopic:
-		return false, s.store.MarkSendSkipped(bg, cs.ID, "topic_unsubscribed")
+		return false, s.store.MarkSendSkipped(bg, cs.Claim(), "topic_unsubscribed")
 	}
 	msg := s.message(b, c, cs, base)
 	if err := s.pacer.Wait(ctx); err != nil {
-		return true, s.store.ReleaseSends(bg, []int64{cs.ID})
+		return true, s.store.ReleaseSends(bg, cs.Token, []int64{cs.ID})
 	}
 	// Re-read campaign and brand after the wait, right before sending, so a
 	// pause, a cancel or a failing DNS check stops it within one email.
 	state, err := s.store.CampaignState(ctx, c.ID)
 	if err != nil || state != c.State {
-		return true, errors.Join(err, s.store.ReleaseSends(bg, []int64{cs.ID}))
+		return true, errors.Join(err, s.store.ReleaseSends(bg, cs.Token, []int64{cs.ID}))
 	}
 	now, err := s.store.BrandByID(ctx, b.ID)
 	if err != nil {
-		return true, errors.Join(err, s.store.ReleaseSends(bg, []int64{cs.ID}))
+		return true, errors.Join(err, s.store.ReleaseSends(bg, cs.Token, []int64{cs.ID}))
 	}
 	if !brandCanSend(now) {
-		return true, errors.Join(s.store.ReleaseSends(bg, []int64{cs.ID}), s.pauseForBrand(bg, c, now))
+		return true, errors.Join(s.store.ReleaseSends(bg, cs.Token, []int64{cs.ID}), s.pauseForBrand(bg, c, now))
 	}
 
-	if err := s.store.MarkCalling(bg, cs.ID); err != nil {
-		return true, errors.Join(err, s.store.ReleaseSends(bg, []int64{cs.ID}))
+	mine, err := s.store.MarkCalling(bg, cs.Claim())
+	if err != nil {
+		return true, errors.Join(err, s.store.ReleaseSends(bg, cs.Token, []int64{cs.ID}))
+	}
+	if !mine {
+		// This worker stalled long enough for its claim to be recovered and
+		// handed to another: that one sends it. Our lease is gone too.
+		s.log.WarnContext(ctx, "claim lost; not sending", "campaign_id", c.ID, "send_id", cs.ID)
+		return true, nil
 	}
 	id, err := s.sender.Send(ctx, msg)
 	switch {
 	case err == nil:
-		return false, s.store.MarkSent(bg, cs.ID, id)
+		return false, s.store.MarkSent(bg, cs.Claim(), id)
 	case errors.Is(err, ses.ErrThrottled):
 		s.pacer.Slow(time.Second)
 		// Not sent, and not the recipient's fault: don't count the attempt.
-		return false, s.store.RequeueSendUncounted(bg, cs.ID, sending.SendAfter(s.now().Add(2*time.Second), cs.Timezone), err.Error())
+		return false, s.store.RequeueSendUncounted(bg, cs.Claim(), sending.SendAfter(s.now().Add(2*time.Second), cs.Timezone), err.Error())
 	case errors.Is(err, ses.ErrUnavailable) && cs.Attempts < MaxAttempts:
 		backoff := time.Duration(math.Pow(4, float64(cs.Attempts))) * 15 * time.Second
-		return false, s.store.RequeueSend(bg, cs.ID, sending.SendAfter(s.now().Add(backoff), cs.Timezone), err.Error())
+		return false, s.store.RequeueSend(bg, cs.Claim(), sending.SendAfter(s.now().Add(backoff), cs.Timezone), err.Error())
 	case errors.Is(err, ses.ErrUnavailable), errors.Is(err, ses.ErrRejected):
-		return false, s.store.MarkSendFailed(bg, cs.ID, err.Error())
+		return false, s.store.MarkSendFailed(bg, cs.Claim(), err.Error())
 	case errors.Is(err, ses.ErrSendingPaused):
-		if rerr := s.store.ReleaseSends(bg, []int64{cs.ID}); rerr != nil {
+		if rerr := s.store.ReleaseSends(bg, cs.Token, []int64{cs.ID}); rerr != nil {
 			return true, rerr
 		}
 		_, perr := s.store.PauseCampaign(bg, c.ID, "Amazon SES stopped sending: "+err.Error())
@@ -890,7 +903,7 @@ func (s *Service) sendOne(ctx context.Context, b store.Brand, c store.Campaign, 
 		// A timeout, a dropped connection, an unexpected error: SES may have
 		// accepted it. Never retried, so nobody gets it twice.
 		s.log.WarnContext(ctx, "send outcome unknown", "campaign_id", c.ID, "send_id", cs.ID, "err", err)
-		return ctx.Err() != nil, s.store.MarkSendUnknown(bg, cs.ID, "outcome unknown, not retried: "+err.Error())
+		return ctx.Err() != nil, s.store.MarkSendUnknown(bg, cs.Claim(), "outcome unknown, not retried: "+err.Error())
 	}
 }
 

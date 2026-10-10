@@ -417,64 +417,85 @@ type ClaimedSend struct {
 	InTopic    bool      `db:"in_topic"`
 	Suppressed bool      `db:"suppressed"`
 	Timezone   string    `db:"timezone"` // for quiet hours when it has to be rescheduled
+	Token      uuid.UUID `db:"claim_token"`
 }
 
-// ClaimSends marks up to n due, queued sends of a stage as 'sending'.
+// SendClaim names one claimed send: its row and the claim that holds it.
+// Every update of a claimed send matches both, so a worker whose claim was
+// taken over (it stalled, and its rows were recovered and claimed again)
+// changes nothing.
+type SendClaim struct {
+	ID    int64
+	Token uuid.UUID
+}
+
+func (c ClaimedSend) Claim() SendClaim { return SendClaim{c.ID, c.Token} }
+
+// ClaimSends marks up to n due, queued sends of a stage as 'sending',
+// under a new claim token.
 func (s *Store) ClaimSends(ctx context.Context, c Campaign, stage string, n int) ([]ClaimedSend, error) {
 	rows, err := s.db.Query(ctx, `
 		WITH claimed AS (
-			UPDATE sends SET status = 'sending', claimed_at = now(), called_at = NULL, attempts = attempts + 1
+			UPDATE sends SET status = 'sending', claimed_at = now(), called_at = NULL, attempts = attempts + 1, claim_token = $5
 			WHERE id IN (
 				SELECT id FROM sends WHERE campaign_id = $1 AND stage = $2 AND status = 'queued' AND send_after <= now()
 				ORDER BY send_after, id LIMIT $3 FOR UPDATE SKIP LOCKED)
-			RETURNING id, contact_id, attempts)
-		SELECT cl.id, cl.contact_id, cl.attempts, c.email::text AS email, coalesce(c.first_name, '') AS first_name,
+			RETURNING id, contact_id, attempts, claim_token)
+		SELECT cl.id, cl.contact_id, cl.attempts, cl.claim_token, c.email::text AS email, coalesce(c.first_name, '') AS first_name,
 			coalesce(c.last_name, '') AS last_name, c.status,
 			EXISTS (SELECT 1 FROM contact_topics ct WHERE ct.contact_id = cl.contact_id AND ct.topic_id = $4) AS in_topic,
 			EXISTS (SELECT 1 FROM suppressions sp WHERE sp.email_hash = c.email_hash) AS suppressed,
 			coalesce(c.timezone, '') AS timezone
 		FROM claimed cl LEFT JOIN contacts c ON c.id = cl.contact_id
-		ORDER BY cl.id`, c.ID, stage, n, c.TopicID)
+		ORDER BY cl.id`, c.ID, stage, n, c.TopicID, uuid.New())
 	return all[ClaimedSend](rows, err)
 }
 
-func (s *Store) MarkSent(ctx context.Context, id int64, messageID string) error {
-	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'sent', ses_message_id = $2, sent_at = now(), error = '' WHERE id = $1 AND status = 'sending'`, id, messageID)
+// MarkSent records SES's answer. A send already written off as 'unknown'
+// (its worker stalled past the recovery time, then got the answer) is
+// corrected: the claim is still its own, as nobody re-claims an unknown.
+func (s *Store) MarkSent(ctx context.Context, cl SendClaim, messageID string) error {
+	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'sent', ses_message_id = $3, sent_at = now(), error = ''
+		WHERE id = $1 AND claim_token = $2 AND status IN ('sending', 'unknown')`, cl.ID, cl.Token, messageID)
 	return err
 }
 
-func (s *Store) MarkSendFailed(ctx context.Context, id int64, msg string) error {
-	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'failed', error = $2 WHERE id = $1 AND status = 'sending'`, id, msg)
+func (s *Store) MarkSendFailed(ctx context.Context, cl SendClaim, msg string) error {
+	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'failed', error = $3 WHERE id = $1 AND claim_token = $2 AND status = 'sending'`, cl.ID, cl.Token, msg)
 	return err
 }
 
-func (s *Store) MarkSendSkipped(ctx context.Context, id int64, reason string) error {
-	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'skipped', skip_reason = $2 WHERE id = $1 AND status = 'sending'`, id, reason)
+func (s *Store) MarkSendSkipped(ctx context.Context, cl SendClaim, reason string) error {
+	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'skipped', skip_reason = $3 WHERE id = $1 AND claim_token = $2 AND status = 'sending'`, cl.ID, cl.Token, reason)
 	return err
 }
 
 // RequeueSend puts a send back in the queue for a later try.
-func (s *Store) RequeueSend(ctx context.Context, id int64, after time.Time, msg string) error {
-	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'queued', send_after = $2, error = $3 WHERE id = $1 AND status = 'sending'`, id, after, msg)
+func (s *Store) RequeueSend(ctx context.Context, cl SendClaim, after time.Time, msg string) error {
+	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'queued', send_after = $3, error = $4, claim_token = NULL
+		WHERE id = $1 AND claim_token = $2 AND status = 'sending'`, cl.ID, cl.Token, after, msg)
 	return err
 }
 
-// ReleaseSends puts claimed sends back untouched (the campaign was paused
-// between claiming and sending). The attempt isn't counted.
-func (s *Store) ReleaseSends(ctx context.Context, ids []int64) error {
-	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'queued', attempts = attempts - 1 WHERE id = ANY($1) AND status = 'sending'`, ids)
+// ReleaseSends puts sends of one claim back untouched (the campaign was
+// paused between claiming and sending). The attempt isn't counted.
+func (s *Store) ReleaseSends(ctx context.Context, token uuid.UUID, ids []int64) error {
+	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'queued', attempts = attempts - 1, claim_token = NULL
+		WHERE id = ANY($1) AND claim_token = $2 AND status = 'sending'`, ids, token)
 	return err
 }
 
-// MarkCalling stamps a send right before SES is called.
-func (s *Store) MarkCalling(ctx context.Context, id int64) error {
-	_, err := s.db.Exec(ctx, `UPDATE sends SET called_at = now() WHERE id = $1 AND status = 'sending'`, id)
-	return err
+// MarkCalling stamps a send right before SES is called. false: the claim
+// is no longer this worker's (it stalled and the send was recovered), so it
+// must not send.
+func (s *Store) MarkCalling(ctx context.Context, cl SendClaim) (bool, error) {
+	tag, err := s.db.Exec(ctx, `UPDATE sends SET called_at = now() WHERE id = $1 AND claim_token = $2 AND status = 'sending' AND called_at IS NULL`, cl.ID, cl.Token)
+	return err == nil && tag.RowsAffected() == 1, err
 }
 
 // MarkSendUnknown records that SES may or may not have sent it. It is never retried.
-func (s *Store) MarkSendUnknown(ctx context.Context, id int64, msg string) error {
-	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'unknown', error = $2 WHERE id = $1 AND status = 'sending'`, id, msg)
+func (s *Store) MarkSendUnknown(ctx context.Context, cl SendClaim, msg string) error {
+	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'unknown', error = $3 WHERE id = $1 AND claim_token = $2 AND status = 'sending'`, cl.ID, cl.Token, msg)
 	return err
 }
 
@@ -490,7 +511,7 @@ func (s *Store) MarkStuckSends(ctx context.Context, campaignID uuid.UUID, d time
 		return 0, err
 	}
 	if _, err := s.db.Exec(ctx, `
-		UPDATE sends SET status = 'queued', attempts = greatest(attempts - 1, 0)
+		UPDATE sends SET status = 'queued', attempts = greatest(attempts - 1, 0), claim_token = NULL
 		WHERE campaign_id = $1 AND status = 'sending' AND called_at IS NULL AND claimed_at < now() - $2::interval`, campaignID, d.String()); err != nil {
 		return 0, err
 	}
@@ -504,25 +525,34 @@ func (s *Store) CountStageSends(ctx context.Context, campaignID uuid.UUID, stage
 	return n, err
 }
 
-// AcquireStepLease lets one worker at a time run a campaign's step.
-func (s *Store) AcquireStepLease(ctx context.Context, id uuid.UUID, d time.Duration) (bool, error) {
+// AcquireStepLease lets one worker at a time run a campaign's step. It
+// returns the holder's token (ok false: someone else holds it).
+func (s *Store) AcquireStepLease(ctx context.Context, id uuid.UUID, d time.Duration) (token uuid.UUID, ok bool, err error) {
+	token = uuid.New()
 	tag, err := s.db.Exec(ctx, `
-		UPDATE campaigns SET step_lease_until = now() + $2::interval
-		WHERE id = $1 AND (step_lease_until IS NULL OR step_lease_until < now())`, id, d.String())
+		UPDATE campaigns SET step_lease_until = now() + $2::interval, step_lease_holder = $3
+		WHERE id = $1 AND (step_lease_until IS NULL OR step_lease_until < now())`, id, d.String(), token)
+	return token, err == nil && tag.RowsAffected() == 1, err
+}
+
+// ReleaseStepLease gives up a lease if it is still this holder's. false:
+// it expired and another step took it over.
+func (s *Store) ReleaseStepLease(ctx context.Context, id, token uuid.UUID) (bool, error) {
+	tag, err := s.db.Exec(ctx, `UPDATE campaigns SET step_lease_until = NULL, step_lease_holder = NULL
+		WHERE id = $1 AND step_lease_holder = $2`, id, token)
 	return err == nil && tag.RowsAffected() == 1, err
 }
 
-func (s *Store) ReleaseStepLease(ctx context.Context, id uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `UPDATE campaigns SET step_lease_until = NULL WHERE id = $1`, id)
-	return err
-}
-
-// StepQueued reports whether a campaign step job is already waiting or running.
+// StepQueued reports whether a campaign step job is waiting, or running
+// and alive. A running job whose lease has run out is treated as dead (a
+// frozen process), so the sweep can take over without waiting for river
+// to rescue it.
 func (s *Store) StepQueued(ctx context.Context, id uuid.UUID) (bool, error) {
 	var ok bool
 	err := s.db.QueryRow(ctx, `
-		SELECT EXISTS (SELECT 1 FROM river_job WHERE kind = 'campaigns.step' AND args->>'campaign_id' = $1::text
-			AND state IN ('available', 'scheduled', 'running', 'retryable', 'pending'))`, id).Scan(&ok)
+		SELECT EXISTS (SELECT 1 FROM river_job WHERE kind = 'campaigns.step' AND args->>'campaign_id' = ($1::uuid)::text
+			AND (state IN ('available', 'scheduled', 'retryable', 'pending')
+				OR (state = 'running' AND EXISTS (SELECT 1 FROM campaigns WHERE id = $1::uuid AND step_lease_until > now()))))`, id).Scan(&ok)
 	return ok, err
 }
 
@@ -568,15 +598,18 @@ func (s *Store) CampaignState(ctx context.Context, id uuid.UUID) (CampaignState,
 	return st, translate(err)
 }
 
-// CampaignsWithWork lists campaigns whose next worker step is due.
-func (s *Store) CampaignsWithWork(ctx context.Context) ([]uuid.UUID, error) {
+// CampaignsWithWork lists campaigns whose next worker step is due,
+// including those with sends stuck in 'sending' longer than stuckAfter (a
+// worker died holding them).
+func (s *Store) CampaignsWithWork(ctx context.Context, stuckAfter time.Duration) ([]uuid.UUID, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT id FROM campaigns c WHERE
 			(state = 'scheduled' AND start_at <= now()) OR
 			(state = 'holding' AND hold_until <= now()) OR
 			(state IN ('test_slice', 'sending') AND (
 				EXISTS (SELECT 1 FROM sends s WHERE s.campaign_id = c.id AND s.status = 'queued' AND s.send_after <= now())
-				OR NOT EXISTS (SELECT 1 FROM sends s WHERE s.campaign_id = c.id AND s.status IN ('queued', 'sending'))))`)
+				OR EXISTS (SELECT 1 FROM sends s WHERE s.campaign_id = c.id AND s.status = 'sending' AND s.claimed_at < now() - $1::interval)
+				OR NOT EXISTS (SELECT 1 FROM sends s WHERE s.campaign_id = c.id AND s.status IN ('queued', 'sending'))))`, stuckAfter.String())
 	if err != nil {
 		return nil, err
 	}
@@ -600,8 +633,9 @@ func (s *Store) SkipQueuedSends(ctx context.Context, campaignID uuid.UUID, reaso
 
 // RequeueSendUncounted is RequeueSend without counting the attempt (the
 // failure wasn't the message's fault, e.g. throttling).
-func (s *Store) RequeueSendUncounted(ctx context.Context, id int64, after time.Time, msg string) error {
-	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'queued', send_after = $2, error = $3, attempts = attempts - 1 WHERE id = $1 AND status = 'sending'`, id, after, msg)
+func (s *Store) RequeueSendUncounted(ctx context.Context, cl SendClaim, after time.Time, msg string) error {
+	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'queued', send_after = $3, error = $4, attempts = attempts - 1, claim_token = NULL
+		WHERE id = $1 AND claim_token = $2 AND status = 'sending'`, cl.ID, cl.Token, after, msg)
 	return err
 }
 
@@ -614,11 +648,11 @@ func (s *Store) SetCampaignWaiting(ctx context.Context, id uuid.UUID, reason str
 // DeferSends puts claimed sends back in the queue, each until its own time,
 // without counting the attempt (the warm-up cap, not the message, held them
 // back).
-func (s *Store) DeferSends(ctx context.Context, ids []int64, after []time.Time) error {
+func (s *Store) DeferSends(ctx context.Context, token uuid.UUID, ids []int64, after []time.Time) error {
 	_, err := s.db.Exec(ctx, `
-		UPDATE sends s SET status = 'queued', send_after = t.after, attempts = s.attempts - 1
+		UPDATE sends s SET status = 'queued', send_after = t.after, attempts = s.attempts - 1, claim_token = NULL
 		FROM unnest($1::bigint[], $2::timestamptz[]) AS t(id, after)
-		WHERE s.id = t.id AND s.status = 'sending'`, ids, after)
+		WHERE s.id = t.id AND s.claim_token = $3 AND s.status = 'sending'`, ids, after, token)
 	return err
 }
 
