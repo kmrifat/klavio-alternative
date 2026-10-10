@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router";
-import { Check, ChevronDown } from "lucide-react";
-import { brands, type Brand } from "../lib/brands";
+import { Link, useNavigate } from "react-router";
+import { Check, ChevronDown, Plus } from "lucide-react";
+import type { BrandListItem } from "../api/types";
+import { useMe } from "../api/hooks";
 
 // "Sending as" card from the design. No brand selected = read-only company view.
-export function BrandSwitcher({ current }: { current: Brand | undefined }) {
+export function BrandSwitcher({ brands, current }: { brands: BrandListItem[]; current: BrandListItem | undefined }) {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
   const ref = useRef<HTMLDivElement>(null);
+  const isOwner = useMe().data?.user.company_role === "owner";
 
   useEffect(() => {
     if (!open) return;
@@ -22,6 +24,21 @@ export function BrandSwitcher({ current }: { current: Brand | undefined }) {
       document.removeEventListener("keydown", esc);
     };
   }, [open]);
+
+  if (brands.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed border-zinc-300 bg-white px-3 py-2.5 text-sm">
+        <p className="font-medium">No brands yet</p>
+        {isOwner ? (
+          <Link to="/settings/brands/new" className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-accent">
+            <Plus className="size-3" /> Add your first brand
+          </Link>
+        ) : (
+          <p className="mt-0.5 text-xs text-zinc-500">An owner needs to give you access.</p>
+        )}
+      </div>
+    );
+  }
 
   const go = (to: string) => {
     setOpen(false);
@@ -43,7 +60,7 @@ export function BrandSwitcher({ current }: { current: Brand | undefined }) {
             <span className="min-w-0 flex-1">
               <span className="block text-[10px] font-medium tracking-wide text-zinc-500 uppercase">Sending as</span>
               <span className="block truncate text-sm font-medium">{current.name}</span>
-              <span className="block truncate font-mono text-[11px] text-zinc-500">{current.domain}</span>
+              <span className="block truncate font-mono text-[11px] text-zinc-500">{current.sending_domain}</span>
             </span>
           </>
         ) : (
@@ -94,7 +111,7 @@ function MenuItem({ selected, onSelect, children }: { selected: boolean; onSelec
   );
 }
 
-function BrandMark({ brand, small }: { brand: Brand; small?: boolean }) {
+export function BrandMark({ brand, small }: { brand: Pick<BrandListItem, "name" | "color">; small?: boolean }) {
   return (
     <span
       className={`grid shrink-0 place-items-center rounded-md font-semibold text-white ${small ? "size-5 text-[10px]" : "size-7 text-xs"}`}

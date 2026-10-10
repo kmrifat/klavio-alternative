@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -110,5 +111,42 @@ func TestPanicIsRecovered(t *testing.T) {
 	rec, body := do(t, h, httptest.NewRequest("GET", "/", nil))
 	if rec.Code != http.StatusInternalServerError || body["error"] != "internal error" {
 		t.Fatalf("got %d %v", rec.Code, body)
+	}
+}
+
+func TestCSRF(t *testing.T) {
+	h := New(Options{
+		Log:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+		DB:             fakeDB{},
+		Redis:          fakeDB{},
+		AllowedOrigins: []string{"http://localhost:5173"},
+		RegisterAdmin: func(mux *http.ServeMux) {
+			mux.HandleFunc("POST /admin/v1/thing", func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			})
+		},
+	})
+	cases := []struct {
+		name, origin, contentType string
+		want                      int
+	}{
+		{"json from app", "http://localhost:5173", "application/json", http.StatusNoContent},
+		{"json without origin (curl)", "", "application/json; charset=utf-8", http.StatusNoContent},
+		{"form post", "http://localhost:5173", "application/x-www-form-urlencoded", http.StatusUnsupportedMediaType},
+		{"other site", "https://evil.example", "application/json", http.StatusForbidden},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/admin/v1/thing", strings.NewReader("{}"))
+			if c.origin != "" {
+				req.Header.Set("Origin", c.origin)
+			}
+			req.Header.Set("Content-Type", c.contentType)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != c.want {
+				t.Fatalf("status = %d, want %d", rec.Code, c.want)
+			}
+		})
 	}
 }

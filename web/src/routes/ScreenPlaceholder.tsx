@@ -1,11 +1,12 @@
 import { useParams } from "react-router";
 import { Construction } from "lucide-react";
 import type { Screen } from "../lib/screens";
-import { findBrand } from "../lib/brands";
+import { useBrands } from "../api/hooks";
 
 // Stand-in for a screen until its milestone builds it.
 export function ScreenPlaceholder({ screen }: { screen: Screen }) {
-  const brand = findBrand(useParams().brand);
+  const slug = useParams().brand;
+  const brand = useBrands().data?.find((b) => b.slug === slug);
 
   return (
     <div className="max-w-5xl">

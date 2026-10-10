@@ -1,33 +1,69 @@
 import { Navigate, Outlet, useParams, type RouteObject } from "react-router";
+import { useBrands } from "../api/hooks";
 import { AppLayout } from "../layout/AppLayout";
+import { RequireAuth } from "../layout/RequireAuth";
 import { ScreenPlaceholder } from "../routes/ScreenPlaceholder";
 import { NotFound } from "../routes/NotFound";
-import { brandScreens, companyScreens, settingsScreen } from "../lib/screens";
-import { findBrand } from "../lib/brands";
+import { Login } from "../routes/auth/Login";
+import { AcceptInvite } from "../routes/auth/AcceptInvite";
+import { TeamPage } from "../routes/team/TeamPage";
+import { SettingsLayout, SettingsPlaceholder, settingsTabs } from "../routes/settings/SettingsLayout";
+import { BrandsList } from "../routes/settings/BrandsList";
+import { NewBrand } from "../routes/settings/NewBrand";
+import { BrandSettings } from "../routes/settings/BrandSettings";
+import { Spinner } from "../components/ui";
+import { brandScreens, companyScreens } from "../lib/screens";
 
+// KnownBrand renders brand pages only for brands the user can see.
 function KnownBrand() {
-  return findBrand(useParams().brand) ? <Outlet /> : <NotFound />;
+  const slug = useParams().brand;
+  const brands = useBrands();
+  if (brands.isPending) return <Spinner />;
+  return brands.data?.some((b) => b.slug === slug) ? <Outlet /> : <NotFound />;
 }
 
+const builtCompanyScreens: Record<string, RouteObject> = {
+  team: { path: "team", element: <TeamPage /> },
+};
+
 export const routes: RouteObject[] = [
+  { path: "/login", element: <Login /> },
+  { path: "/invite/:token", element: <AcceptInvite /> },
   {
     path: "/",
-    element: <AppLayout />,
+    element: <RequireAuth />,
     children: [
-      { index: true, element: <Navigate to="/safety" replace /> },
-      ...[...companyScreens, settingsScreen].map((s) => ({
-        path: s.path,
-        element: <ScreenPlaceholder screen={s} />,
-      })),
       {
-        path: "b/:brand",
-        element: <KnownBrand />,
+        element: <AppLayout />,
         children: [
-          { index: true, element: <Navigate to="campaigns" replace /> },
-          ...brandScreens.map((s) => ({ path: s.path, element: <ScreenPlaceholder screen={s} /> })),
+          { index: true, element: <Navigate to="/safety" replace /> },
+          ...companyScreens.map(
+            (s) => builtCompanyScreens[s.path] ?? { path: s.path, element: <ScreenPlaceholder screen={s} /> },
+          ),
+          {
+            path: "settings",
+            element: <SettingsLayout />,
+            children: [
+              { index: true, element: <Navigate to="brands" replace /> },
+              { path: "brands", element: <BrandsList /> },
+              { path: "brands/new", element: <NewBrand /> },
+              { path: "brands/:slug", element: <BrandSettings /> },
+              ...settingsTabs
+                .filter((t) => t.path !== "brands")
+                .map((t) => ({ path: t.path, element: <SettingsPlaceholder tab={t} /> })),
+            ],
+          },
+          {
+            path: "b/:brand",
+            element: <KnownBrand />,
+            children: [
+              { index: true, element: <Navigate to="campaigns" replace /> },
+              ...brandScreens.map((s) => ({ path: s.path, element: <ScreenPlaceholder screen={s} /> })),
+            ],
+          },
+          { path: "*", element: <NotFound /> },
         ],
       },
-      { path: "*", element: <NotFound /> },
     ],
   },
 ];

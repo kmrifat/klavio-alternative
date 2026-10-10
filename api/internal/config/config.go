@@ -23,7 +23,20 @@ type Config struct {
 	RedisURL       string
 	LogLevel       slog.Level
 	LogJSON        bool
-	AllowedOrigins []string
+	AllowedOrigins []string // web app origins: CORS and passkey origins
+
+	AppURL         string // web app base URL, for invite links
+	WebAuthnRPID   string // passkey scope: the registrable domain, e.g. yourco.com
+	WebAuthnRPName string
+
+	// Cloudflare Access. Both set = every admin request must carry a valid Access token.
+	AccessTeamDomain string // e.g. acme.cloudflareaccess.com
+	AccessAUD        string
+
+	SESMode        string // "aws" or "fake"
+	SESRegion      string
+	SESEventBusARN string // EventBridge bus that receives SES events
+	DNSResolver    string // host:port of the DNS server used for brand DNS checks
 }
 
 // Load reads configuration from the environment. getenv is injectable for tests;
@@ -79,8 +92,45 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 	}
 
+	cfg.AppURL = get("APP_URL", "http://localhost:5173")
+	cfg.WebAuthnRPID = get("WEBAUTHN_RP_ID", "localhost")
+	cfg.WebAuthnRPName = get("WEBAUTHN_RP_NAME", "Mail Console")
+	cfg.AccessTeamDomain = get("CF_ACCESS_TEAM_DOMAIN", "")
+	cfg.AccessAUD = get("CF_ACCESS_AUD", "")
+	cfg.SESMode = get("SES_MODE", map[Env]string{EnvDevelopment: "fake", EnvProduction: "aws"}[cfg.Env])
+	cfg.SESRegion = get("SES_REGION", "us-east-1")
+	cfg.SESEventBusARN = get("SES_EVENT_BUS_ARN", "")
+	cfg.DNSResolver = get("DNS_RESOLVER", "1.1.1.1:53")
+
+	if (cfg.AccessTeamDomain == "") != (cfg.AccessAUD == "") {
+		errs = append(errs, errors.New("set both CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD, or neither"))
+	}
+	switch cfg.SESMode {
+	case "fake":
+	case "aws":
+		if cfg.SESEventBusARN == "" {
+			errs = append(errs, errors.New("SES_EVENT_BUS_ARN is required when SES_MODE=aws"))
+		}
+	default:
+		errs = append(errs, fmt.Errorf("SES_MODE must be aws or fake, got %q", cfg.SESMode))
+	}
+	if cfg.Env == EnvProduction {
+		if cfg.AccessTeamDomain == "" {
+			errs = append(errs, errors.New("CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD are required in production"))
+		}
+		if cfg.SESMode != "aws" {
+			errs = append(errs, errors.New("SES_MODE must be aws in production"))
+		}
+		if getenv("WEBAUTHN_RP_ID") == "" {
+			errs = append(errs, errors.New("WEBAUTHN_RP_ID is required in production"))
+		}
+	}
+
 	return cfg, errors.Join(errs...)
 }
+
+// SecureCookies is true outside development (HTTPS only).
+func (c Config) SecureCookies() bool { return c.Env == EnvProduction }
 
 func defaultLogFormat(env Env) string {
 	if env == EnvProduction {

@@ -1,15 +1,19 @@
 import { useEffect } from "react";
-import { NavLink, Outlet, useLocation, useParams } from "react-router";
-import { Bell, Mail, Search } from "lucide-react";
+import { NavLink, Outlet, useLocation, useNavigate, useParams } from "react-router";
+import { Bell, LogOut, Mail, Search } from "lucide-react";
+import { useBrands, useMe, useSignOut } from "../api/hooks";
+import type { BrandListItem } from "../api/types";
 import { brandScreens, companyScreens, settingsScreen, type Screen } from "../lib/screens";
-import { findBrand, lastBrand, rememberBrand } from "../lib/brands";
+import { lastBrand, rememberBrand } from "../lib/brands";
+import { brandRoleLabel, companyRoleLabel, initials } from "../lib/format";
 import { BrandSwitcher } from "./BrandSwitcher";
 import { ApiStatus } from "./ApiStatus";
 
 export function AppLayout() {
   const params = useParams();
-  const brand = findBrand(params.brand);
-  const linkBrand = brand ?? lastBrand();
+  const brands = useBrands().data ?? [];
+  const brand = brands.find((b) => b.slug === params.brand);
+  const linkBrand = brand ?? lastBrand(brands);
 
   useEffect(() => {
     if (brand) rememberBrand(brand.slug);
@@ -25,11 +29,11 @@ export function AppLayout() {
           <span className="text-sm font-medium">Acme Group</span>
         </div>
 
-        <BrandSwitcher current={brand} />
+        <BrandSwitcher brands={brands} current={brand} />
 
         <NavSection label="Brand">
           {brandScreens.map((s) => (
-            <NavItem key={s.id} screen={s} to={`/b/${linkBrand.slug}/${s.path}`} />
+            <NavItem key={s.id} screen={s} to={linkBrand ? `/b/${linkBrand.slug}/${s.path}` : undefined} />
           ))}
         </NavSection>
 
@@ -40,7 +44,10 @@ export function AppLayout() {
         </NavSection>
 
         <div className="mt-auto border-t border-zinc-200 pt-2">
-          <NavItem screen={settingsScreen} to={`/${settingsScreen.path}`} />
+          <ul>
+            <NavItem screen={settingsScreen} to={`/${settingsScreen.path}`} />
+          </ul>
+          <UserFooter brand={brand} />
         </div>
       </aside>
 
@@ -64,14 +71,26 @@ function NavSection({ label, children }: { label: string; children: React.ReactN
   );
 }
 
-function NavItem({ screen, to }: { screen: Screen; to: string }) {
+// NavItem without `to` renders disabled (e.g. brand pages before any brand exists).
+function NavItem({ screen, to }: { screen: Screen; to?: string }) {
   const Icon = screen.icon;
+  const base = "flex items-center gap-2.5 rounded-md border px-2 py-1.5 text-sm";
+  if (!to) {
+    return (
+      <li>
+        <span aria-disabled className={`${base} cursor-not-allowed border-transparent text-zinc-400`} title="Add a brand first">
+          <Icon className="size-4" />
+          {screen.title}
+        </span>
+      </li>
+    );
+  }
   return (
     <li>
       <NavLink
         to={to}
         className={({ isActive }) =>
-          `flex items-center gap-2.5 rounded-md border px-2 py-1.5 text-sm ${
+          `${base} ${
             isActive
               ? "border-zinc-300 bg-white font-medium text-zinc-900 shadow-xs"
               : "border-transparent text-zinc-700 hover:bg-zinc-100"
@@ -85,9 +104,46 @@ function NavItem({ screen, to }: { screen: Screen; to: string }) {
   );
 }
 
+function UserFooter({ brand }: { brand: BrandListItem | undefined }) {
+  const me = useMe().data;
+  const signOut = useSignOut();
+  const navigate = useNavigate();
+  if (!me) return null;
+
+  const role =
+    me.user.company_role !== "member"
+      ? `${companyRoleLabel[me.user.company_role]} · all brands`
+      : brand?.my_role
+        ? `${brandRoleLabel[brand.my_role]} · ${brand.name}`
+        : "Member";
+
+  return (
+    <div className="mt-2 flex items-center gap-2 border-t border-zinc-200 px-1.5 pt-3">
+      <span className="grid size-7 shrink-0 place-items-center rounded-full bg-indigo-50 text-[11px] font-semibold text-indigo-700">
+        {initials(me.user.name)}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium">{me.user.name}</span>
+        <span className="block truncate text-xs text-zinc-500">{role}</span>
+      </span>
+      <button
+        type="button"
+        aria-label="Sign out"
+        title="Sign out"
+        onClick={() => signOut.mutate(undefined, { onSuccess: () => navigate("/login") })}
+        className="rounded p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"
+      >
+        <LogOut className="size-4" />
+      </button>
+    </div>
+  );
+}
+
 function TopBar({ brandName }: { brandName: string }) {
   const { pathname } = useLocation();
-  const screen = [...brandScreens, ...companyScreens, settingsScreen].find((s) => pathname.endsWith(`/${s.path}`));
+  const screen = [...brandScreens, ...companyScreens, settingsScreen].find(
+    (s) => pathname.endsWith(`/${s.path}`) || pathname.startsWith(`/${s.path}/`),
+  );
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-4 border-b border-zinc-200 px-6">
@@ -98,12 +154,7 @@ function TopBar({ brandName }: { brandName: string }) {
       <div className="ml-auto flex items-center gap-3">
         <label className="flex w-60 items-center gap-2 rounded-md bg-zinc-100 px-2.5 py-1.5 text-sm text-zinc-400">
           <Search className="size-4" />
-          <input
-            disabled
-            placeholder="Search…"
-            aria-label="Search (coming later)"
-            className="w-full bg-transparent outline-none"
-          />
+          <input disabled placeholder="Search…" aria-label="Search (coming later)" className="w-full bg-transparent outline-none" />
         </label>
         <ApiStatus />
         <Bell className="size-4 text-zinc-600" aria-hidden />

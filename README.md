@@ -30,6 +30,17 @@ make web-dev       # http://localhost:5173
 
 The top bar shows **API dev** in green when the frontend can reach the backend.
 
+**First sign-in.** Accounts are invite-only and use passkeys. Create the first owner:
+
+```bash
+cd api && DATABASE_URL=postgres://postgres@localhost:54321/klavio?sslmode=disable REDIS_URL=redis://localhost:6379/0 \
+  go run ./cmd/app -mode=bootstrap -email you@company.com -name "Your Name"
+```
+
+Open the printed link and create a passkey (Touch ID, Windows Hello or your phone).
+Running bootstrap again before anyone has joined cancels the earlier link. After that,
+owners invite people from **Team & access**.
+
 **Postgres/Redis in Docker instead** (kept for other machines and CI-like runs):
 `make docker-deps` starts them on ports `55432` / `56379`, then pass the URLs it prints.
 `docker compose up --build` runs the backend itself in Docker against your local DBs.
@@ -48,9 +59,19 @@ binary, builds the Docker image and validates the OpenTofu config.
 
 | Path | Purpose |
 |---|---|
-| `GET /healthz` | Process is alive |
-| `GET /readyz` | Postgres and Redis reachable (503 if not) |
-| `GET /admin/v1/meta` | Version + env (used by the web app) |
+| `GET /healthz`, `GET /readyz` | Liveness; Postgres + Redis reachable |
+| `GET /admin/v1/meta` | Version + env |
+| `GET /admin/v1/me` | Signed-in user, brand roles, step-up window |
+| `POST /admin/v1/auth/login/{begin,finish}` | Passkey sign-in |
+| `POST /admin/v1/auth/stepup/{begin,finish}` | Re-confirm with passkey (5 min) for sensitive actions |
+| `POST /admin/v1/auth/logout` | |
+| `GET /admin/v1/invites/{token}`, `POST …/{begin,finish}` | Accept an invite by creating a passkey |
+| `GET/POST /admin/v1/brands`, `GET/PATCH /admin/v1/brands/{slug}` | Brands; creating one sets up SES and lists DNS records |
+| `POST /admin/v1/brands/{slug}/dns-check` | Re-check DNS + SES status (also runs daily) |
+| `GET /admin/v1/team`, `POST /admin/v1/team/invites`, `PUT /admin/v1/team/members/{id}/roles` | Team & access |
+| `GET /admin/v1/audit` | Recent audit log (owners, approvers) |
+
+Every write needs `Content-Type: application/json` from an allowed origin (CSRF guard).
 
 ## Configuration (`api/.env.example`)
 
@@ -62,7 +83,12 @@ binary, builds the Docker image and validates the OpenTofu config.
 | `HTTP_ADDR` | `:8080` | |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `LOG_FORMAT` | `text` (dev), `json` (prod) | |
-| `ALLOWED_ORIGINS` | `http://localhost:5173` | comma-separated, for the admin API |
+| `ALLOWED_ORIGINS` | `http://localhost:5173` | comma-separated web app origins (CORS + passkeys) |
+| `APP_URL` | `http://localhost:5173` | base URL for invite links |
+| `WEBAUTHN_RP_ID` | `localhost` | required in production: your domain, e.g. `yourco.com` |
+| `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD` | — | required in production |
+| `SES_MODE` | `fake` (dev), `aws` (prod) | `aws` also needs `SES_REGION`, `SES_EVENT_BUS_ARN` |
+| `DNS_RESOLVER` | `1.1.1.1:53` | DNS server for brand checks |
 
 ## Deploying (M0 checklist — manual steps)
 
