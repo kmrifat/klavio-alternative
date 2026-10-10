@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	htmltemplate "html/template"
@@ -16,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/kmrifat/klavio-alternative/api/internal/brakes"
+	"github.com/kmrifat/klavio-alternative/api/internal/cache"
 	"github.com/kmrifat/klavio-alternative/api/internal/freqcap"
 	"github.com/kmrifat/klavio-alternative/api/internal/limits"
 	"github.com/kmrifat/klavio-alternative/api/internal/mailer"
@@ -42,7 +44,8 @@ type Service struct {
 	caps     *freqcap.Service
 	warm     *warmup.Service
 	gate     Gate
-	override string // PUBLIC_BASE_URL_OVERRIDE (development)
+	limiter  cache.Limiter // per-address daily limit at send time (nil: none)
+	override string        // PUBLIC_BASE_URL_OVERRIDE (development)
 	log      *slog.Logger
 	now      func() time.Time
 }
@@ -54,13 +57,14 @@ type Deps struct {
 	Sender   mailer.Sender
 	Caps     *freqcap.Service
 	Warmup   *warmup.Service
+	Limiter  cache.Limiter
 	Override string
 	Log      *slog.Logger
 }
 
 func NewService(d Deps) *Service {
 	return &Service{store: d.Store, signer: d.Signer, unsub: d.Unsub, sender: d.Sender, caps: d.Caps, warm: d.Warmup,
-		override: d.Override, log: d.Log, now: time.Now}
+		limiter: d.Limiter, override: d.Override, log: d.Log, now: time.Now}
 }
 
 // SetSender swaps the sender (the SES sender, once it exists).
@@ -118,12 +122,19 @@ func render(name string, d emailData) (html, text string, err error) {
 
 func (s *Service) base(b store.Brand) string { return unsubscribe.BaseURL(b.LinkDomain, s.override) }
 
+// SendsPerDay: confirmation emails one address gets from a brand in 24
+// hours, checked when sending (the API also checks when asked), so jobs held
+// back by the brakes can't all go out at once when they're lifted.
+const SendsPerDay = 3
+
 // SendConfirmation emails a confirmation link (P2), or returns ErrGateClosed
-// while the brakes hold it back. requestID Nil: a
-// sign-up awaiting double opt-in. Otherwise a subscriber's topic request,
-// whose link confirms exactly that request's topics. People who confirmed,
-// left or were suppressed meanwhile get nothing. Run by the confirmation job.
-func (s *Service) SendConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID) error {
+// while the brakes hold it back. requestID Nil: a sign-up awaiting double
+// opt-in. Otherwise a subscriber's topic request, whose link confirms
+// exactly that request's topics. queuedAt is when it was asked for: if a
+// confirmation went out since (a later request's job), this one is
+// redundant and nothing is sent. People who confirmed, left or were
+// suppressed meanwhile get nothing. Run by the confirmation job.
+func (s *Service) SendConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID, queuedAt time.Time) error {
 	b, err := s.store.BrandByID(ctx, brandID)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil
@@ -179,6 +190,37 @@ func (s *Service) SendConfirmation(ctx context.Context, brandID, contactID, requ
 	if err != nil {
 		return err
 	}
+
+	// One email for however many jobs piled up, and no more than the daily
+	// limit, however long they waited.
+	if queuedAt.IsZero() {
+		queuedAt = now
+	}
+	// A sign-up's email is claimed on the contact; a topic request's on the
+	// request (each request keeps its own link).
+	var prev *time.Time
+	var ok bool
+	var unclaim func() error
+	if requestID == uuid.Nil {
+		prev, ok, err = s.store.ClaimConfirmationSend(ctx, c.ID, queuedAt)
+		unclaim = func() error { return s.store.RestoreConfirmationSent(context.WithoutCancel(ctx), c.ID, prev) }
+	} else {
+		prev, ok, err = s.store.ClaimTopicRequestSend(ctx, requestID, queuedAt)
+		unclaim = func() error { return s.store.RestoreTopicRequestSent(context.WithoutCancel(ctx), requestID, prev) }
+	}
+	if err != nil || !ok {
+		return err
+	}
+	if s.limiter != nil {
+		allowed, err := s.limiter.Allow(ctx, "confirm:sent:"+b.ID.String()+":"+hex.EncodeToString(store.EmailHash(c.Email)), SendsPerDay, 24*time.Hour)
+		if err != nil {
+			return errors.Join(err, unclaim()) // fail closed: retried later
+		}
+		if !allowed {
+			s.log.InfoContext(ctx, "confirmation email dropped: daily limit for this address", "brand", b.Slug, "contact_id", c.ID)
+			return unclaim()
+		}
+	}
 	err = s.sender.Send(ctx, mailer.Message{Brand: b, To: c.Email, Subject: subject, HTML: html, Text: text, Kind: "confirmation"})
 	if errors.Is(err, mailer.ErrOutcomeUnknown) {
 		// It may have gone out: count it as sent, don't retry. Someone who
@@ -187,9 +229,9 @@ func (s *Service) SendConfirmation(ctx context.Context, brandID, contactID, requ
 		err = nil
 	}
 	if err != nil {
-		return fmt.Errorf("sending confirmation: %w", err)
+		return errors.Join(fmt.Errorf("sending confirmation: %w", err), unclaim())
 	}
-	return s.store.SetConfirmationSent(ctx, c.ID, now)
+	return nil
 }
 
 func (s *Service) contactTopicNames(ctx context.Context, c store.Contact) ([]string, error) {

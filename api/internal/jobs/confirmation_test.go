@@ -21,7 +21,7 @@ type gatedOpt struct {
 	sent   int
 }
 
-func (g *gatedOpt) SendConfirmation(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) error {
+func (g *gatedOpt) SendConfirmation(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, time.Time) error {
 	if g.closed {
 		return fmt.Errorf("%w: test brake", confirm.ErrGateClosed)
 	}

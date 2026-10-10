@@ -630,3 +630,26 @@ func TestBrakesGateConfirmationAndRepermission(t *testing.T) {
 		t.Fatalf("healthy brand: %d re-permission emails", n)
 	}
 }
+
+// Signing up again and again while sending is stopped queues one job per
+// try; when it resumes the person gets one confirmation, not a pile.
+func TestHeldConfirmationsDontPileUp(t *testing.T) {
+	f := newAPIFixture(t)
+	ctx := context.Background()
+	key, _ := f.key(t, []string{"contacts:write"})
+	if err := f.a.Store.ExecForTest(ctx, `UPDATE company_state SET account_brake_at = now(), account_brake_reason = 'test'`); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if r := apiCall(t, f.srv, "POST", "/api/v1/contacts", key, f.signup("ann@example.com")); r.body["confirmation_email"] != "delayed" {
+			t.Fatalf("signup during the brake: %s", r.raw)
+		}
+	}
+	if err := f.a.Store.ExecForTest(ctx, `UPDATE company_state SET account_brake_at = NULL, account_brake_reason = ''`); err != nil {
+		t.Fatal(err)
+	}
+	retryHeld(t, f.a)
+	if n := sentTo(f.a, "ann@example.com", "confirmation"); n != 1 {
+		t.Fatalf("%d confirmation emails after the brake was lifted", n)
+	}
+}

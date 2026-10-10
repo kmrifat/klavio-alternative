@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -239,7 +240,10 @@ func (r inlineRunner) StartCommit(ctx context.Context, brandID, id uuid.UUID) er
 // calls retryHeld.
 func (r inlineRunner) QueueConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID) error {
 	a := *r.a
-	send := func() error { return a.Confirm.SendConfirmation(context.Background(), brandID, contactID, requestID) }
+	queued := time.Now()
+	send := func() error {
+		return a.Confirm.SendConfirmation(context.Background(), brandID, contactID, requestID, queued)
+	}
 	err := send()
 	if errors.Is(err, confirm.ErrGateClosed) {
 		heldMu.Lock()
