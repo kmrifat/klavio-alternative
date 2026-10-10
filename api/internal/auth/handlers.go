@@ -245,6 +245,18 @@ func (s *Service) openInvite(r *http.Request) (store.Invite, error) {
 		return inv, httpx.Errorf(http.StatusForbidden, "access_identity_mismatch",
 			"this invite is for %s but you're signed in to Cloudflare as %s", inv.Email, ae)
 	}
+	if grantsAdmin(inv) && inv.ApprovalID == nil {
+		// Sent without approval while the company had one admin. Once there
+		// have been two, such an invite would skip the two-person rule.
+		since, err := s.store.TwoAdminsSince(r.Context())
+		if err != nil {
+			return inv, err
+		}
+		if since != nil && since.After(inv.CreatedAt) {
+			return inv, httpx.Errorf(http.StatusConflict, "invite_needs_approval",
+				"this invite gives admin rights and was sent before a second admin joined; ask an owner to send a new one (it will need approval)")
+		}
+	}
 	switch st, err := s.store.InviteApprovalStatus(r.Context(), inv); {
 	case err != nil:
 		return inv, err
@@ -264,6 +276,19 @@ func (s *Service) inviteGet(w http.ResponseWriter, r *http.Request) error {
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"email": inv.Email, "name": inv.Name, "expires_at": inv.ExpiresAt})
 	return nil
+}
+
+// grantsAdmin: owner, approver or brand admin rights.
+func grantsAdmin(inv store.Invite) bool {
+	if inv.CompanyRole == store.CompanyOwner || inv.CompanyRole == store.CompanyApprover {
+		return true
+	}
+	for _, r := range inv.BrandRoles {
+		if r == store.RoleBrandAdmin {
+			return true
+		}
+	}
+	return false
 }
 
 func inviteWAUser(inv store.Invite) *waUser {

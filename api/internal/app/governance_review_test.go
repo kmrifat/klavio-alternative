@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -146,6 +147,9 @@ func TestExportFreezeIsNotRaceable(t *testing.T) {
 	if u, _ := f.a.Store.UserByID(ctx, uuid.MustParse(carolID)); !frozenSeen || u.FrozenAt == nil {
 		t.Fatalf("6 concurrent export requests didn't freeze the requester (seen=%v)", frozenSeen)
 	}
+	if list, _ := f.a.Store.ExportsBy(ctx, uuid.MustParse(carolID)); len(list) != 3 {
+		t.Fatalf("%d export requests were created; requests after the freeze must be refused", len(list))
+	}
 }
 
 func TestExportRecountedAtApproval(t *testing.T) {
@@ -168,10 +172,10 @@ func TestExportRecountedAtApproval(t *testing.T) {
 	}
 	res := f.ownerB.must(200, f.ownerB.do("POST", "/admin/v1/approvals/"+exp["approval_id"].(string)+"/approve", map[string]any{})).body
 	if res["status"] != "rejected" {
-		t.Fatalf("over-threshold export approved: %v", res)
+		t.Fatalf("an export that grew 5000× was approved as is: %v", res)
 	}
-	if u, _ := f.a.Store.UserByID(ctx, uuid.MustParse(carolID)); u.FrozenAt == nil {
-		t.Fatal("requester should be frozen after a mass export")
+	if u, _ := f.a.Store.UserByID(ctx, uuid.MustParse(carolID)); u.FrozenAt != nil {
+		t.Fatal("an approver's decision shouldn't freeze the requester")
 	}
 }
 
@@ -225,4 +229,87 @@ func TestSignInWithoutCountryAlerts(t *testing.T) {
 		}
 	}
 	t.Fatal("no unknown_country alert")
+}
+
+// Re-probe 1: approving a request about yourself is self-approval in substance.
+func TestCantDecideRequestAboutYourself(t *testing.T) {
+	f := newGov(t)
+	ctx := context.Background()
+	inv := f.ownerA.must(201, f.ownerA.do("POST", "/admin/v1/team/invites", map[string]any{"email": "cara@acme.test", "name": "Cara Approver", "company_role": "approver"}))
+	f.ownerB.must(200, f.ownerB.do("POST", "/admin/v1/approvals/"+inv.body["approval"].(map[string]any)["id"].(string)+"/approve", map[string]any{}))
+	cara := newBrowser(t, f.srv)
+	caraID := cara.must(200, cara.acceptInvite(inv.body["invite_url"].(string))).body["user"].(map[string]any)["id"].(string)
+
+	req := f.ownerA.must(202, f.ownerA.do("PUT", "/admin/v1/team/members/"+caraID+"/roles", map[string]any{"company_role": "owner"})).body
+	id := req["approval"].(map[string]any)["id"].(string)
+	if list := cara.must(200, cara.do("GET", "/admin/v1/approvals?view=decide", nil)).body["approvals"].([]any); len(list) != 0 {
+		t.Fatalf("her own promotion is in her queue: %v", list)
+	}
+	if r := cara.do("POST", "/admin/v1/approvals/"+id+"/approve", map[string]any{}); r.errCode() != "about_you" {
+		t.Fatalf("self-promotion approval: %d %s", r.status, r.raw)
+	}
+	// The database refuses it too, whatever the code does.
+	if err := f.a.Store.DecideApproval(ctx, uuid.MustParse(id), store.ApprovalApproved, ptr(uuid.MustParse(caraID)), "", nil); err == nil {
+		t.Fatal("database accepted a decision by the request's subject")
+	}
+	f.ownerB.must(200, f.ownerB.do("POST", "/admin/v1/approvals/"+id+"/approve", map[string]any{}))
+
+	// Admin invite for an address that already has an account: its owner can't approve it.
+	inv2 := f.ownerB.must(201, f.ownerB.do("POST", "/admin/v1/team/invites", map[string]any{"email": "alice@acme.test", "name": "Alice again", "company_role": "approver"}))
+	if inv2.status == 201 && inv2.body["approval"] != nil {
+		if r := f.ownerA.do("POST", "/admin/v1/approvals/"+inv2.body["approval"].(map[string]any)["id"].(string)+"/approve", map[string]any{}); r.errCode() != "about_you" {
+			t.Fatalf("approving an invite for your own email: %d %s", r.status, r.raw)
+		}
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+// Re-probe 2: owner invites made during the one-admin phase die once a second admin exists.
+func TestShortcutEraAdminInviteStopsWorking(t *testing.T) {
+	a, srv, _ := setup(t)
+	alice := newBrowser(t, srv.URL)
+	link, _ := a.Bootstrap(context.Background(), "alice@acme.test", "Alice")
+	alice.must(200, alice.acceptInvite(link))
+	bob := alice.must(201, alice.do("POST", "/admin/v1/team/invites", map[string]any{"email": "bob@acme.test", "name": "Bob", "company_role": "owner"}))
+	alias := alice.must(201, alice.do("POST", "/admin/v1/team/invites", map[string]any{"email": "alias@acme.test", "name": "Alias", "company_role": "owner"}))
+	if bob.body["awaiting_approval"] != false || alias.body["awaiting_approval"] != false {
+		t.Fatal("one-admin invites should not wait")
+	}
+	b := newBrowser(t, srv.URL)
+	b.must(200, b.acceptInvite(bob.body["invite_url"].(string)))
+
+	token := alias.body["invite_url"].(string)[strings.LastIndex(alias.body["invite_url"].(string), "/")+1:]
+	if r := newBrowser(t, srv.URL).do("GET", "/admin/v1/invites/"+token, nil); r.errCode() != "invite_needs_approval" {
+		t.Fatalf("shortcut-era owner invite after two admins: %d %s", r.status, r.raw)
+	}
+}
+
+// Re-probe 3: a large export an approver agreed to can complete.
+func TestApprovedLargeExportCompletes(t *testing.T) {
+	f := newGov(t)
+	ctx := context.Background()
+	if err := f.a.Store.BulkInsertContactsForTest(ctx, uuid.MustParse(f.brandID), 6001); err != nil {
+		t.Fatal(err)
+	}
+	r := f.ownerA.must(202, f.ownerA.do("POST", "/admin/v1/brands/brightside/exports", map[string]any{"filter": map[string]any{}, "reason": "annual archive"})).body
+	if r["requester_frozen"] != false {
+		t.Fatal("owners are never frozen")
+	}
+	exp := r["export"].(map[string]any)
+	res := f.ownerB.must(200, f.ownerB.do("POST", "/admin/v1/approvals/"+exp["approval_id"].(string)+"/approve", map[string]any{})).body
+	if res["status"] != "approved" {
+		t.Fatalf("approved large export: %v", res)
+	}
+	mine := f.ownerA.must(200, f.ownerA.do("GET", "/admin/v1/exports", nil)).body["exports"].([]any)
+	if mine[0].(map[string]any)["status"] != "ready" || mine[0].(map[string]any)["row_count"] != 6001.0 {
+		t.Fatalf("export: %v", mine[0])
+	}
+	kinds := map[string]bool{}
+	for _, a := range f.ownerA.must(200, f.ownerA.do("GET", "/admin/v1/alerts", nil)).body["alerts"].([]any) {
+		kinds[a.(map[string]any)["kind"].(string)] = true
+	}
+	if !kinds["mass_export"] {
+		t.Fatal("a mass export should still raise an alert")
+	}
 }

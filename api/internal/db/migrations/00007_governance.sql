@@ -18,9 +18,31 @@ CREATE TABLE approvals (
     decision_note text NOT NULL DEFAULT '',
     result        jsonb,
     expires_at    timestamptz NOT NULL,
-    -- Nobody approves or rejects their own request.
-    CHECK (decided_by IS NULL OR decided_by <> requested_by)
+    -- Who the request is about (a role change's user, an admin invite's email).
+    target_user_id uuid REFERENCES users,
+    target_email   citext,
+    -- Nobody decides their own request, or one about themselves.
+    CHECK (decided_by IS NULL OR decided_by <> requested_by),
+    CHECK (decided_by IS NULL OR target_user_id IS NULL OR decided_by <> target_user_id)
 );
+
+-- The decider's email can't be the target email either (an invite for an
+-- address that already has an account).
+-- +goose StatementBegin
+CREATE FUNCTION approvals_not_about_decider() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.decided_by IS NOT NULL AND NEW.target_email IS NOT NULL
+       AND EXISTS (SELECT 1 FROM users WHERE id = NEW.decided_by AND email = NEW.target_email) THEN
+        RAISE EXCEPTION 'approvals: the decider is the subject of this request';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+-- +goose StatementEnd
+
+CREATE TRIGGER approvals_not_about_decider
+    BEFORE INSERT OR UPDATE ON approvals
+    FOR EACH ROW EXECUTE FUNCTION approvals_not_about_decider();
 CREATE INDEX approvals_pending ON approvals (requested_at) WHERE status = 'pending';
 CREATE INDEX approvals_requester ON approvals (requested_by, requested_at DESC);
 
@@ -121,3 +143,4 @@ DROP TABLE exports;
 ALTER TABLE invites DROP COLUMN approval_id;
 DROP TABLE safety_limits;
 DROP TABLE approvals;
+DROP FUNCTION approvals_not_about_decider();

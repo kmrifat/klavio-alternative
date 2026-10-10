@@ -233,9 +233,10 @@ func (t *Handlers) invite(w http.ResponseWriter, r *http.Request) error {
 		if elevates(store.CompanyMember, store.BrandRoles{}, input.CompanyRole, input.BrandRoles) {
 			a, err := t.Approvals.Request(ctx, tx, approvals.Request{
 				Kind: approvals.KindAdminInvite, RequestedBy: p.User,
-				Summary: "Invite " + input.Email + " as " + roleSummary(input.CompanyRole, input.BrandRoles, brands),
-				Payload: map[string]any{"email": input.Email, "company_role": input.CompanyRole, "brand_roles": input.BrandRoles},
-				Audit:   auth.AuditEntry(r, "", "", "", nil),
+				Summary:     "Invite " + input.Email + " as " + roleSummary(input.CompanyRole, input.BrandRoles, brands),
+				Payload:     map[string]any{"email": input.Email, "company_role": input.CompanyRole, "brand_roles": input.BrandRoles},
+				TargetEmail: input.Email,
+				Audit:       auth.AuditEntry(r, "", "", "", nil),
 			})
 			switch {
 			case errors.Is(err, approvals.ErrNoApprover):
@@ -335,9 +336,15 @@ func (t *Handlers) setRoles(w http.ResponseWriter, r *http.Request) error {
 			}
 		}
 		if needs {
+			// Someone being given rights can't approve that; someone losing
+			// theirs (the last-other-admin case) can consent to it.
+			var subject *uuid.UUID
+			if elevates(target.CompanyRole, before, in.CompanyRole, in.BrandRoles) {
+				subject = &target.ID
+			}
 			a, err := t.Approvals.Request(ctx, tx, approvals.Request{
 				Kind: approvals.KindRoleChange, RequestedBy: p.User, Summary: summary,
-				Payload: change, Audit: auth.AuditEntry(r, "", "", "", nil),
+				Payload: change, TargetUserID: subject, Audit: auth.AuditEntry(r, "", "", "", nil),
 			})
 			switch {
 			case errors.Is(err, approvals.ErrNoApprover):

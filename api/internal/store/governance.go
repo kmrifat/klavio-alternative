@@ -37,16 +37,18 @@ type Approval struct {
 	DecisionNote string          `db:"decision_note" json:"decision_note"`
 	Result       json.RawMessage `db:"result" json:"result"`
 	ExpiresAt    time.Time       `db:"expires_at" json:"expires_at"`
+	TargetUserID *uuid.UUID      `db:"target_user_id" json:"target_user_id"`
+	TargetEmail  *string         `db:"target_email" json:"target_email"`
 }
 
 const approvalCols = `id, kind, brand_id, requested_by, requested_at, summary, reason, payload, status,
-	decided_by, decided_at, decision_note, result, expires_at`
+	decided_by, decided_at, decision_note, result, expires_at, target_user_id, target_email`
 
 func (s *Store) CreateApproval(ctx context.Context, a Approval) (Approval, error) {
 	rows, err := s.db.Query(ctx, `
-		INSERT INTO approvals (kind, brand_id, requested_by, summary, reason, payload, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING `+approvalCols,
-		a.Kind, a.BrandID, a.RequestedBy, a.Summary, a.Reason, a.Payload, a.ExpiresAt)
+		INSERT INTO approvals (kind, brand_id, requested_by, summary, reason, payload, expires_at, target_user_id, target_email)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING `+approvalCols,
+		a.Kind, a.BrandID, a.RequestedBy, a.Summary, a.Reason, a.Payload, a.ExpiresAt, a.TargetUserID, a.TargetEmail)
 	return one[Approval](rows, err)
 }
 
@@ -121,6 +123,13 @@ func (s *Store) OverdueApprovals(ctx context.Context) ([]uuid.UUID, error) {
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// TwoAdminsSince: when the company first had two admins (nil = never).
+func (s *Store) TwoAdminsSince(ctx context.Context) (*time.Time, error) {
+	var t *time.Time
+	err := s.db.QueryRow(ctx, `SELECT two_admins_since FROM company_state WHERE id = 1`).Scan(&t)
+	return t, translate(err)
 }
 
 // HadTwoAdmins: has the company ever had two owners/approvers? (one-way flag)

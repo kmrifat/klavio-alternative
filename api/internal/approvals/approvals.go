@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -116,6 +117,10 @@ type Request struct {
 	Summary     string // one line for the approver
 	Reason      string // why, from the requester
 	Payload     any
+	// Who the request is about, if anyone: they can't decide it. Set
+	// TargetUserID for an existing user, TargetEmail for an invite.
+	TargetUserID *uuid.UUID
+	TargetEmail  string
 	// Audit context (who/where), usually from auth.AuditEntry(r, …).
 	Audit store.AuditEntry
 }
@@ -143,9 +148,15 @@ func (s *Service) Request(ctx context.Context, tx *store.Store, r Request) (stor
 	if err != nil {
 		return store.Approval{}, err
 	}
+	var targetEmail *string
+	if r.TargetEmail != "" {
+		e := strings.ToLower(r.TargetEmail)
+		targetEmail = &e
+	}
 	a, err := tx.CreateApproval(ctx, store.Approval{
 		Kind: string(r.Kind), BrandID: r.BrandID, RequestedBy: r.RequestedBy.ID,
 		Summary: r.Summary, Reason: r.Reason, Payload: payload, ExpiresAt: s.now().Add(TTL),
+		TargetUserID: r.TargetUserID, TargetEmail: targetEmail,
 	})
 	if err != nil {
 		return a, err
@@ -173,9 +184,16 @@ func (s *Service) SomeoneElseCanApprove(ctx context.Context, tx *store.Store, re
 	return n > 0, err
 }
 
+// isSubject: is this person who the request is about? (Approving your own
+// promotion is self-approval in substance.)
+func isSubject(p *auth.Principal, a store.Approval) bool {
+	return (a.TargetUserID != nil && *a.TargetUserID == p.User.ID) ||
+		(a.TargetEmail != nil && strings.EqualFold(*a.TargetEmail, p.User.Email))
+}
+
 // CanDecide: may this person approve or reject the request?
 func (s *Service) CanDecide(p *auth.Principal, a store.Approval) bool {
-	if p == nil || p.User.ID == a.RequestedBy || p.User.FrozenAt != nil {
+	if p == nil || p.User.ID == a.RequestedBy || p.User.FrozenAt != nil || isSubject(p, a) {
 		return false
 	}
 	if p.User.CompanyRole == store.CompanyOwner || p.User.CompanyRole == store.CompanyApprover {
@@ -194,6 +212,7 @@ func (s *Service) CanSee(p *auth.Principal, a store.Approval) bool {
 var (
 	errNotPending = httpx.Errorf(http.StatusConflict, "not_pending", "this request was already decided, cancelled or has expired")
 	errOwn        = httpx.Errorf(http.StatusForbidden, "own_request", "you can't approve or reject your own request")
+	errSubject    = httpx.Errorf(http.StatusForbidden, "about_you", "this request is about you, so someone else has to decide it")
 )
 
 // Approve runs the action and marks the request approved, atomically.
@@ -223,6 +242,9 @@ func (s *Service) decide(ctx context.Context, p *auth.Principal, id uuid.UUID, s
 		}
 		if a.RequestedBy == p.User.ID {
 			return errOwn
+		}
+		if isSubject(p, a) {
+			return errSubject
 		}
 		if !s.CanDecide(p, a) {
 			return httpx.ErrForbidden

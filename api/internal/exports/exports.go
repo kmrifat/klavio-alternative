@@ -28,6 +28,10 @@ import (
 // DownloadWindow: how long an approved export can be downloaded.
 const DownloadWindow = 24 * time.Hour
 
+// GrowthTolerance: an approved export may include this many more contacts
+// than requested (or 10%, whichever is more) before it must be asked again.
+const GrowthTolerance = 50
+
 type Service struct {
 	store     *store.Store
 	approvals *approvals.Service
@@ -119,6 +123,12 @@ func (s *Service) request(w http.ResponseWriter, r *http.Request) error {
 		// count can't be dodged by sending them all at once.
 		if err := tx.Lock(ctx, "exports:"+p.User.ID.String()); err != nil {
 			return err
+		}
+		// A request waiting on the lock may belong to someone frozen meanwhile.
+		if u, err := tx.UserByID(ctx, p.User.ID); err != nil {
+			return err
+		} else if u.FrozenAt != nil {
+			return httpx.Errorf(http.StatusForbidden, "account_frozen", "your account was frozen after unusual activity; an owner has been alerted")
 		}
 		rows, err := tx.CountContacts(ctx, b.ID, in.Filter.contactFilter())
 		if err != nil {
@@ -228,12 +238,12 @@ func (s *Service) execute(ctx context.Context, tx *store.Store, a store.Approval
 	if err != nil {
 		return nil, err
 	}
-	// What would be exported is decided now, not at request time: re-check the size.
-	if len(contacts) > anomaly.MassExportRows {
-		if _, err := s.anomaly.CheckExport(ctx, tx, requester, b, len(contacts), 1); err != nil {
-			return nil, err
-		}
-		return nil, approvals.Reject("the filters now match %d contacts, over the %d mass-export limit", len(contacts), anomaly.MassExportRows)
+	// The approver agreed to roughly the requested size (shown with the live
+	// count). If the list has grown well past it since, ask again. Large
+	// exports themselves are allowed: they were flagged (and non-owners
+	// frozen) when requested, and an approver chose to approve.
+	if grew := len(contacts) - exp.RowCount; grew > max(GrowthTolerance, exp.RowCount/10) {
+		return nil, approvals.Reject("the filters now match %d contacts, not the %d that were requested; ask again", len(contacts), exp.RowCount)
 	}
 	now := s.now()
 	var buf bytes.Buffer

@@ -14,5 +14,7 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
+    // Generous for busy CI machines: several findBy* waits (3 s each) per test.
+    testTimeout: 15_000,
   },
 });
