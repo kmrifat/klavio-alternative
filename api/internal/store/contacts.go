@@ -377,6 +377,7 @@ type NewConsentRecord struct {
 	RecordedBy *uuid.UUID
 	ImportID   *uuid.UUID
 	CampaignID *uuid.UUID // the email an unsubscribe came from
+	WordingID  *uuid.UUID // the consent wording agreed to (Contacts API)
 }
 
 func (s *Store) AddConsentRecord(ctx context.Context, r NewConsentRecord) error {
@@ -384,10 +385,10 @@ func (s *Store) AddConsentRecord(ctx context.Context, r NewConsentRecord) error 
 		r.OccurredAt = time.Now()
 	}
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO consent_records (brand_id, contact_id, email_hash, kind, method, source, wording, page_url, ip, occurred_at, recorded_by, import_id, campaign_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		INSERT INTO consent_records (brand_id, contact_id, email_hash, kind, method, source, wording, page_url, ip, occurred_at, recorded_by, import_id, campaign_id, wording_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
 		r.BrandID, r.ContactID, EmailHash(r.Email), r.Kind, r.Method, r.Source, r.Wording, r.PageURL, r.IP,
-		r.OccurredAt, r.RecordedBy, r.ImportID, r.CampaignID)
+		r.OccurredAt, r.RecordedBy, r.ImportID, r.CampaignID, r.WordingID)
 	return err
 }
 

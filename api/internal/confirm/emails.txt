@@ -1,0 +1,16 @@
+{{define "confirmation"}}Please confirm you want emails from {{.Brand.Name}}. Until you do, we won't send you anything.
+
+Yes, subscribe me: {{.ConfirmURL}}
+
+Didn't sign up? Ignore this email and you won't hear from us. The link works for {{.Days}} days.
+
+{{.Brand.Name}} · {{.Brand.PostalAddress}}
+{{end}}{{define "repermission"}}You're on {{.Brand.Name}}'s list, but we'd like to be sure you still want to hear from us.
+
+Yes, subscribe me: {{.ConfirmURL}}
+
+If not, do nothing: we won't email you again. The link works for {{.Days}} days.
+
+{{.Brand.Name}} · {{.Brand.PostalAddress}}
+Unsubscribe: {{.UnsubURL}}
+{{end}}

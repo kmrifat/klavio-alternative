@@ -87,6 +87,9 @@ func isRole(email string) bool {
 	return roleLocals[local]
 }
 
+// IsDisposable reports a throwaway-inbox address (the Contacts API refuses them).
+func IsDisposable(email string) bool { return isDisposable(email) }
+
 // isDisposable also matches subdomains (x.mailinator.com).
 func isDisposable(email string) bool {
 	for d := domainOf(email); strings.Contains(d, "."); {

@@ -1,0 +1,426 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Contacts API",
+    "version": "1",
+    "description": "Add people to a brand's list from your website or app. Every sign-up gets a confirmation email (double opt-in): nobody is emailed until they click it. Call the API from your server, never from a web page: the key would be visible to anyone.\n\nKeys belong to one brand, expire after at most 90 days, and can be limited to your servers' IP addresses. Create them in the app under Contacts API."
+  },
+  "servers": [
+    {
+      "url": "/api/v1"
+    }
+  ],
+  "security": [
+    {
+      "bearer": []
+    }
+  ],
+  "paths": {
+    "/contacts": {
+      "post": {
+        "operationId": "subscribe",
+        "summary": "Add someone (double opt-in)",
+        "description": "Records the consent and sends a confirmation email. New people, and people who were unsubscribed or unconfirmed, are `pending_confirmation` until they click it (at most 3 confirmation emails a day per address). People already subscribed stay `subscribed` and get the topics added. Needs the contacts:write scope.",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "description": "Any unique string (e.g. a UUID). Retrying with the same key and body returns the first answer (with Idempotent-Replayed: true) for 24 hours; the same key with a different body is refused with 422 idempotency_mismatch."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Subscribe"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Already subscribed; topics added",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Confirmation email on its way",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed JSON (bad_json)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid data: invalid_email, disposable_email, consent_required, unknown_wording, retired_wording, unknown_topic, invalid_page_url, invalid_ip, invalid_country, invalid_timezone, invalid_tags, invalid_name, idempotency_mismatch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key (missing_key, invalid_key, key_revoked, key_expired)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Key awaiting approval, missing scope, or IP not allowed (key_pending_approval, missing_scope, ip_not_allowed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Over 120 requests a minute for this key (rate_limited). Retry after the Retry-After seconds.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/contacts/{email}": {
+      "get": {
+        "operationId": "lookup",
+        "summary": "Look up someone's status",
+        "description": "Needs the contacts:read scope.",
+        "parameters": [
+          {
+            "name": "email",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "email"
+            },
+            "description": "URL-encoded email address"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The contact",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Contact"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not a contact (not_found)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key (missing_key, invalid_key, key_revoked, key_expired)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Key awaiting approval, missing scope, or IP not allowed (key_pending_approval, missing_scope, ip_not_allowed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Over 120 requests a minute for this key (rate_limited). Retry after the Retry-After seconds.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/contacts/{email}/unsubscribe": {
+      "post": {
+        "operationId": "unsubscribe",
+        "summary": "Unsubscribe someone",
+        "description": "From all of this brand's email. Needs the contacts:write scope.",
+        "parameters": [
+          {
+            "name": "email",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "email"
+            },
+            "description": "URL-encoded email address"
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "description": "Any unique string (e.g. a UUID). Retrying with the same key and body returns the first answer (with Idempotent-Replayed: true) for 24 hours; the same key with a different body is refused with 422 idempotency_mismatch."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Unsubscribed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not a contact (not_found)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired key (missing_key, invalid_key, key_revoked, key_expired)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Key awaiting approval, missing scope, or IP not allowed (key_pending_approval, missing_scope, ip_not_allowed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Over 120 requests a minute for this key (rate_limited). Retry after the Retry-After seconds.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Authorization: Bearer kla_…"
+      }
+    },
+    "schemas": {
+      "Subscribe": {
+        "type": "object",
+        "required": [
+          "email",
+          "consent"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "first_name": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "last_name": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "topics": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Topic ids; empty = all of the brand's topics"
+          },
+          "tags": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "string",
+              "maxLength": 50
+            }
+          },
+          "country": {
+            "type": "string",
+            "pattern": "^[A-Za-z]{2}$",
+            "description": "ISO 3166-1 alpha-2"
+          },
+          "timezone": {
+            "type": "string",
+            "description": "IANA name, e.g. Europe/Berlin"
+          },
+          "consent": {
+            "$ref": "#/components/schemas/Consent"
+          }
+        }
+      },
+      "Consent": {
+        "type": "object",
+        "required": [
+          "wording_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "wording_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The consent wording shown next to your signup form (Contacts API → Consent wordings). Its exact text is stored as proof."
+          },
+          "page_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Where they signed up"
+          },
+          "ip": {
+            "type": "string",
+            "description": "The person's IP address (not your server's)"
+          },
+          "click_tracking": {
+            "type": "boolean",
+            "default": false,
+            "description": "They agreed to click tracking (needed in the EU before clicks are recorded)"
+          }
+        }
+      },
+      "Status": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending_confirmation",
+              "subscribed",
+              "unsubscribed"
+            ]
+          }
+        }
+      },
+      "Contact": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending_confirmation",
+              "subscribed",
+              "quarantined",
+              "unsubscribed",
+              "suppressed"
+            ]
+          },
+          "topics": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "consented_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

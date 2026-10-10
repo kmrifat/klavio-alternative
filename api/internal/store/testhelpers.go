@@ -58,3 +58,9 @@ func (s *Store) ExecForTest(ctx context.Context, sql string, args ...any) error 
 	_, err := s.db.Exec(ctx, sql, args...)
 	return err
 }
+
+// TryEditWordingForTest attempts the UPDATE the immutability trigger must refuse.
+func (s *Store) TryEditWordingForTest(ctx context.Context, id uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `UPDATE consent_wordings SET text = text || ' (edited)' WHERE id = $1`, id)
+	return err
+}
