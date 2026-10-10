@@ -36,7 +36,7 @@ const campaignBase = "/admin/v1/brands/brightside"
 // every state the audience rules care about.
 func newCampaignWorld(t *testing.T) *campaignWorld {
 	sender := &ses.FakeSender{}
-	a, srv, dns := setupWith(t, func(d *app.Deps) {
+	a, srv, dns := setupDeps(t, func(d *app.Deps) {
 		d.Sender = sender
 		d.CampaignRunner = nopCampaignRunner{}
 	})

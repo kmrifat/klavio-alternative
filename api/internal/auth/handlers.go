@@ -124,7 +124,7 @@ func (s *Service) loginFinish(w http.ResponseWriter, r *http.Request) error {
 		var frozen bool
 		err := s.store.InTx(ctx, func(tx *store.Store) error {
 			var err error
-			frozen, err = s.guard.CheckSignIn(ctx, tx, user, httpx.ClientIP(r), r.Header.Get("CF-IPCountry"), hex.EncodeToString(cred.ID))
+			frozen, err = s.guard.CheckSignIn(ctx, tx, user, httpx.ClientIP(r), httpx.ClientCountry(r), hex.EncodeToString(cred.ID))
 			return err
 		})
 		if err != nil {
@@ -357,7 +357,7 @@ func (s *Service) inviteFinish(w http.ResponseWriter, r *http.Request) error {
 		if err := tx.AddPasskey(ctx, user.ID, *cred); err != nil {
 			return err
 		}
-		if err := tx.RecordSignIn(ctx, user.ID, httpx.ClientIP(r), r.Header.Get("CF-IPCountry"), hex.EncodeToString(cred.ID)); err != nil {
+		if err := tx.RecordSignIn(ctx, user.ID, httpx.ClientIP(r), httpx.ClientCountry(r), hex.EncodeToString(cred.ID)); err != nil {
 			return err
 		}
 		if err := s.startSession(ctx, tx, w, r, user.ID); err != nil {

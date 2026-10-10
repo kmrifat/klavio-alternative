@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -224,12 +225,23 @@ func (r inlineRunner) QueueRebuild(ctx context.Context, brandID uuid.UUID) error
 	return (*r.a).Templates.RebuildBrand(context.WithoutCancel(ctx), brandID)
 }
 
+// setup builds the app with the test client acting as cloudflared on
+// localhost: its CF-* headers are trusted, as Cloudflare's would be.
 func setup(t *testing.T) (*app.App, *httptest.Server, *fakeDNS) {
 	return setupWith(t, nil)
 }
 
-// setupWith lets a test change the dependencies before the app is built.
-func setupWith(t *testing.T, tweak func(*app.Deps)) (*app.App, *httptest.Server, *fakeDNS) {
+// setupWith lets a test change the config before the app is built.
+func setupWith(t *testing.T, edit func(*config.Config)) (*app.App, *httptest.Server, *fakeDNS) {
+	return setupDeps(t, func(d *app.Deps) {
+		if edit != nil {
+			edit(&d.Config)
+		}
+	})
+}
+
+// setupDeps lets a test change any dependency before the app is built.
+func setupDeps(t *testing.T, tweak func(*app.Deps)) (*app.App, *httptest.Server, *fakeDNS) {
 	pool := testdb.New(t)
 	var appRef *app.App
 	dns := &fakeDNS{cname: map[string]string{}, mx: map[string][]*net.MX{}, txt: map[string][]string{}, hosts: map[string]bool{}}
@@ -237,8 +249,10 @@ func setupWith(t *testing.T, tweak func(*app.Deps)) (*app.App, *httptest.Server,
 		Config: config.Config{
 			Env: config.EnvDevelopment, AllowedOrigins: []string{origin}, AppURL: origin,
 			WebAuthnRPID: "localhost", WebAuthnRPName: "Test",
-			UnsubscribeSecret: "test-unsubscribe-secret-0123456789abcdef",
-			SESMaxSendRate:    1000,
+			UnsubscribeSecret:      "test-unsubscribe-secret-0123456789abcdef",
+			SESMaxSendRate:         1000,
+			TrustCloudflareHeaders: true,
+			TrustedProxies:         []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32"), netip.MustParsePrefix("::1/128")},
 		},
 		Log:               slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Pool:              pool,
