@@ -128,6 +128,39 @@ func (s *Store) LatestPostmaster(ctx context.Context, brandID uuid.UUID) (Postma
 	return one[PostmasterStat](rows, err)
 }
 
+// PostmasterHistory: the brand's daily stats since a day, oldest first.
+func (s *Store) PostmasterHistory(ctx context.Context, brandID uuid.UUID, since time.Time) ([]PostmasterStat, error) {
+	rows, err := s.db.Query(ctx, `SELECT brand_id, day, spam_ratio, domain_reputation, fetched_at FROM postmaster_stats
+		WHERE brand_id = $1 AND day >= $2 ORDER BY day`, brandID, since)
+	return all[PostmasterStat](rows, err)
+}
+
+type PostmasterStatus struct {
+	BrandID   uuid.UUID `db:"brand_id" json:"-"`
+	Status    string    `db:"status" json:"status"`
+	Detail    string    `db:"detail" json:"detail"`
+	CheckedAt time.Time `db:"checked_at" json:"checked_at"`
+}
+
+func (s *Store) SetPostmasterStatus(ctx context.Context, brandID uuid.UUID, status, detail string) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO postmaster_status (brand_id, status, detail, checked_at) VALUES ($1, $2, $3, now())
+		ON CONFLICT (brand_id) DO UPDATE SET status = EXCLUDED.status, detail = EXCLUDED.detail, checked_at = now()`,
+		brandID, status, detail)
+	return err
+}
+
+func (s *Store) GetPostmasterStatus(ctx context.Context, brandID uuid.UUID) (PostmasterStatus, error) {
+	rows, err := s.db.Query(ctx, `SELECT brand_id, status, detail, checked_at FROM postmaster_status WHERE brand_id = $1`, brandID)
+	return one[PostmasterStatus](rows, err)
+}
+
+// BrandAlerts: the brand's most recent alerts (S2 "Recent safety events").
+func (s *Store) BrandAlerts(ctx context.Context, brandID uuid.UUID, limit int) ([]Alert, error) {
+	rows, err := s.db.Query(ctx, `SELECT `+alertCols+` FROM alerts WHERE brand_id = $1 ORDER BY created_at DESC LIMIT $2`, brandID, limit)
+	return all[Alert](rows, err)
+}
+
 // --- list-quality inputs ---
 
 // RecentImportInvalidRate: average invalid + no-mailbox share of the brand's
@@ -145,6 +178,13 @@ func (s *Store) UnsubscribesSince(ctx context.Context, brandID uuid.UUID, since 
 	var n int
 	err := s.db.QueryRow(ctx, `SELECT count(DISTINCT contact_id) FROM consent_records
 		WHERE brand_id = $1 AND kind = 'unsubscribed' AND occurred_at > $2`, brandID, since).Scan(&n)
+	return n, err
+}
+
+// SuppressionCount: addresses on the company-wide suppression list.
+func (s *Store) SuppressionCount(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRow(ctx, `SELECT count(*) FROM suppressions`).Scan(&n)
 	return n, err
 }
 

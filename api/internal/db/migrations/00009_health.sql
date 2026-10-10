@@ -42,7 +42,17 @@ CREATE TABLE postmaster_stats (
     PRIMARY KEY (brand_id, day)
 );
 
+-- Whether Postmaster Tools could be read for the brand's domain:
+-- ok | domain_not_found | error.
+CREATE TABLE postmaster_status (
+    brand_id   uuid PRIMARY KEY REFERENCES brands ON DELETE CASCADE,
+    status     text NOT NULL CHECK (status IN ('ok', 'domain_not_found', 'error')),
+    detail     text NOT NULL DEFAULT '',
+    checked_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- +goose Down
+DROP TABLE postmaster_status;
 DROP TABLE postmaster_stats;
 DROP TABLE blocklist_results;
 DROP TABLE brand_health;

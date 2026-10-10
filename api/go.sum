@@ -1,3 +1,5 @@
+cloud.google.com/go/compute/metadata v0.3.0 h1:Tz+eQXMEqDIKRsmY3cHTL6FVaynIjX2QxYC4trgAKZc=
+cloud.google.com/go/compute/metadata v0.3.0/go.mod h1:zFmK7XCadkQkj6TtorcaGlCW1hT1fIilQDwofLpJ20k=
 github.com/Boostport/mjml-go v0.16.0 h1:6fmD0PtbSD08GxKgAyL6sOsLXmzFnrq8H9PsgVSI3tM=
 github.com/Boostport/mjml-go v0.16.0/go.mod h1:0pia7Q0JDJbqHHgC3K/y1tAKEk7941wbRpRsHFJhUwY=
 github.com/andybalholm/brotli v1.2.3 h1:8H1qwOkl2LPfjf3YezB90JnCliZb6SInJ/OJkEbA5NQ=

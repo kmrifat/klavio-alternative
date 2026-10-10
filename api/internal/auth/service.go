@@ -214,6 +214,13 @@ func (s *Service) CreateInvite(ctx context.Context, tx *store.Store, by *uuid.UU
 	if err := in.normalize(); err != nil {
 		return store.Invite{}, "", err
 	}
+	// Invites are for new people; existing members get new roles instead.
+	switch _, err := tx.UserByEmail(ctx, in.Email); {
+	case err == nil:
+		return store.Invite{}, "", httpx.Errorf(http.StatusConflict, "already_member", "%s already has an account; change their roles instead", in.Email)
+	case !errors.Is(err, store.ErrNotFound):
+		return store.Invite{}, "", err
+	}
 	token, err := randomToken(32)
 	if err != nil {
 		return store.Invite{}, "", err

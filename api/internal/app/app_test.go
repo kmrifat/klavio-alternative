@@ -18,6 +18,7 @@ import (
 
 	"github.com/kmrifat/klavio-alternative/api/internal/app"
 	"github.com/kmrifat/klavio-alternative/api/internal/auth"
+	"github.com/kmrifat/klavio-alternative/api/internal/blocklist"
 	"github.com/kmrifat/klavio-alternative/api/internal/config"
 	"github.com/kmrifat/klavio-alternative/api/internal/ses"
 	"github.com/kmrifat/klavio-alternative/api/internal/testdb"
@@ -38,7 +39,9 @@ type fakeDNS struct {
 	mx    map[string][]*net.MX
 	txt   map[string][]string
 	hosts map[string]bool // domains with an A record but no MX
-	hang  bool            // MX lookups wait until the context ends (a stuck DNS server)
+	// answers: A records by name (blocklist zones answer 127.0.x.y when listed)
+	answers map[string][]string
+	hang    bool // MX lookups wait until the context ends (a stuck DNS server)
 }
 
 func nx(name string) error { return &net.DNSError{Err: "no such host", Name: name, IsNotFound: true} }
@@ -79,6 +82,9 @@ func (f *fakeDNS) LookupTXT(_ context.Context, n string) ([]string, error) {
 func (f *fakeDNS) LookupHost(_ context.Context, h string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if v, ok := f.answers[h]; ok {
+		return v, nil
+	}
 	if _, ok := f.mx[h]; ok {
 		return []string{"192.0.2.1"}, nil
 	}
@@ -227,7 +233,7 @@ func (r inlineRunner) QueueRebuild(ctx context.Context, brandID uuid.UUID) error
 func setup(t *testing.T) (*app.App, *httptest.Server, *fakeDNS) {
 	pool := testdb.New(t)
 	var appRef *app.App
-	dns := &fakeDNS{cname: map[string]string{}, mx: map[string][]*net.MX{}, txt: map[string][]string{}, hosts: map[string]bool{}}
+	dns := &fakeDNS{cname: map[string]string{}, mx: map[string][]*net.MX{}, txt: map[string][]string{}, hosts: map[string]bool{}, answers: map[string][]string{}}
 	a, err := app.New(app.Deps{
 		Config: config.Config{
 			Env: config.EnvDevelopment, AllowedOrigins: []string{origin}, AppURL: origin,
@@ -243,6 +249,7 @@ func setup(t *testing.T) (*app.App, *httptest.Server, *fakeDNS) {
 		Version:           "test",
 		ImportRunner:      inlineRunner{a: &appRef},
 		TemplateRebuilder: inlineRunner{a: &appRef},
+		Blocklists:        &blocklist.Checker{R: dns},
 	})
 	if err != nil {
 		t.Fatal(err)

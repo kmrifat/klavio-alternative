@@ -17,6 +17,12 @@ node_modules/
 .env
 .env.*
 !.env.example
+# Google / cloud credentials (Postmaster Tools service-account keys)
+*credentials*.json
+*service-account*.json
+*postmaster*.json
+*.pem
+*.p12
 
 # Infra
 .terraform/

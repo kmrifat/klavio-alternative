@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -73,26 +74,31 @@ func (c Checker) zones() []zone {
 	}
 }
 
-// Check looks the domain up in every list.
+// Check looks the domain up in every list, in parallel.
 func (c Checker) Check(ctx context.Context, domain string) []Result {
 	domain = strings.ToLower(strings.TrimSuffix(domain, "."))
-	var out []Result
-	for _, z := range c.zones() {
-		r := Result{Zone: z.name, Domain: domain}
-		qctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		addrs, err := c.R.LookupHost(qctx, z.query(domain))
-		cancel()
-		var de *net.DNSError
-		switch {
-		case err == nil:
-			r.Status, r.Detail = z.interpret(addrs)
-		case errors.As(err, &de) && de.IsNotFound:
-			r.Status = Clean
-		default:
-			r.Status, r.Detail = Unknown, "lookup failed: "+err.Error()
-		}
-		out = append(out, r)
+	zones := c.zones()
+	out := make([]Result, len(zones))
+	var wg sync.WaitGroup
+	for i, z := range zones {
+		wg.Go(func() {
+			r := Result{Zone: z.name, Domain: domain}
+			qctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			addrs, err := c.R.LookupHost(qctx, z.query(domain))
+			cancel()
+			var de *net.DNSError
+			switch {
+			case err == nil:
+				r.Status, r.Detail = z.interpret(addrs)
+			case errors.As(err, &de) && de.IsNotFound:
+				r.Status = Clean
+			default:
+				r.Status, r.Detail = Unknown, "lookup failed: "+err.Error()
+			}
+			out[i] = r
+		})
 	}
+	wg.Wait()
 	return out
 }
 
