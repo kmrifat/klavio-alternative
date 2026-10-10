@@ -16,9 +16,14 @@ type fakeDB struct{ err error }
 func (f fakeDB) Ping(context.Context) error { return f.err }
 
 func newTestServer(dbErr error) http.Handler {
+	return newTestServerDeps(dbErr, nil)
+}
+
+func newTestServerDeps(dbErr, redisErr error) http.Handler {
 	return New(Options{
 		Log:            slog.New(slog.NewTextHandler(io.Discard, nil)),
 		DB:             fakeDB{err: dbErr},
+		Redis:          fakeDB{err: redisErr},
 		Version:        "test",
 		Env:            "development",
 		AllowedOrigins: []string{"http://localhost:5173"},
@@ -49,14 +54,24 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestReadyz(t *testing.T) {
-	rec, body := do(t, newTestServer(nil), httptest.NewRequest("GET", "/readyz", nil))
-	if rec.Code != http.StatusOK || body["database"] != "up" {
-		t.Fatalf("db up: got %d %v", rec.Code, body)
+	down := errors.New("conn refused")
+	cases := []struct {
+		name            string
+		dbErr, redisErr error
+		code            int
+		database, redis string
+	}{
+		{"all up", nil, nil, http.StatusOK, "up", "up"},
+		{"db down", down, nil, http.StatusServiceUnavailable, "down", "up"},
+		{"redis down", nil, down, http.StatusServiceUnavailable, "up", "down"},
 	}
-
-	rec, body = do(t, newTestServer(errors.New("conn refused")), httptest.NewRequest("GET", "/readyz", nil))
-	if rec.Code != http.StatusServiceUnavailable || body["database"] != "down" {
-		t.Fatalf("db down: got %d %v", rec.Code, body)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rec, body := do(t, newTestServerDeps(c.dbErr, c.redisErr), httptest.NewRequest("GET", "/readyz", nil))
+			if rec.Code != c.code || body["database"] != c.database || body["redis"] != c.redis {
+				t.Fatalf("got %d %v", rec.Code, body)
+			}
+		})
 	}
 }
 

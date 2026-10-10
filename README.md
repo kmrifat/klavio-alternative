@@ -11,10 +11,11 @@ build plan and `design.fig` (OpenPencil) for the screens.
 
 ## Run locally
 
-Needs Go 1.26+, Node 24+, Docker.
+Needs Go 1.26+, Node 24+, and Postgres + Redis. By default it uses the ones already
+running on this machine (DBngin): **Postgres on `localhost:54321`** (databases `klavio`
+and `klavio_test`, user `postgres`) and **Redis on `localhost:6379`**.
 
 ```bash
-make db            # Postgres in Docker
 make migrate       # app + job-queue tables
 make run           # API + worker on :8080
 ```
@@ -29,13 +30,15 @@ make web-dev       # http://localhost:5173
 
 The top bar shows **API dev** in green when the frontend can reach the backend.
 
-Or run the whole backend in containers: `docker compose up --build`.
+**Postgres/Redis in Docker instead** (kept for other machines and CI-like runs):
+`make docker-deps` starts them on ports `55432` / `56379`, then pass the URLs it prints.
+`docker compose up --build` runs the backend itself in Docker against your local DBs.
 
 ## Tests
 
 ```bash
 make check             # Go vet + unit tests, web typecheck + tests
-make test-integration  # also runs the tests that need Postgres (make db first)
+make test-integration  # also runs the tests that need Postgres + Redis
 ```
 
 CI (`.github/workflows/ci.yml`) runs all of it against a real Postgres, smoke-tests the
@@ -46,7 +49,7 @@ binary, builds the Docker image and validates the OpenTofu config.
 | Path | Purpose |
 |---|---|
 | `GET /healthz` | Process is alive |
-| `GET /readyz` | Database reachable (503 if not) |
+| `GET /readyz` | Postgres and Redis reachable (503 if not) |
 | `GET /admin/v1/meta` | Version + env (used by the web app) |
 
 ## Configuration (`api/.env.example`)
@@ -54,6 +57,7 @@ binary, builds the Docker image and validates the OpenTofu config.
 | Variable | Default | |
 |---|---|---|
 | `DATABASE_URL` | — | required |
+| `REDIS_URL` | — | required |
 | `APP_ENV` | `development` | `development` or `production` |
 | `HTTP_ADDR` | `:8080` | |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
@@ -65,7 +69,7 @@ binary, builds the Docker image and validates the OpenTofu config.
 1. **AWS SES production access** — request it in the SES console now; it can take days.
 2. **Infra**: `cd infra/aws && tofu init && tofu apply` (add an S3 backend first).
    Attach the `app_policy_arn` output to the role the container runs as.
-3. **Database**: managed Postgres 16 (e.g. RDS `db.t4g.micro`). Run the image once with `-mode=migrate`.
+3. **Database**: managed Postgres 17 + Redis (e.g. RDS `db.t4g.micro`). Run the image once with `-mode=migrate`.
 4. **Backend**: run the image with `-mode=all` (or one `api` + one `worker`) and a
    `cloudflared` sidecar using a Cloudflare Tunnel token (see `docker-compose.yml`, profile `tunnel`).
    Route `admin-api.<your-domain>` → `http://app:8080` in the tunnel.

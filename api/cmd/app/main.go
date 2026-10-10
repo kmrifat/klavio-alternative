@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/kmrifat/klavio-alternative/api/internal/cache"
 	"github.com/kmrifat/klavio-alternative/api/internal/config"
 	"github.com/kmrifat/klavio-alternative/api/internal/db"
 	"github.com/kmrifat/klavio-alternative/api/internal/jobs"
@@ -68,10 +69,16 @@ func run(ctx context.Context, mode string, cfg config.Config, log *slog.Logger) 
 		return db.Migrate(ctx, pool, log)
 	}
 
+	rdb, err := cache.Connect(ctx, cfg.RedisURL)
+	if err != nil {
+		return err
+	}
+	defer rdb.Close()
+
 	log.Info("starting", "version", version, "env", cfg.Env)
 	g, ctx := errgroup.WithContext(ctx)
 	if mode == "api" || mode == "all" {
-		g.Go(func() error { return serveHTTP(ctx, cfg, log, pool) })
+		g.Go(func() error { return serveHTTP(ctx, cfg, log, pool, rdb) })
 	}
 	if mode == "worker" || mode == "all" {
 		g.Go(func() error { return runWorker(ctx, log, pool) })
@@ -79,12 +86,13 @@ func run(ctx context.Context, mode string, cfg config.Config, log *slog.Logger) 
 	return g.Wait()
 }
 
-func serveHTTP(ctx context.Context, cfg config.Config, log *slog.Logger, pool *pgxpool.Pool) error {
+func serveHTTP(ctx context.Context, cfg config.Config, log *slog.Logger, pool *pgxpool.Pool, rdb *cache.Client) error {
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
 		Handler: server.New(server.Options{
 			Log:            log,
 			DB:             pool,
+			Redis:          rdb,
 			Version:        version,
 			Env:            string(cfg.Env),
 			AllowedOrigins: cfg.AllowedOrigins,
@@ -124,7 +132,9 @@ func runWorker(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool) error 
 	if err != nil {
 		return err
 	}
-	if err := client.Start(ctx); err != nil {
+	// Cancelling river's start context hard-stops it, so give it one that is
+	// never cancelled and stop it gracefully below instead.
+	if err := client.Start(context.WithoutCancel(ctx)); err != nil {
 		return err
 	}
 	log.Info("worker started")

@@ -1,18 +1,35 @@
-# Local development stack.
-#   docker compose up -d db          # just Postgres (run the Go app with `make run`)
-#   docker compose up --build        # Postgres + migrations + app
-#   TUNNEL_TOKEN=... docker compose --profile tunnel up   # also expose via Cloudflare Tunnel
+# By default the app containers use the Postgres + Redis on your machine
+# (DBngin: Postgres 54321, Redis 6379) through host.docker.internal.
+#
+#   docker compose up --build                     # migrate + app, local DBs
+#   make docker-deps                              # Postgres + Redis in Docker instead
+#   DATABASE_URL=postgres://mail:mail@db:5432/mail?sslmode=disable \
+#   REDIS_URL=redis://redis:6379/0 \
+#   docker compose --profile docker-deps up --build   # everything in Docker
+#   TUNNEL_TOKEN=... docker compose --profile tunnel up # also expose via Cloudflare Tunnel
 services:
   db:
-    image: postgres:16-alpine
+    image: postgres:17-alpine
+    profiles: [docker-deps]
     environment:
       POSTGRES_USER: mail
       POSTGRES_PASSWORD: mail
       POSTGRES_DB: mail
-    ports: ["5432:5432"]
+    ports: ["127.0.0.1:55432:5432"]
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mail -d mail"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    profiles: [docker-deps]
+    ports: ["127.0.0.1:56379:6379"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
       interval: 2s
       timeout: 3s
       retries: 20
@@ -22,16 +39,17 @@ services:
     command: ["-mode=migrate"]
     environment: &app-env
       APP_ENV: development
-      DATABASE_URL: postgres://mail:mail@db:5432/mail?sslmode=disable
+      DATABASE_URL: ${DATABASE_URL:-postgres://postgres@host.docker.internal:54321/klavio?sslmode=disable}
+      REDIS_URL: ${REDIS_URL:-redis://host.docker.internal:6379/0}
       ALLOWED_ORIGINS: http://localhost:5173
-    depends_on:
-      db: { condition: service_healthy }
+    extra_hosts: ["host.docker.internal:host-gateway"]
 
   app:
     build: ./api
     command: ["-mode=all"]
     environment: *app-env
-    ports: ["8080:8080"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports: ["127.0.0.1:8080:8080"]
     depends_on:
       migrate: { condition: service_completed_successfully }
 
@@ -45,3 +63,4 @@ services:
 
 volumes:
   pgdata:
+  redisdata:

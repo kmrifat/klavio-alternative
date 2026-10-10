@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Pinger reports whether a dependency (the database) is reachable.
+// Pinger reports whether a dependency (Postgres, Redis) is reachable.
 type Pinger interface {
 	Ping(ctx context.Context) error
 }
@@ -20,6 +20,7 @@ type Pinger interface {
 type Options struct {
 	Log            *slog.Logger
 	DB             Pinger
+	Redis          Pinger
 	Version        string
 	Env            string
 	AllowedOrigins []string
@@ -36,12 +37,15 @@ func New(o Options) http.Handler {
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
-		if err := o.DB.Ping(ctx); err != nil {
-			o.Log.WarnContext(ctx, "readiness check failed", "err", err)
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable", "database": "down"})
-			return
+
+		status, body := http.StatusOK, map[string]string{"status": "ok", "database": "up", "redis": "up"}
+		for name, dep := range map[string]Pinger{"database": o.DB, "redis": o.Redis} {
+			if err := dep.Ping(ctx); err != nil {
+				o.Log.WarnContext(ctx, "readiness check failed", "dependency", name, "err", err)
+				status, body["status"], body[name] = http.StatusServiceUnavailable, "unavailable", "down"
+			}
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "database": "up"})
+		writeJSON(w, status, body)
 	})
 
 	// Admin API, used by the React app. Behind Cloudflare Access in production.

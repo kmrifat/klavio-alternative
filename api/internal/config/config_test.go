@@ -11,7 +11,7 @@ func envFrom(m map[string]string) func(string) string {
 }
 
 func TestLoadDefaults(t *testing.T) {
-	cfg, err := Load(envFrom(map[string]string{"DATABASE_URL": "postgres://x"}))
+	cfg, err := Load(envFrom(map[string]string{"DATABASE_URL": "postgres://x", "REDIS_URL": "redis://x"}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -36,6 +36,7 @@ func TestLoadProductionUsesJSONLogs(t *testing.T) {
 	cfg, err := Load(envFrom(map[string]string{
 		"APP_ENV":         "production",
 		"DATABASE_URL":    "postgres://x",
+		"REDIS_URL":       "redis://x",
 		"ALLOWED_ORIGINS": "https://app.example.com, https://admin.example.com ,",
 	}))
 	if err != nil {
@@ -59,7 +60,7 @@ func TestLoadReportsAllErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error")
 	}
-	for _, want := range []string{"APP_ENV", "DATABASE_URL", "LOG_LEVEL", "LOG_FORMAT"} {
+	for _, want := range []string{"APP_ENV", "DATABASE_URL", "REDIS_URL", "LOG_LEVEL", "LOG_FORMAT"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %s", err, want)
 		}

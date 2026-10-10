@@ -20,6 +20,7 @@ type Config struct {
 	Env            Env
 	HTTPAddr       string
 	DatabaseURL    string
+	RedisURL       string
 	LogLevel       slog.Level
 	LogJSON        bool
 	AllowedOrigins []string
@@ -42,6 +43,7 @@ func Load(getenv func(string) string) (Config, error) {
 		Env:         Env(get("APP_ENV", string(EnvDevelopment))),
 		HTTPAddr:    get("HTTP_ADDR", ":8080"),
 		DatabaseURL: get("DATABASE_URL", ""),
+		RedisURL:    get("REDIS_URL", ""),
 	}
 
 	var errs []error
@@ -54,6 +56,9 @@ func Load(getenv func(string) string) (Config, error) {
 
 	if cfg.DatabaseURL == "" {
 		errs = append(errs, errors.New("DATABASE_URL is required"))
+	}
+	if cfg.RedisURL == "" {
+		errs = append(errs, errors.New("REDIS_URL is required"))
 	}
 
 	if err := cfg.LogLevel.UnmarshalText([]byte(get("LOG_LEVEL", "info"))); err != nil {
