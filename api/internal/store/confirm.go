@@ -74,27 +74,60 @@ func (s *Store) UnclaimRepermission(ctx context.Context, contactIDs []uuid.UUID)
 
 // --- topics waiting for a subscriber's confirmation ---
 
-// RequestTopics records topics a subscriber asked for, to add once they confirm.
-func (s *Store) RequestTopics(ctx context.Context, brandID, contactID uuid.UUID, topicIDs []uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
-		INSERT INTO contact_topic_requests (brand_id, contact_id, topic_id)
-		SELECT $1, $2, unnest($3::uuid[])
-		ON CONFLICT (contact_id, topic_id) DO UPDATE SET requested_at = now()`, brandID, contactID, topicIDs)
-	return err
+type TopicRequest struct {
+	ID          uuid.UUID   `db:"id"`
+	BrandID     uuid.UUID   `db:"brand_id"`
+	ContactID   uuid.UUID   `db:"contact_id"`
+	TopicIDs    []uuid.UUID `db:"topic_ids"`
+	RequestedAt time.Time   `db:"requested_at"`
+	AppliedAt   *time.Time  `db:"applied_at"`
 }
 
-func (s *Store) PendingTopicRequests(ctx context.Context, contactID uuid.UUID) (int, error) {
-	var n int
-	err := s.db.QueryRow(ctx, `SELECT count(*) FROM contact_topic_requests WHERE contact_id = $1`, contactID).Scan(&n)
-	return n, err
+// RequestTopics records topics a subscriber asked for; they're added when
+// this request's own confirmation link is clicked.
+func (s *Store) RequestTopics(ctx context.Context, brandID, contactID uuid.UUID, topicIDs []uuid.UUID) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := s.db.QueryRow(ctx, `INSERT INTO contact_topic_requests (brand_id, contact_id, topic_ids) VALUES ($1, $2, $3) RETURNING id`,
+		brandID, contactID, topicIDs).Scan(&id)
+	return id, err
 }
 
-// ApplyTopicRequests subscribes the contact to the topics they asked for and
-// clears the requests; returns how many topics were new.
-func (s *Store) ApplyTopicRequests(ctx context.Context, contactID uuid.UUID) (int, error) {
+func (s *Store) TopicRequestByID(ctx context.Context, brandID, contactID, id uuid.UUID) (TopicRequest, error) {
+	rows, err := s.db.Query(ctx, `SELECT id, brand_id, contact_id, topic_ids, requested_at, applied_at FROM contact_topic_requests
+		WHERE brand_id = $1 AND contact_id = $2 AND id = $3`, brandID, contactID, id)
+	return one[TopicRequest](rows, err)
+}
+
+// ApplyTopicRequest subscribes the contact to that request's topics (those
+// that still exist) and marks it applied; returns how many were new.
+func (s *Store) ApplyTopicRequest(ctx context.Context, r TopicRequest, at time.Time) (int, error) {
 	tag, err := s.db.Exec(ctx, `
-		WITH req AS (DELETE FROM contact_topic_requests WHERE contact_id = $1 RETURNING brand_id, contact_id, topic_id)
-		INSERT INTO contact_topics (brand_id, contact_id, topic_id) SELECT brand_id, contact_id, topic_id FROM req
-		ON CONFLICT DO NOTHING`, contactID)
-	return int(tag.RowsAffected()), err
+		INSERT INTO contact_topics (brand_id, contact_id, topic_id)
+		SELECT t.brand_id, $2, t.id FROM topics t WHERE t.brand_id = $1 AND t.id = ANY($3)
+		ON CONFLICT DO NOTHING`, r.BrandID, r.ContactID, r.TopicIDs)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE contact_topic_requests SET applied_at = $2 WHERE id = $1`, r.ID, at); err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// TopicNames returns the names of the brand's topics among ids, by name.
+func (s *Store) TopicNames(ctx context.Context, brandID uuid.UUID, ids []uuid.UUID) ([]string, error) {
+	rows, err := s.db.Query(ctx, `SELECT name FROM topics WHERE brand_id = $1 AND id = ANY($2) ORDER BY name`, brandID, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
 }

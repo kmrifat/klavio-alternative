@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -210,32 +211,59 @@ func TestContactsAPIDoubleOptIn(t *testing.T) {
 	if n := topicsOf(); n != 1 {
 		t.Fatalf("ann starts with %d topics", n)
 	}
-	body := f.signup("ann@example.com")
-	body["topics"] = []string{deals}
-	r = apiCall(t, f.srv, "POST", "/api/v1/contacts", secret, body)
-	if r.status != 202 || r.body["status"] != "subscribed" || len(r.body["pending_topics"].([]any)) != 1 || r.body["confirmation_email"] != "sent" {
-		t.Fatalf("new topic: %d %s", r.status, r.raw)
+	latestLink := func() string {
+		l := ""
+		for _, m := range outbox(f.a) {
+			if m.To == "ann@example.com" {
+				l = linkRe.FindString(m.Text)
+			}
+		}
+		return l
 	}
+	request := func(topic string) string {
+		t.Helper()
+		body := f.signup("ann@example.com")
+		body["topics"] = []string{topic}
+		r := apiCall(t, f.srv, "POST", "/api/v1/contacts", secret, body)
+		if r.status != 202 || r.body["status"] != "subscribed" || len(r.body["pending_topics"].([]any)) != 1 || r.body["confirmation_email"] != "sent" {
+			t.Fatalf("new topic: %d %s", r.status, r.raw)
+		}
+		return latestLink()
+	}
+	dealsLink := request(deals)
+	events := f.owner.must(201, f.owner.do("POST", "/admin/v1/brands/brightside/topics", map[string]any{"name": "Events"})).body["id"].(string)
+	eventsLink := request(events)
 	if n := topicsOf(); n != 1 {
 		t.Fatal("topic added before confirming")
 	}
 	if r := apiCall(t, f.srv, "POST", "/api/v1/contacts", secret, f.signup("ann@example.com")); r.status != 200 || r.body["pending_topics"] != nil {
 		t.Fatalf("no topics given: %d %s", r.status, r.raw)
 	}
-	topicLink := ""
-	for _, m := range outbox(f.a) {
-		if m.To == "ann@example.com" {
-			topicLink = linkRe.FindString(m.Text) // the latest
-		}
+	// The original sign-up link confirms the sign-up only, not later requests.
+	if p := page.do("POST", link, nil); !strings.Contains(string(p.raw), "Already confirmed") || topicsOf() != 1 {
+		t.Fatalf("old sign-up link applied topic requests: %s (%d topics)", p.raw, topicsOf())
 	}
-	if g := page.do("GET", topicLink, nil); !strings.Contains(string(g.raw), "Yes, subscribe me") {
-		t.Fatalf("topic confirm page: %s", g.raw)
+	// Each request's link shows and applies exactly its topics.
+	g := page.do("GET", dealsLink, nil)
+	if !strings.Contains(string(g.raw), "<li>Deals</li>") || strings.Contains(string(g.raw), "Events") {
+		t.Fatalf("deals page should list Deals only: %s", g.raw)
 	}
-	if p := page.do("POST", topicLink, nil); !strings.Contains(string(p.raw), "You're subscribed") {
-		t.Fatalf("topic confirm: %s", p.raw)
+	if p := page.do("POST", dealsLink, nil); !strings.Contains(string(p.raw), "You're subscribed") {
+		t.Fatalf("deals confirm: %s", p.raw)
 	}
-	if n := topicsOf(); n != 2 {
-		t.Fatalf("after confirming the topic: %d topics", n)
+	ids, _ := f.a.Store.ContactTopicIDs(ctx, ann.ID)
+	if len(ids) != 2 || !slices.Contains(ids, uuid.MustParse(deals)) || slices.Contains(ids, uuid.MustParse(events)) {
+		t.Fatalf("after the deals link: %v", ids)
+	}
+	if p := page.do("POST", dealsLink, nil); !strings.Contains(string(p.raw), "Already confirmed") {
+		t.Fatalf("deals link twice: %s", p.raw)
+	}
+	if p := page.do("POST", eventsLink, nil); !strings.Contains(string(p.raw), "You're subscribed") || topicsOf() != 3 {
+		t.Fatalf("events confirm: %s (%d topics)", p.raw, topicsOf())
+	}
+	hist, _ = f.a.Store.ConsentHistory(ctx, ann.ID)
+	if hist[0].Kind != "confirmed" || !strings.Contains(hist[0].Source, "Events") {
+		t.Fatalf("topic consent record: %+v", hist[0])
 	}
 
 	// Lookup and unsubscribe.
@@ -484,6 +512,10 @@ func TestSegmentsAPI(t *testing.T) {
 	if r := f.owner.do("POST", "/admin/v1/brands/brightside/segments/preview", map[string]any{"rules": map[string]any{"groups": []any{map[string]any{"conditions": []any{
 		map[string]any{"field": "c.email) OR (1=1", "op": "equals", "value": "x"}}}}}}); r.status != 400 || r.errCode() != "invalid_rules" {
 		t.Fatalf("bad field: %d %s", r.status, r.raw)
+	}
+	upd := f.owner.must(200, f.owner.do("PUT", "/admin/v1/brands/brightside/segments/"+s.body["id"].(string), map[string]any{"name": "Dot com", "rules": rules}))
+	if upd.body["counts"].(map[string]any)["matching"].(float64) != 1 {
+		t.Fatalf("update: %s", upd.raw)
 	}
 	list := f.owner.must(200, f.owner.do("GET", "/admin/v1/brands/brightside/segments", nil))
 	if len(list.body["segments"].([]any)) != 1 {

@@ -1,4 +1,6 @@
-{{define "confirmation"}}Please confirm you want emails from {{.Brand.Name}}. Until you do, we won't send you anything.
+{{define "confirmation"}}{{if .NewTopics}}Please confirm you want these added to your emails from {{.Brand.Name}}. Until you do, nothing changes.{{else}}Please confirm you want emails from {{.Brand.Name}}. Until you do, we won't send you anything.{{end}}
+{{range .Topics}}
+- {{.}}{{end}}
 
 Yes, subscribe me: {{.ConfirmURL}}
 

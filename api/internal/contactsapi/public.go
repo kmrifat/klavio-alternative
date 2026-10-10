@@ -38,8 +38,9 @@ const (
 )
 
 // ConfirmationQueue sends the double opt-in email in the background.
+// requestID is a subscriber's topic request (uuid.Nil for a sign-up).
 type ConfirmationQueue interface {
-	QueueConfirmation(ctx context.Context, brandID, contactID uuid.UUID) error
+	QueueConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID) error
 }
 
 type API struct {
@@ -350,6 +351,7 @@ func (a *API) subscribe(c *call) (result, error) {
 	var status string
 	var newTopics []uuid.UUID // topics a subscriber asked for, waiting for their confirmation
 	var queue uuid.UUID       // contact to send a confirmation to, after commit
+	var request uuid.UUID     // the topic request it confirms (Nil: the sign-up)
 	err := a.Store.InTx(ctx, func(tx *store.Store) error {
 		if err := tx.Lock(ctx, "contact:"+b.ID.String()+":"+in.Email); err != nil {
 			return err
@@ -433,7 +435,7 @@ func (a *API) subscribe(c *call) (result, error) {
 				if len(newTopics) == 0 {
 					return nil
 				}
-				if err := tx.RequestTopics(ctx, b.ID, id, newTopics); err != nil {
+				if request, err = tx.RequestTopics(ctx, b.ID, id, newTopics); err != nil {
 					return err
 				}
 				queue = id
@@ -474,7 +476,7 @@ func (a *API) subscribe(c *call) (result, error) {
 		body["pending_topics"] = newTopics
 	}
 	if queue != uuid.Nil {
-		body["confirmation_email"] = a.queueConfirmation(ctx, b.ID, queue, in.Email)
+		body["confirmation_email"] = a.queueConfirmation(ctx, b.ID, queue, request, in.Email)
 	}
 	return result{code, body}, nil
 }
@@ -483,7 +485,7 @@ func (a *API) subscribe(c *call) (result, error) {
 // address and brand however often the API is called for it. It reports
 // "sent", "limit_reached", or "not_sent" (the limiter or queue failed: no
 // email rather than an unlimited one).
-func (a *API) queueConfirmation(ctx context.Context, brandID, contactID uuid.UUID, email string) string {
+func (a *API) queueConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID, email string) string {
 	key := "api:confirm:" + brandID.String() + ":" + hex.EncodeToString(store.EmailHash(email))
 	ok, err := a.Limiter.Allow(ctx, key, ConfirmEmailsPerDay, 24*time.Hour)
 	switch {
@@ -493,7 +495,7 @@ func (a *API) queueConfirmation(ctx context.Context, brandID, contactID uuid.UUI
 	case !ok:
 		return "limit_reached"
 	}
-	if err := a.Queue.QueueConfirmation(ctx, brandID, contactID); err != nil {
+	if err := a.Queue.QueueConfirmation(ctx, brandID, contactID, requestID); err != nil {
 		a.Log.ErrorContext(ctx, "queueing confirmation email", "err", err)
 		return "not_sent"
 	}

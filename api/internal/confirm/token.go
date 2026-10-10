@@ -25,6 +25,7 @@ type Purpose byte
 const (
 	PurposeOptIn        Purpose = 1 // someone signed up (API, form): double opt-in
 	PurposeRepermission Purpose = 2 // an imported, quarantined contact is asked to confirm
+	PurposeTopics       Purpose = 3 // a subscriber confirms the topics of one request (RequestID)
 )
 
 // TTL: how long a link works.
@@ -35,6 +36,8 @@ type Claims struct {
 	ContactID uuid.UUID
 	Purpose   Purpose
 	IssuedAt  time.Time // whole seconds
+	// RequestID: the topic request a PurposeTopics link confirms (only that one).
+	RequestID uuid.UUID
 }
 
 var (
@@ -48,6 +51,7 @@ const (
 	macLen      = 16
 	minSecretLn = 32
 	payloadLen  = 2 + 1 + 16 + 16 + 4 // version, key id, purpose, brand, contact, issued (unix seconds)
+	requestLen  = 16                  // PurposeTopics: + topic request id
 )
 
 var b64 = base64.RawURLEncoding
@@ -90,16 +94,26 @@ func (s *Signer) Token(c Claims) string {
 	p = append(p, c.BrandID[:]...)
 	p = append(p, c.ContactID[:]...)
 	p = binary.BigEndian.AppendUint32(p, uint32(c.IssuedAt.Unix()))
+	if c.Purpose == PurposeTopics {
+		p = append(p, c.RequestID[:]...)
+	}
 	return b64.EncodeToString(append(p, mac(s.current.secret, p)...))
 }
 
 // Verify checks signature, shape and age.
 func (s *Signer) Verify(token string) (Claims, error) {
 	raw, err := b64.DecodeString(token)
-	if err != nil || len(raw) != payloadLen+macLen || raw[0] != version || b64.EncodeToString(raw) != token {
+	if err != nil || len(raw) < payloadLen+macLen || raw[0] != version || b64.EncodeToString(raw) != token {
 		return Claims{}, ErrMalformed
 	}
-	p, sig := raw[:payloadLen], raw[payloadLen:]
+	want := payloadLen
+	if Purpose(raw[2]) == PurposeTopics {
+		want += requestLen
+	}
+	if len(raw) != want+macLen {
+		return Claims{}, ErrMalformed
+	}
+	p, sig := raw[:want], raw[want:]
 	ok := false
 	for _, k := range s.all {
 		if k.id == p[1] && hmac.Equal(sig, mac(k.secret, p)) {
@@ -111,12 +125,17 @@ func (s *Signer) Verify(token string) (Claims, error) {
 		return Claims{}, ErrSignature
 	}
 	c := Claims{Purpose: Purpose(p[2])}
-	if c.Purpose != PurposeOptIn && c.Purpose != PurposeRepermission {
+	switch c.Purpose {
+	case PurposeOptIn, PurposeRepermission, PurposeTopics:
+	default:
 		return Claims{}, ErrMalformed
 	}
 	copy(c.BrandID[:], p[3:19])
 	copy(c.ContactID[:], p[19:35])
 	c.IssuedAt = time.Unix(int64(binary.BigEndian.Uint32(p[35:39])), 0)
+	if c.Purpose == PurposeTopics {
+		copy(c.RequestID[:], p[39:55])
+	}
 	if age := s.now().Sub(c.IssuedAt); age > TTL || age < -time.Hour {
 		return c, ErrExpired
 	}

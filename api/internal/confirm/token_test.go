@@ -63,6 +63,21 @@ func TestTokens(t *testing.T) {
 	if _, err := s.Verify(u.Token(unsubscribe.Claims{BrandID: c.BrandID, ContactID: c.ContactID})); err == nil {
 		t.Fatal("unsubscribe token accepted as a confirmation")
 	}
+	// Topic links carry their request; it can't be swapped for another.
+	tc := Claims{BrandID: c.BrandID, ContactID: c.ContactID, Purpose: PurposeTopics, IssuedAt: now, RequestID: uuid.New()}
+	ttok := s.Token(tc)
+	if got, err := s.Verify(ttok); err != nil || got.RequestID != tc.RequestID || got.Purpose != PurposeTopics {
+		t.Fatalf("topics round trip: %+v %v", got, err)
+	}
+	traw, _ := b64.DecodeString(ttok)
+	traw[40] ^= 0xff
+	if _, err := s.Verify(b64.EncodeToString(traw)); !errors.Is(err, ErrSignature) {
+		t.Fatalf("swapped request id: %v", err)
+	}
+	if _, err := s.Verify(b64.EncodeToString(raw[:len(raw)-1])); err == nil {
+		t.Fatal("truncated token accepted")
+	}
+
 	if _, err := NewSigner("short"); err == nil {
 		t.Fatal("short secret accepted")
 	}

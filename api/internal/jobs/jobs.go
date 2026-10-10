@@ -45,7 +45,7 @@ type Deps struct {
 	}
 	// Contacts API (M7): confirmation and re-permission emails, log cleanup.
 	Opt interface {
-		SendConfirmation(ctx context.Context, brandID, contactID uuid.UUID) error
+		SendConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID) error
 		SendRepermissions(ctx context.Context) error
 		Housekeeping(ctx context.Context) (int64, error)
 	}
@@ -271,6 +271,7 @@ func (w *PostmasterWorker) Work(ctx context.Context, _ *river.Job[PostmasterArgs
 type ConfirmationArgs struct {
 	BrandID   uuid.UUID `json:"brand_id"`
 	ContactID uuid.UUID `json:"contact_id"`
+	RequestID uuid.UUID `json:"request_id"` // topic request; Nil for a sign-up
 }
 
 func (ConfirmationArgs) Kind() string { return "contacts.confirmation_email" }
@@ -281,7 +282,7 @@ type ConfirmationWorker struct {
 }
 
 func (w *ConfirmationWorker) Work(ctx context.Context, j *river.Job[ConfirmationArgs]) error {
-	return w.Deps.Opt.SendConfirmation(ctx, j.Args.BrandID, j.Args.ContactID)
+	return w.Deps.Opt.SendConfirmation(ctx, j.Args.BrandID, j.Args.ContactID, j.Args.RequestID)
 }
 
 // RepermissionArgs sends re-permission emails to quarantined imports (hourly,
@@ -333,8 +334,8 @@ func (r Runner) StartCommit(ctx context.Context, brandID, importID uuid.UUID) er
 	return err
 }
 
-func (r Runner) QueueConfirmation(ctx context.Context, brandID, contactID uuid.UUID) error {
-	_, err := r.Client.Insert(ctx, ConfirmationArgs{BrandID: brandID, ContactID: contactID}, &river.InsertOpts{MaxAttempts: 5})
+func (r Runner) QueueConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID) error {
+	_, err := r.Client.Insert(ctx, ConfirmationArgs{BrandID: brandID, ContactID: contactID, RequestID: requestID}, &river.InsertOpts{MaxAttempts: 5})
 	return err
 }
 

@@ -9,6 +9,7 @@ import (
 	htmltemplate "html/template"
 	"log/slog"
 	"slices"
+	"strings"
 	texttemplate "text/template"
 	"time"
 
@@ -68,6 +69,8 @@ func (s *Service) SetSender(m mailer.Sender) { s.sender = m }
 type emailData struct {
 	Brand      store.Brand
 	Contact    store.Contact
+	Topics     []string // what they're confirming
+	NewTopics  bool     // a subscriber confirming extra topics
 	ConfirmURL string
 	UnsubURL   string
 	Days       int
@@ -86,10 +89,11 @@ func render(name string, d emailData) (html, text string, err error) {
 
 func (s *Service) base(b store.Brand) string { return unsubscribe.BaseURL(b.LinkDomain, s.override) }
 
-// SendConfirmation emails the confirmation link (P2) to someone awaiting
-// double opt-in. People who confirmed, left or were suppressed meanwhile get
-// nothing. Run by the confirmation job.
-func (s *Service) SendConfirmation(ctx context.Context, brandID, contactID uuid.UUID) error {
+// SendConfirmation emails a confirmation link (P2). requestID Nil: a
+// sign-up awaiting double opt-in. Otherwise a subscriber's topic request,
+// whose link confirms exactly that request's topics. People who confirmed,
+// left or were suppressed meanwhile get nothing. Run by the confirmation job.
+func (s *Service) SendConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID) error {
 	b, err := s.store.BrandByID(ctx, brandID)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil
@@ -107,29 +111,52 @@ func (s *Service) SendConfirmation(ctx context.Context, brandID, contactID uuid.
 	if c.SuppressionReason != nil {
 		return nil
 	}
-	switch c.Status {
-	case store.ContactPending:
-	case store.ContactSubscribed:
-		// A subscriber who asked for more topics confirms those.
-		if n, err := s.store.PendingTopicRequests(ctx, c.ID); err != nil || n == 0 {
+	now := s.now()
+	claims := Claims{BrandID: b.ID, ContactID: c.ID, Purpose: PurposeOptIn, IssuedAt: now.Truncate(time.Second)}
+	d := emailData{Brand: b, Contact: c, Days: int(TTL.Hours() / 24)}
+	subject := "Please confirm your subscription to " + b.Name
+	if requestID == uuid.Nil {
+		if c.Status != store.ContactPending {
+			return nil
+		}
+		if d.Topics, err = s.contactTopicNames(ctx, c); err != nil {
 			return err
 		}
-	default:
-		return nil
+	} else {
+		req, err := s.store.TopicRequestByID(ctx, b.ID, c.ID, requestID)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if c.Status != store.ContactSubscribed || req.AppliedAt != nil {
+			return nil
+		}
+		if d.Topics, err = s.store.TopicNames(ctx, b.ID, req.TopicIDs); err != nil {
+			return err
+		}
+		claims.Purpose, claims.RequestID, d.NewTopics = PurposeTopics, req.ID, true
+		subject = "Please confirm your new topics at " + b.Name
 	}
-	now := s.now()
-	d := emailData{Brand: b, Contact: c, Days: int(TTL.Hours() / 24),
-		ConfirmURL: s.signer.URL(s.base(b), Claims{BrandID: b.ID, ContactID: c.ID, Purpose: PurposeOptIn, IssuedAt: now.Truncate(time.Second)})}
+	d.ConfirmURL = s.signer.URL(s.base(b), claims)
 	html, text, err := render("confirmation", d)
 	if err != nil {
 		return err
 	}
-	err = s.sender.Send(ctx, mailer.Message{Brand: b, To: c.Email, Subject: "Please confirm your subscription to " + b.Name,
-		HTML: html, Text: text, Kind: "confirmation"})
+	err = s.sender.Send(ctx, mailer.Message{Brand: b, To: c.Email, Subject: subject, HTML: html, Text: text, Kind: "confirmation"})
 	if err != nil {
 		return fmt.Errorf("sending confirmation: %w", err)
 	}
 	return s.store.SetConfirmationSent(ctx, c.ID, now)
+}
+
+func (s *Service) contactTopicNames(ctx context.Context, c store.Contact) ([]string, error) {
+	ids, err := s.store.ContactTopicIDs(ctx, c.ID)
+	if err != nil {
+		return nil, err
+	}
+	return s.store.TopicNames(ctx, c.BrandID, ids)
 }
 
 // CanSend: is a real sender configured? Re-permission stays off without one,
@@ -284,9 +311,14 @@ type View struct {
 	Brand   store.Brand
 	Contact *store.Contact
 	Purpose Purpose
-	// PendingTopics: topics a subscriber asked for and hasn't confirmed yet.
-	PendingTopics int
+	// Topics the click confirms, shown before the button.
+	Topics []string
+	// Done: nothing left for this link to confirm (a topic request already applied).
+	Done bool
 }
+
+// TopicsLink: the link confirms a subscriber's new topics (page wording).
+func (v View) TopicsLink() bool { return v.Purpose == PurposeTopics }
 
 // Load reads what the page needs (no changes).
 func (s *Service) Load(ctx context.Context, c Claims) (View, error) {
@@ -304,9 +336,19 @@ func (s *Service) Load(ctx context.Context, c Claims) (View, error) {
 		return v, err
 	}
 	v.Contact = &contact
-	if c.Purpose == PurposeOptIn {
-		v.PendingTopics, err = s.store.PendingTopicRequests(ctx, contact.ID)
+	if c.Purpose == PurposeTopics {
+		req, err := s.store.TopicRequestByID(ctx, c.BrandID, contact.ID, c.RequestID)
+		if errors.Is(err, store.ErrNotFound) {
+			return v, store.ErrNotFound
+		}
+		if err != nil {
+			return v, err
+		}
+		v.Done = req.AppliedAt != nil
+		v.Topics, err = s.store.TopicNames(ctx, c.BrandID, req.TopicIDs)
+		return v, err
 	}
+	v.Topics, err = s.contactTopicNames(ctx, contact)
 	return v, err
 }
 
@@ -340,27 +382,40 @@ func (s *Service) Confirm(ctx context.Context, c Claims, ip string) (View, Outco
 		case contact.SuppressionReason != nil:
 			out = CantJoin
 			return nil
-		case contact.Status == store.ContactSubscribed:
-			// Already subscribed: an opt-in link may still carry topics they asked for.
-			added := 0
-			if c.Purpose == PurposeOptIn {
-				if added, err = tx.ApplyTopicRequests(ctx, contact.ID); err != nil {
-					return err
-				}
+		case c.Purpose == PurposeTopics:
+			// Exactly the topics of this link's request; others wait for their own links.
+			if contact.Status != store.ContactSubscribed {
+				out = CantJoin
+				return nil
 			}
-			if added == 0 {
+			req, err := tx.TopicRequestByID(ctx, c.BrandID, contact.ID, c.RequestID)
+			if errors.Is(err, store.ErrNotFound) {
+				out = CantJoin
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if req.AppliedAt != nil {
 				out = Already
 				return nil
 			}
-			source = "double opt-in link (new topics)"
+			if _, err := tx.ApplyTopicRequest(ctx, req, now); err != nil {
+				return err
+			}
+			names, err := tx.TopicNames(ctx, c.BrandID, req.TopicIDs)
+			if err != nil {
+				return err
+			}
+			source = "topic request link (" + strings.Join(names, ", ") + ")"
+		case contact.Status == store.ContactSubscribed:
+			out = Already
+			return nil
 		case !slices.Contains(from, contact.Status):
 			out = CantJoin
 			return nil
 		default:
 			if err := tx.ConfirmContact(ctx, contact.ID, from, now); err != nil {
-				return err
-			}
-			if _, err := tx.ApplyTopicRequests(ctx, contact.ID); err != nil {
 				return err
 			}
 		}

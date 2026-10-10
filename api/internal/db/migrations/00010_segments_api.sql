@@ -120,17 +120,19 @@ CREATE TABLE marketing_sends (
 CREATE INDEX marketing_sends_person ON marketing_sends (email_hash, sent_at DESC);
 CREATE INDEX marketing_sends_at ON marketing_sends (sent_at);
 
--- Topics an existing subscriber asked for through the API, waiting for their
--- confirmation click: adding topics needs double opt-in too.
+-- Topics an existing subscriber asked for through the API. Each request has
+-- its own confirmation link, which applies exactly these topics (the ones
+-- the email and page showed); other requests wait for their own links.
 CREATE TABLE contact_topic_requests (
+    id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     brand_id     uuid NOT NULL,
     contact_id   uuid NOT NULL,
-    topic_id     uuid NOT NULL,
+    topic_ids    uuid[] NOT NULL,
     requested_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (contact_id, topic_id),
-    FOREIGN KEY (brand_id, contact_id) REFERENCES contacts (brand_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (brand_id, topic_id) REFERENCES topics (brand_id, id) ON DELETE CASCADE
+    applied_at   timestamptz,
+    FOREIGN KEY (brand_id, contact_id) REFERENCES contacts (brand_id, id) ON DELETE CASCADE
 );
+CREATE INDEX contact_topic_requests_contact ON contact_topic_requests (contact_id);
 
 -- Double opt-in (P1/P2) and re-permission emails.
 ALTER TABLE contacts ADD COLUMN confirmation_sent_at timestamptz;

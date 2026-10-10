@@ -362,8 +362,8 @@ func (g governanceJobs) PurgeExpiredExports(ctx context.Context) (int64, error) 
 // optJobs adapts the Contacts API jobs (confirmations, re-permission, cleanup).
 type optJobs struct{ a *App }
 
-func (o optJobs) SendConfirmation(ctx context.Context, brandID, contactID uuid.UUID) error {
-	return o.a.Confirm.SendConfirmation(ctx, brandID, contactID)
+func (o optJobs) SendConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID) error {
+	return o.a.Confirm.SendConfirmation(ctx, brandID, contactID, requestID)
 }
 func (o optJobs) SendRepermissions(ctx context.Context) error {
 	return o.a.Confirm.SendRepermissions(ctx)

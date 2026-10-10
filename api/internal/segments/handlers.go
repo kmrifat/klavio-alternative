@@ -217,7 +217,7 @@ func (h *Handlers) update(w http.ResponseWriter, r *http.Request) error {
 	if err := h.recount(r.Context(), b, &s); err != nil {
 		return err
 	}
-	httpx.WriteJSON(w, http.StatusCreated, s)
+	httpx.WriteJSON(w, http.StatusOK, s)
 	return nil
 }
 

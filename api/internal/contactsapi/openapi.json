@@ -20,7 +20,7 @@
       "post": {
         "operationId": "subscribe",
         "summary": "Add someone (double opt-in)",
-        "description": "Records the consent and sends a confirmation email (double opt-in). New people, and people who were unsubscribed or unconfirmed, are `pending_confirmation` until they click it. People already subscribed stay `subscribed`; topics they don't have yet are only added once they confirm (`pending_topics`). At most 3 confirmation emails a day per address and brand; `confirmation_email` says whether one was sent. Addresses that can't be emailed (bounced, complained, removed) get the same answer and no email. Needs the contacts:write scope.",
+        "description": "Records the consent and sends a confirmation email (double opt-in). New people, and people who were unsubscribed or unconfirmed, are `pending_confirmation` until they click it. People already subscribed stay `subscribed`; topics they don't have yet are only added once they confirm (`pending_topics`); each such request gets its own confirmation link, which adds exactly its topics. At most 3 confirmation emails a day per address and brand; `confirmation_email` says whether one was sent. Addresses that can't be emailed (bounced, complained, removed) get the same answer and no email. Needs the contacts:write scope.",
         "parameters": [
           {
             "name": "Idempotency-Key",

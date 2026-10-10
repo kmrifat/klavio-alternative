@@ -92,7 +92,11 @@ func (h *Handlers) page(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case v.Contact == nil || v.Contact.SuppressionReason != nil:
 		page = "cant"
-	case v.Contact.Status == store.ContactSubscribed && v.PendingTopics == 0:
+	case c.Purpose == PurposeTopics && v.Done:
+		page = "already"
+	case c.Purpose == PurposeTopics && v.Contact.Status != store.ContactSubscribed:
+		page = "cant"
+	case c.Purpose != PurposeTopics && v.Contact.Status == store.ContactSubscribed:
 		page = "already"
 	}
 	h.render(w, r, http.StatusOK, pageData{View: v, Page: page})

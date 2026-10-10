@@ -233,8 +233,8 @@ func (r inlineRunner) StartCommit(ctx context.Context, brandID, id uuid.UUID) er
 }
 
 // QueueConfirmation sends the double opt-in email right away.
-func (r inlineRunner) QueueConfirmation(ctx context.Context, brandID, contactID uuid.UUID) error {
-	return (*r.a).Confirm.SendConfirmation(context.WithoutCancel(ctx), brandID, contactID)
+func (r inlineRunner) QueueConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID) error {
+	return (*r.a).Confirm.SendConfirmation(context.WithoutCancel(ctx), brandID, contactID, requestID)
 }
 
 // mails holds each test app's outbox (*app.App → *mailer.Memory).
