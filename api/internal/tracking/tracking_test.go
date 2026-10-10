@@ -110,6 +110,7 @@ type fixture struct {
 	srv     *httptest.Server
 	brand   store.Brand
 	contact uuid.UUID
+	send    int64
 }
 
 func setup(t *testing.T) fixture {
@@ -126,13 +127,17 @@ func setup(t *testing.T) fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	send, err := st.CreateSendForTest(ctx, b.ID, cid)
+	if err != nil {
+		t.Fatal(err)
+	}
 	s, _ := NewSigner(secret)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mux := http.NewServeMux()
 	(&Handlers{Signer: s, Recorder: &Recorder{Store: st, Log: log}, Log: log}).Routes(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return fixture{st: st, signer: s, srv: srv, brand: b, contact: cid}
+	return fixture{st: st, signer: s, srv: srv, brand: b, contact: cid, send: send}
 }
 
 var noFollow = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -151,7 +156,7 @@ func (f fixture) get(t *testing.T, method, path, ua string) *http.Response {
 
 func (f fixture) link(t *testing.T, no int, flags byte) string {
 	t.Helper()
-	tok, err := f.signer.ClickToken(Link{BrandID: f.brand.ID, ContactID: f.contact, SendID: 42, LinkNo: no, LinkCount: 3,
+	tok, err := f.signer.ClickToken(Link{BrandID: f.brand.ID, ContactID: f.contact, SendID: f.send, LinkNo: no, LinkCount: 3,
 		URL: "https://acme.test/p/" + string(rune('a'+no)), Flags: flags})
 	if err != nil {
 		t.Fatal(err)
@@ -161,7 +166,7 @@ func (f fixture) link(t *testing.T, no int, flags byte) string {
 
 func (f fixture) clicks(t *testing.T) (humans, bots int) {
 	t.Helper()
-	rows, err := f.st.ClicksSince(context.Background(), 42, time.Time{})
+	rows, err := f.st.ClicksSince(context.Background(), f.send, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,6 +201,11 @@ func TestRedirectAndRecording(t *testing.T) {
 	if res := f.get(t, "GET", ClickPath+"not-a-token", chrome); res.StatusCode != 404 {
 		t.Fatalf("bad token: %d", res.StatusCode)
 	}
+	// A token for a send that isn't ours (deleted): redirect, record nothing.
+	other, _ := f.signer.ClickToken(Link{BrandID: f.brand.ID, ContactID: f.contact, SendID: f.send + 1000, LinkNo: 1, LinkCount: 1, URL: "https://acme.test/x"})
+	if res := f.get(t, "GET", ClickPath+other, chrome); res.StatusCode != 302 {
+		t.Fatalf("unknown send: %d", res.StatusCode)
+	}
 	// No tracking consent: the link works, nothing is stored.
 	if res := f.get(t, "GET", f.link(t, 2, NoTrack), chrome); res.StatusCode != 302 {
 		t.Fatalf("no-track link: %d", res.StatusCode)
@@ -215,7 +225,7 @@ func TestRedirectAndRecording(t *testing.T) {
 	}
 
 	// Pixel: always a GIF; Apple's proxy is a machine open.
-	res = f.get(t, "GET", OpenPath+f.signer.OpenToken(Pixel{BrandID: f.brand.ID, ContactID: f.contact, SendID: 42})+".gif", "Mozilla/5.0")
+	res = f.get(t, "GET", OpenPath+f.signer.OpenToken(Pixel{BrandID: f.brand.ID, ContactID: f.contact, SendID: f.send})+".gif", "Mozilla/5.0")
 	if res.StatusCode != 200 || res.Header.Get("Content-Type") != "image/gif" {
 		t.Fatalf("pixel: %d %v", res.StatusCode, res.Header)
 	}
@@ -227,9 +237,8 @@ func TestRedirectAndRecording(t *testing.T) {
 func TestTooFastAfterDelivery(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
-	send := int64(42)
 	if _, err := f.st.InsertEmailEvent(ctx, store.EmailEvent{EventID: "d1", Type: "delivery", BrandID: &f.brand.ID, SESMessageID: "m1",
-		SendID: &send, EmailHash: store.EmailHash("ann@example.com"), OccurredAt: time.Now()}); err != nil {
+		SendID: &f.send, EmailHash: store.EmailHash("ann@example.com"), OccurredAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	f.get(t, "GET", f.link(t, 1, 0), chrome)

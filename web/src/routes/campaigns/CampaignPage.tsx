@@ -19,6 +19,7 @@ import { timeAgo } from "../../lib/format";
 import { NotFound } from "../NotFound";
 import { useBrandAccess } from "../templates/parts";
 import { AudienceBreakdown, breakdownOf, fmt, StateBadge, summaryOf } from "./parts";
+import { LiveMonitor } from "./Feedback";
 
 export function CampaignPage() {
   const { brand: slug, id } = useParams() as { brand: string; id?: string };
@@ -286,6 +287,7 @@ function CampaignStatus({ slug, data }: { slug: string; data: CampaignResponse }
           <div className="border-t border-zinc-100">{data.breakdown && <AudienceBreakdown {...breakdownOf(data.breakdown)} />}</div>
         </Card>
       </div>
+      {c.state !== "scheduled" && c.state !== "cancelled" && <LiveMonitor slug={slug} id={c.id} live={running} />}
     </div>
   );
 }

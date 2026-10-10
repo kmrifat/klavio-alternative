@@ -17,6 +17,7 @@ import { LayoutEditor } from "../routes/templates/LayoutEditor";
 import { CampaignsPage } from "../routes/campaigns/CampaignsPage";
 import { CampaignPage } from "../routes/campaigns/CampaignPage";
 import { CampaignReview } from "../routes/campaigns/CampaignReview";
+import { ReportPage } from "../routes/campaigns/Feedback";
 import { Spinner } from "../components/ui";
 import { ContactsPage } from "../routes/contacts/ContactsPage";
 import { ApprovalsPage } from "../routes/approvals/ApprovalsPage";
@@ -60,6 +61,7 @@ const builtBrandScreens: Record<string, RouteObject> = {
       { path: "new", element: <CampaignPage /> },
       { path: ":id", element: <CampaignPage /> },
       { path: ":id/review", element: <CampaignReview /> },
+      { path: ":id/report", element: <ReportPage /> },
     ],
   },
   segments: {

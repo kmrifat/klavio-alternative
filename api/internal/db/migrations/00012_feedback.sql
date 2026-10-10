@@ -12,7 +12,7 @@ CREATE TABLE email_events (
     subtype        text NOT NULL DEFAULT '',
     brand_id       uuid REFERENCES brands ON DELETE CASCADE,
     ses_message_id text NOT NULL,
-    send_id        bigint,
+    send_id        bigint REFERENCES sends ON DELETE SET NULL, -- from the send_id tag, when it's one of ours
     email_hash     bytea NOT NULL DEFAULT '\x', -- the recipient this row is about ('' = not recipient-specific)
     occurred_at    timestamptz NOT NULL,
     received_at    timestamptz NOT NULL DEFAULT now(),
@@ -22,6 +22,7 @@ CREATE TABLE email_events (
 CREATE INDEX email_events_brand ON email_events (brand_id, type, occurred_at);
 CREATE INDEX email_events_message ON email_events (ses_message_id);
 CREATE INDEX email_events_person ON email_events (email_hash, type, occurred_at);
+CREATE INDEX email_events_send ON email_events (send_id, type) WHERE send_id IS NOT NULL;
 
 -- Feedback that removes people: soft bounces (3 in 30 days) suppress too.
 ALTER TABLE suppressions DROP CONSTRAINT suppressions_reason_check;
@@ -38,7 +39,7 @@ ALTER TABLE consent_records ADD CONSTRAINT consent_records_method_check
 -- marked, never deleted, so reports can show what was filtered.
 CREATE TABLE clicks (
     id         bigserial PRIMARY KEY,
-    send_id    bigint NOT NULL,
+    send_id    bigint NOT NULL REFERENCES sends ON DELETE CASCADE,
     brand_id   uuid NOT NULL REFERENCES brands ON DELETE CASCADE,
     contact_id uuid NOT NULL,
     link_no    smallint NOT NULL,
@@ -55,7 +56,7 @@ CREATE INDEX clicks_brand ON clicks (brand_id, at);
 
 CREATE TABLE opens (
     id         bigserial PRIMARY KEY,
-    send_id    bigint NOT NULL,
+    send_id    bigint NOT NULL REFERENCES sends ON DELETE CASCADE,
     brand_id   uuid NOT NULL REFERENCES brands ON DELETE CASCADE,
     contact_id uuid NOT NULL,
     at         timestamptz NOT NULL DEFAULT now(),

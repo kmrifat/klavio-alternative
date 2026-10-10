@@ -11,17 +11,20 @@ import (
 	"log/slog"
 	"math"
 	"net/mail"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/kmrifat/klavio-alternative/api/internal/approvals"
+	"github.com/kmrifat/klavio-alternative/api/internal/brakes"
 	"github.com/kmrifat/klavio-alternative/api/internal/freqcap"
 	"github.com/kmrifat/klavio-alternative/api/internal/sending"
 	"github.com/kmrifat/klavio-alternative/api/internal/ses"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
 	"github.com/kmrifat/klavio-alternative/api/internal/templates"
+	"github.com/kmrifat/klavio-alternative/api/internal/tracking"
 	"github.com/kmrifat/klavio-alternative/api/internal/unsubscribe"
 )
 
@@ -67,10 +70,14 @@ type Warmup interface {
 	InWarmup(ctx context.Context, brandID uuid.UUID, day time.Time) (bool, error)
 }
 
-// Brakes decides after the test slice whether the rest may go (M4 reads
-// bounces and complaints). Until then every campaign continues.
+// Brakes stop sending that hurts (M4's *brakes.Service): the campaign brake
+// after the test slice and between batches, and the brand/account gate
+// checked inside every claim. Without one, every campaign continues.
 type Brakes interface {
 	AfterTestSlice(ctx context.Context, c store.Campaign) (pause bool, reason string, err error)
+	CheckCampaign(ctx context.Context, c store.Campaign) (pause bool, reason string, err error)
+	// CheckGate reads only through tx.
+	CheckGate(ctx context.Context, tx *store.Store, brandID uuid.UUID) (brakes.Gate, error)
 }
 
 // FreqCap keeps one person from getting too much email across brands
@@ -101,6 +108,8 @@ type Service struct {
 	warmup    Warmup
 	freqcap   FreqCap
 	brakes    Brakes
+	tracking  *tracking.Signer // nil: links aren't tracked
+	honeypot  bool             // add a hidden link only scanners follow
 	runner    Runner
 	pacer     *sending.Pacer
 	rate      float64 // sends per second
@@ -127,6 +136,13 @@ func (s *Service) SetWarmup(w Warmup)   { s.warmup = w }
 func (s *Service) SetFreqCap(f FreqCap) { s.freqcap = f }
 func (s *Service) SetBrakes(b Brakes)   { s.brakes = b }
 
+// SetTracking turns on click tracking and the open pixel. honeypot adds a
+// hidden link that only scanners follow: off by default, since hidden links
+// can look spammy to filters.
+func (s *Service) SetTracking(t *tracking.Signer, honeypot bool) {
+	s.tracking, s.honeypot = t, honeypot
+}
+
 func (s *Service) queue(ctx context.Context, id uuid.UUID, at time.Time) {
 	if s.runner == nil {
 		return
@@ -147,6 +163,7 @@ const (
 	ReasonAtRisk      Reason = "at_risk_included" // at-risk contacts opted in
 	ReasonFirstImport Reason = "first_send_to_import"
 	ReasonWarmup      Reason = "brand_warming_up" // the brand is still in its warm-up weeks
+	ReasonBrandSlowed Reason = "brand_slowed"     // the brand's brake slowed it down (M4)
 )
 
 var reasonText = map[Reason]string{
@@ -155,6 +172,7 @@ var reasonText = map[Reason]string{
 	ReasonAtRisk:      "includes at-risk contacts",
 	ReasonFirstImport: "is the first email to recently imported contacts",
 	ReasonWarmup:      "is sent while the brand is still warming up",
+	ReasonBrandSlowed: "is sent while the brand's brake has it slowed down",
 }
 
 func (r Reason) Text() string { return reasonText[r] }
@@ -227,6 +245,17 @@ func (s *Service) Review(ctx context.Context, b store.Brand, c store.Campaign) (
 			rv.ApprovalReasons = append(rv.ApprovalReasons, ReasonWarmup)
 		}
 	}
+	var gate *brakes.Gate
+	if s.brakes != nil {
+		g, err := s.brakes.CheckGate(ctx, nil, b.ID)
+		if err != nil {
+			return rv, tpl, err
+		}
+		gate = &g
+		if g.Allowed && g.NeedsApproval {
+			rv.ApprovalReasons = append(rv.ApprovalReasons, ReasonBrandSlowed)
+		}
+	}
 
 	sender, err := s.store.BrandSender(ctx, b.ID)
 	if err != nil {
@@ -240,6 +269,10 @@ func (s *Service) Review(ctx context.Context, b store.Brand, c store.Campaign) (
 		problem("the brand is paused; nothing can be sent until it is resumed")
 	case store.BrandSetup:
 		problem("the brand's DNS isn't set up yet; sending is blocked until its records check out")
+	default:
+		if gate != nil && !gate.Allowed {
+			problem(gate.Reason)
+		}
 	}
 	if !c.State.Editable() {
 		problem("the campaign has already been scheduled")
@@ -554,7 +587,8 @@ func (s *Service) batchSize() int {
 // step collects when the campaign's next step should run. It is queued
 // only after this step has given up its lease, so the next one can take it.
 type step struct {
-	next *time.Time
+	next      *time.Time
+	notBefore time.Time // a slowed brand spaces its batches out
 }
 
 func (st *step) then(at time.Time) {
@@ -603,7 +637,11 @@ func (s *Service) Step(ctx context.Context, campaignID uuid.UUID) error {
 	// A step that lost its lease (it stalled, and another step took over)
 	// leaves what's next to that one: one chain per campaign.
 	if st.next != nil && held {
-		s.queue(bg, campaignID, *st.next)
+		at := *st.next
+		if at.Before(st.notBefore) {
+			at = st.notBefore
+		}
+		s.queue(bg, campaignID, at)
 	}
 	return err
 }
@@ -807,9 +845,34 @@ func (s *Service) batch(ctx context.Context, c store.Campaign, stage string, st 
 	if !brandCanSend(b) {
 		return s.pauseForBrand(ctx, c, b)
 	}
-	claimed, err := s.claim(ctx, c, stage)
+	// The campaign brake, between batches (§6.4).
+	if s.brakes != nil {
+		pause, reason, err := s.brakes.CheckCampaign(ctx, c)
+		if err != nil {
+			return err
+		}
+		if pause {
+			_, err := s.store.PauseCampaign(ctx, c.ID, reason)
+			s.log.WarnContext(ctx, "campaign paused by its brake", "campaign_id", c.ID, "reason", reason)
+			return err
+		}
+	}
+	started := s.now()
+	claimed, gate, err := s.claim(ctx, c, stage)
 	if err != nil {
 		return err
+	}
+	if gate != nil && !gate.Allowed {
+		_, err := s.store.PauseCampaign(ctx, c.ID, gate.Reason)
+		s.log.WarnContext(ctx, "campaign paused by the brand or account brake", "campaign_id", c.ID, "reason", gate.Reason)
+		return err
+	}
+	if gate != nil && gate.RateFactor > 0 && gate.RateFactor < 1 {
+		// Slowed: the batch was smaller; wait so the pace is RateFactor of normal.
+		defer func() {
+			took := s.now().Sub(started)
+			st.notBefore = s.now().Add(time.Duration(float64(took) * (1/gate.RateFactor - 1)))
+		}()
 	}
 	base := unsubscribe.BaseURL(b.LinkDomain, s.baseURL)
 	release := func(rest []store.ClaimedSend) error {
@@ -850,9 +913,11 @@ func (s *Service) batch(ctx context.Context, c store.Campaign, stage string, st 
 // that comes back to the queue (a retry, a pause) keeps its reservation
 // until it is claimed again, and gives it back then; one that ends without
 // going out gives it back at once.
-func (s *Service) claim(ctx context.Context, c store.Campaign, stage string) ([]store.ClaimedSend, error) {
+func (s *Service) claim(ctx context.Context, c store.Campaign, stage string) ([]store.ClaimedSend, *brakes.Gate, error) {
 	var claimed []store.ClaimedSend
+	var gate *brakes.Gate
 	err := s.store.InTx(ctx, func(tx *store.Store) error {
+		claimed, gate = nil, nil
 		// The campaign first (lock order: campaign, then sends), and only
 		// while it is still in this stage: a cancel or pause that committed
 		// first wins.
@@ -860,7 +925,27 @@ func (s *Service) claim(ctx context.Context, c store.Campaign, stage string) ([]
 		if err != nil || state != c.State {
 			return err
 		}
-		if claimed, err = tx.ClaimSends(ctx, c, stage, s.batchSize()); err != nil || len(claimed) == 0 {
+		n := s.batchSize()
+		if s.brakes != nil {
+			// The brand and account brakes, read through tx after locking
+			// the campaign and before locking any sends (M4).
+			g, err := s.brakes.CheckGate(ctx, tx, c.BrandID)
+			if err != nil {
+				return err
+			}
+			if g.Allowed && g.NeedsApproval && !slices.Contains(c.ApprovalReasons, string(ReasonBrandSlowed)) {
+				g.Allowed = false
+				g.Reason += "; every send now needs a second admin's approval, so it can resume once the brand recovers"
+			}
+			gate = &g
+			if !g.Allowed {
+				return nil
+			}
+			if g.RateFactor > 0 && g.RateFactor < 1 {
+				n = max(1, int(float64(n)*g.RateFactor))
+			}
+		}
+		if claimed, err = tx.ClaimSends(ctx, c, stage, n); err != nil || len(claimed) == 0 {
 			return err
 		}
 		// Microseconds, as Postgres keeps them: Release matches on it.
@@ -880,6 +965,24 @@ func (s *Service) claim(ctx context.Context, c store.Campaign, stage string) ([]
 			}
 			if err := tx.SetReserved(ctx, oldIDs, nil); err != nil {
 				return err
+			}
+		}
+		// A brand on watch leaves out people who haven't engaged lately,
+		// even if the campaign included them.
+		if gate != nil && gate.BlockInactive {
+			kept := claimed[:0]
+			for _, cs := range claimed {
+				if cs.Tier == store.TierAtRisk || cs.Tier == store.TierSunset {
+					if _, err := tx.MarkSendSkipped(ctx, cs.Claim(), "brake_inactive"); err != nil {
+						return err
+					}
+					continue
+				}
+				kept = append(kept, cs)
+			}
+			claimed = kept
+			if len(claimed) == 0 {
+				return nil
 			}
 		}
 		if s.warmup != nil {
@@ -949,7 +1052,7 @@ func (s *Service) claim(ctx context.Context, c store.Campaign, stage string) ([]
 		}
 		return tx.SetReserved(ctx, ids, &now)
 	})
-	return claimed, err
+	return claimed, gate, err
 }
 
 // giveBack returns reservations of sends that didn't go out, through tx.
@@ -1110,7 +1213,9 @@ func (s *Service) message(b store.Brand, c store.Campaign, cs store.ClaimedSend,
 	return ses.Message{
 		From: c.FromHeader, ReplyTo: c.ReplyTo, To: *cs.Email,
 		Subject: oneLine(templates.RenderText(c.Subject, vars)),
-		HTML:    templates.Render(c.HTML, vars), Text: templates.RenderText(c.TextBody, vars),
+		HTML: s.trackLinks(templates.Render(c.HTML, vars), b, cs, base,
+			map[string]bool{vars["unsubscribe_url"]: true, vars["preferences_url"]: true}),
+		Text:             templates.RenderText(c.TextBody, vars),
 		Headers:          map[string]string{"List-Unsubscribe": lu, "List-Unsubscribe-Post": lup},
 		ConfigurationSet: b.SESConfigurationSet,
 		Tags:             map[string]string{"campaign_id": c.ID.String(), "send_id": fmt.Sprint(cs.ID)},

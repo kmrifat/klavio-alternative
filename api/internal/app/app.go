@@ -235,6 +235,8 @@ func New(d Deps) (*App, error) {
 	a.recorder = &tracking.Recorder{Store: st, Classifier: tracking.Classifier{ScannerNets: d.Config.TrackingScannerNets}, Log: d.Log}
 	a.Brakes = brakes.NewService(st, d.SES, d.Log)
 	a.Health.SetReputationSource(a.Brakes)
+	a.Campaigns.SetBrakes(a.Brakes)
+	a.Campaigns.SetTracking(a.Tracking, d.Config.TrackingHoneypot)
 	a.recovery = &brakes.Recovery{Service: a.Brakes, Store: st, Auth: authSvc, Approvals: a.Approvals, Log: d.Log}
 	a.recovery.RegisterApprovals()
 	return a, nil

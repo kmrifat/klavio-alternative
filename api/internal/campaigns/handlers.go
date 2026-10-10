@@ -42,6 +42,8 @@ func (s *Service) Routes(mux *http.ServeMux, az authorizer) {
 	mux.HandleFunc("POST "+base+"/campaigns/{id}/pause", h(s.pause))
 	mux.HandleFunc("POST "+base+"/campaigns/{id}/resume", withAZ(s.resume))
 	mux.HandleFunc("POST "+base+"/campaigns/{id}/test", h(s.test))
+	mux.HandleFunc("GET "+base+"/campaigns/{id}/monitor", h(s.monitorHandler))
+	mux.HandleFunc("GET "+base+"/campaigns/{id}/report", h(s.reportHandler))
 
 	mux.HandleFunc("GET "+base+"/seeds", h(s.listSeeds))
 	mux.HandleFunc("POST "+base+"/seeds", withAZ(s.addSeed))
@@ -390,6 +392,10 @@ func (s *Service) resume(w http.ResponseWriter, r *http.Request, az authorizer) 
 	}
 	if b.Status != store.BrandReady {
 		return conflict("brand_not_ready", "the brand is %s; it has to be ready before sending resumes", b.Status)
+	}
+	if b.BrakeState == "slowed" && !slices.Contains(c.ApprovalReasons, string(ReasonBrandSlowed)) {
+		return conflict("brand_slowed", "the brand's brake has it slowed down: every send needs a second admin's approval. "+
+			"Resume once the brand recovers, or send a new campaign through approval")
 	}
 	out, err := s.Resume(r.Context(), c, auth.AuditEntry(r, "", "", "", &b.ID))
 	if err != nil {

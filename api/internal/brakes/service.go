@@ -209,3 +209,36 @@ func (s *Service) CheckGate(ctx context.Context, tx *store.Store, brandID uuid.U
 	}
 	return g, nil
 }
+
+// CheckCampaign: should a running campaign pause (§6.4 campaign level)?
+// Used after the test slice and between batches. A pause is recorded as a
+// safety event; the caller pauses the campaign.
+func (s *Service) CheckCampaign(ctx context.Context, c store.Campaign) (pause bool, reason string, err error) {
+	f, err := s.store.CampaignFeedback(ctx, c.ID)
+	if err != nil {
+		return false, "", err
+	}
+	var l CampaignLimits
+	for key, dst := range map[string]*float64{
+		limits.CampaignBouncePct: &l.BouncePct, limits.CampaignComplaintPct: &l.ComplaintPct, limits.CampaignUnsubPct: &l.UnsubPct,
+	} {
+		if *dst, err = limits.Read(ctx, s.store, key); err != nil {
+			return false, "", err
+		}
+	}
+	cnt := counts(f)
+	pause, reasons := Campaign(cnt, l)
+	if !pause {
+		return false, "", nil
+	}
+	reason = "Paused by the campaign brake: " + strings.Join(reasons, "; ")
+	err = s.store.AddSafetyEvent(ctx, store.SafetyEvent{Scope: "campaign", BrandID: &c.BrandID, CampaignID: &c.ID, Action: "paused",
+		FromState: string(c.State), ToState: "paused", Reason: strings.Join(reasons, "; ")},
+		map[string]any{"counts": cnt, "bounce_rate": cnt.BounceRate(), "complaint_rate": cnt.ComplaintRate(), "unsub_rate": cnt.UnsubRate()})
+	return true, reason, err
+}
+
+// AfterTestSlice is CheckCampaign at the end of the hold (campaigns.Brakes).
+func (s *Service) AfterTestSlice(ctx context.Context, c store.Campaign) (bool, string, error) {
+	return s.CheckCampaign(ctx, c)
+}

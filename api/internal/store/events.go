@@ -55,3 +55,34 @@ func (s *Store) SoftBouncesSince(ctx context.Context, emailHash []byte, since ti
 		emailHash, since).Scan(&n)
 	return n, err
 }
+
+// SendRef is who and what a send was.
+type SendRef struct {
+	ID         int64     `db:"id"`
+	CampaignID uuid.UUID `db:"campaign_id"`
+	BrandID    uuid.UUID `db:"brand_id"`
+	ContactID  uuid.UUID `db:"contact_id"`
+}
+
+// SendByID: ErrNotFound for a send that isn't ours (or was deleted).
+func (s *Store) SendByID(ctx context.Context, id int64) (SendRef, error) {
+	rows, err := s.db.Query(ctx, `SELECT id, campaign_id, brand_id, contact_id FROM sends WHERE id = $1`, id)
+	return one[SendRef](rows, err)
+}
+
+// CampaignFeedback: what happened to a campaign's emails so far.
+func (s *Store) CampaignFeedback(ctx context.Context, campaignID uuid.UUID) (FeedbackCounts, error) {
+	var c FeedbackCounts
+	err := s.db.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE e.type = 'delivery'),
+		       count(*) FILTER (WHERE e.type = 'bounce' AND e.subtype LIKE 'permanent/%'),
+		       count(*) FILTER (WHERE e.type = 'complaint')
+		FROM sends s JOIN email_events e ON e.send_id = s.id WHERE s.campaign_id = $1`, campaignID).
+		Scan(&c.Delivered, &c.Bounces, &c.Complaints)
+	if err != nil {
+		return c, err
+	}
+	err = s.db.QueryRow(ctx, `SELECT count(DISTINCT contact_id) FROM consent_records WHERE campaign_id = $1 AND kind = 'unsubscribed'`,
+		campaignID).Scan(&c.Unsubscribes)
+	return c, err
+}

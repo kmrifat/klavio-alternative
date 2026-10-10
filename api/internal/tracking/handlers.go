@@ -2,6 +2,7 @@ package tracking
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -60,10 +61,17 @@ func (r *Recorder) enqueue(ctx context.Context, job func(context.Context)) {
 // clicks, store it, and count a person's click as engagement.
 func (r *Recorder) Click(ctx context.Context, l Link, h Hit) error {
 	return r.Store.InTx(ctx, func(tx *store.Store) error {
+		// The token is signed, but the send may have been deleted since.
+		ref, err := tx.SendByID(ctx, l.SendID)
+		if errors.Is(err, store.ErrNotFound) || (err == nil && (ref.BrandID != l.BrandID || ref.ContactID != l.ContactID)) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
 		if err := tx.LockSendClicks(ctx, l.SendID); err != nil {
 			return err
 		}
-		var err error
 		if h.DeliveredAt, err = tx.DeliveredAt(ctx, l.SendID); err != nil {
 			return err
 		}
@@ -94,7 +102,13 @@ func (r *Recorder) Click(ctx context.Context, l Link, h Hit) error {
 
 // Open records a pixel load (never used for tiers or brakes).
 func (r *Recorder) Open(ctx context.Context, px Pixel, h Hit) error {
-	var err error
+	ref, err := r.Store.SendByID(ctx, px.SendID)
+	if errors.Is(err, store.ErrNotFound) || (err == nil && (ref.BrandID != px.BrandID || ref.ContactID != px.ContactID)) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
 	if h.DeliveredAt, err = r.Store.DeliveredAt(ctx, px.SendID); err != nil {
 		return err
 	}

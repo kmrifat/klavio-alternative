@@ -68,6 +68,9 @@ type Config struct {
 	// scanners whose clicks are bots.
 	SESEventsQueueURL   string
 	TrackingScannerNets []netip.Prefix
+	// TrackingHoneypot adds a hidden link to every email that only scanners
+	// follow. Off by default: hidden links can look spammy to filters.
+	TrackingHoneypot bool
 	// Cloudflare's CF-Connecting-IP / CF-IPCountry headers are believed only
 	// when TrustCloudflareHeaders is on and the request's socket peer is in
 	// TrustedProxies (the cloudflared sidecar). Anyone else could forge them.
@@ -149,6 +152,13 @@ func Load(getenv func(string) string) (Config, error) {
 	cfg.UnsubscribeSecretOld = get("UNSUBSCRIBE_SECRET_OLD", "")
 	cfg.PublicBaseURLOverride = get("PUBLIC_BASE_URL_OVERRIDE", "")
 	cfg.SESEventsQueueURL = get("SES_EVENTS_QUEUE_URL", "")
+	switch v := get("TRACKING_HONEYPOT", "false"); v {
+	case "true":
+		cfg.TrackingHoneypot = true
+	case "false":
+	default:
+		errs = append(errs, fmt.Errorf("TRACKING_HONEYPOT must be true or false, got %q", v))
+	}
 	for _, s := range strings.Split(get("TRACKING_SCANNER_CIDRS", ""), ",") {
 		if s = strings.TrimSpace(s); s == "" {
 			continue

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { routes } from "./routes";
 import { brightside, fakeApi, meta, ownerMe } from "../test/fakeApi";
 import type { Recovery, SafetyEvent } from "../api/brakes";
+import type { Report } from "../api/feedback";
 
 vi.mock("@simplewebauthn/browser", () => ({
   startAuthentication: vi.fn(async () => ({ id: "cred" })),
@@ -125,5 +126,37 @@ describe("account brake", () => {
     await userEvent.click(screen.getByRole("button", { name: "Ask to resume" }));
     expect(await screen.findByRole("status")).toHaveTextContent("Request sent");
     expect(sent).toEqual({ steps: ["cause", "brands", "amazon"], reason: "Brightside's import; it's paused." });
+  });
+});
+
+function report(): Report {
+  return {
+    campaign: { id: "c1", name: "Autumn launch", state: "sending" } as Report["campaign"],
+    sends: { queued: 400, sending: 0, sent: 600, failed: 2, unknown: 0, skipped: { brake_inactive: 3 } },
+    feedback: { delivered: 590, bounces: 9, complaints: 1, unsubscribes: 2 },
+    rates: { bounce: 0.015, complaint: 0.0017, unsubscribe: 0.0034 },
+    limits: { bounce: 0.02, complaint: 0.0008, unsubscribe: 0.01 },
+    engagement: {
+      human_clicks: 41, unique_clickers: 33, bot_clicks: 12, bot_reasons: { too_fast_after_delivery: 9, scanner_user_agent: 3 },
+      human_opens_est: 120, machine_opens: 80, soft_bounces: 1, delivery_delays: 0,
+    },
+    gate: { allowed: true, rate_factor: 1, needs_approval: false, block_inactive: true, reason: "Brightside is on watch" },
+    safety_events: [],
+    at: new Date().toISOString(),
+    links: [{ link_no: 1, url: "https://shop.example.com/autumn", human_clicks: 41, unique_clickers: 33, bot_clicks: 12 }],
+    providers: [{ provider: "Gmail", sent: 400, delivered: 395, bounces: 5, complaints: 1, clickers: 25 }],
+  };
+}
+
+describe("campaign report (S11)", () => {
+  it("shows people, not bots, against the brake lines", async () => {
+    fakeApi({ ...signedIn, "GET /admin/v1/brands/brightside/campaigns/c1/report": { status: 200, body: report() } });
+    renderAt("/b/brightside/campaigns/c1/report");
+    expect(await screen.findByRole("heading", { name: "Campaign report" })).toBeInTheDocument();
+    expect(screen.getByText("12 bot clicks filtered out (seconds after delivery: 9, security scanner: 3).")).toBeInTheDocument();
+    expect(screen.getByRole("meter", { name: "Bounces" })).toHaveAttribute("aria-valuenow", "75");
+    expect(screen.getByRole("meter", { name: "Complaints" })).toHaveAttribute("aria-valuenow", "100");
+    expect(screen.getByText("https://shop.example.com/autumn")).toBeInTheDocument();
+    expect(screen.getByText("Gmail").closest("tr")).toHaveTextContent("400395");
   });
 });

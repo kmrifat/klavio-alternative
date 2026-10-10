@@ -41,7 +41,11 @@ func TestFeedbackLoop(t *testing.T) {
 	// A click goes through the redirect on the brand's link domain (the test server stands in).
 	bob, _ := f.a.Store.InsertContact(ctx, store.NewContact{BrandID: f.brandID, Email: "bob@example.com", Status: store.ContactSubscribed,
 		ConsentBasis: "double_opt_in", TrackingAllowed: true})
-	link, err := f.a.Tracking.ClickURL(f.srv, tracking.Link{BrandID: f.brandID, ContactID: bob, SendID: 8, LinkNo: 1, LinkCount: 2, URL: "https://brightside.co/sale"})
+	send, err := f.a.Store.CreateSendForTest(ctx, f.brandID, bob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link, err := f.a.Tracking.ClickURL(f.srv, tracking.Link{BrandID: f.brandID, ContactID: bob, SendID: send, LinkNo: 1, LinkCount: 2, URL: "https://brightside.co/sale"})
 	if err != nil {
 		t.Fatal(err)
 	}

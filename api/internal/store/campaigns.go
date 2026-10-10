@@ -452,6 +452,10 @@ type ClaimedSend struct {
 	// When an earlier claim of this send reserved warm-up and frequency-cap
 	// room that it never used (it was requeued); nil if it holds none.
 	ReservedAt *time.Time `db:"reserved_at"`
+	// TrackingAllowed: the contact agreed to click tracking (M4).
+	TrackingAllowed bool `db:"tracking_allowed"`
+	// Tier: the contact's engagement tier now (a watch brake skips at-risk).
+	Tier Tier `db:"tier"`
 }
 
 // SendClaim names one claimed send: its row and the claim that holds it.
@@ -479,7 +483,8 @@ func (s *Store) ClaimSends(ctx context.Context, c Campaign, stage string, n int)
 			coalesce(c.last_name, '') AS last_name, c.status,
 			EXISTS (SELECT 1 FROM contact_topics ct WHERE ct.contact_id = cl.contact_id AND ct.topic_id = $4) AS in_topic,
 			EXISTS (SELECT 1 FROM suppressions sp WHERE sp.email_hash = c.email_hash) AS suppressed,
-			coalesce(c.timezone, '') AS timezone
+			coalesce(c.timezone, '') AS timezone, coalesce(c.tracking_allowed, false) AS tracking_allowed,
+			coalesce((`+tierExpr+`), 'sunset') AS tier
 		FROM claimed cl LEFT JOIN contacts c ON c.id = cl.contact_id
 		ORDER BY cl.id`, c.ID, stage, n, c.TopicID, uuid.New())
 	return all[ClaimedSend](rows, err)

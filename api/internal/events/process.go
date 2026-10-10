@@ -48,7 +48,14 @@ func (p *Processor) Process(ctx context.Context, e Event) (Outcome, error) {
 		}
 		var sendID *int64
 		if e.SendID > 0 {
-			sendID = &e.SendID
+			// Only a send of ours, from the brand that sent the email.
+			ref, err := tx.SendByID(ctx, e.SendID)
+			switch {
+			case err == nil && (brandID == nil || ref.BrandID == *brandID):
+				sendID = &e.SendID
+			case err != nil && !errors.Is(err, store.ErrNotFound):
+				return err
+			}
 		}
 		row := store.EmailEvent{EventID: e.ID, Type: string(e.Type), Subtype: e.Subtype, BrandID: brandID,
 			SESMessageID: e.MessageID, SendID: sendID, OccurredAt: e.OccurredAt, Detail: e.Detail}
