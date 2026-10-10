@@ -108,10 +108,11 @@ func (f *fakeDNS) publish(records []map[string]any) {
 // --- HTTP client acting as one browser ---
 
 type browser struct {
-	t    *testing.T
-	base string
-	http *http.Client
-	key  *webauthntest.Authenticator
+	t       *testing.T
+	base    string
+	http    *http.Client
+	key     *webauthntest.Authenticator
+	country string // sent as CF-IPCountry, like Cloudflare does
 }
 
 func newBrowser(t *testing.T, base string) *browser {
@@ -149,6 +150,9 @@ func (b *browser) do(method, path string, body any) resp {
 	req.Header.Set("Origin", origin)
 	if rd != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if b.country != "" {
+		req.Header.Set("CF-IPCountry", b.country)
 	}
 	res, err := b.http.Do(req)
 	if err != nil {

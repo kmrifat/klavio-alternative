@@ -30,3 +30,15 @@ func (s *Store) BackdateImportForTest(ctx context.Context, id uuid.UUID, by time
 	_, err := s.db.Exec(ctx, `UPDATE imports SET updated_at = now() - make_interval(secs => $2) WHERE id = $1`, id, by.Seconds())
 	return err
 }
+
+// ExpireApprovalForTest moves an approval's deadline into the past.
+func (s *Store) ExpireApprovalForTest(ctx context.Context, id uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `UPDATE approvals SET expires_at = now() - interval '1 minute' WHERE id = $1`, id)
+	return err
+}
+
+// ExpireExportForTest ends an export's download window.
+func (s *Store) ExpireExportForTest(ctx context.Context, id uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `UPDATE exports SET expires_at = now() - interval '1 minute' WHERE id = $1`, id)
+	return err
+}

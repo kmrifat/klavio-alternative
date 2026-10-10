@@ -29,9 +29,11 @@ type User struct {
 	WebAuthnID   []byte      `db:"webauthn_id"`
 	CreatedAt    time.Time   `db:"created_at"`
 	LastActiveAt *time.Time  `db:"last_active_at"`
+	FrozenAt     *time.Time  `db:"frozen_at"`
+	FrozenReason string      `db:"frozen_reason"`
 }
 
-const userCols = `id, email, name, company_role, webauthn_id, created_at, last_active_at`
+const userCols = `id, email, name, company_role, webauthn_id, created_at, last_active_at, frozen_at, frozen_reason`
 
 func (s *Store) CountUsers(ctx context.Context) (int, error) {
 	var n int

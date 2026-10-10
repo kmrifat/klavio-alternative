@@ -64,8 +64,8 @@ export function detail(b: BrandListItem): BrandDetail {
 
 export const team: Team = {
   members: [
-    { id: "u-owner", email: "owner@acme.test", name: "Shafayet H.", company_role: "owner", brand_roles: {}, passkeys: 2, last_active_at: new Date().toISOString() },
-    { id: "u-jon", email: "jon@acme.test", name: "Jon Park", company_role: "member", brand_roles: { "b-brightside": "sender" }, passkeys: 1, last_active_at: null },
+    { id: "u-owner", email: "owner@acme.test", name: "Shafayet H.", company_role: "owner", brand_roles: {}, passkeys: 2, last_active_at: new Date().toISOString(), frozen_at: null, frozen_reason: "" },
+    { id: "u-jon", email: "jon@acme.test", name: "Jon Park", company_role: "member", brand_roles: { "b-brightside": "sender" }, passkeys: 1, last_active_at: null, frozen_at: null, frozen_reason: "" },
   ],
   invites: [],
 };

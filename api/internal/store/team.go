@@ -109,9 +109,10 @@ type Invite struct {
 	CreatedAt   time.Time   `db:"created_at"`
 	ExpiresAt   time.Time   `db:"expires_at"`
 	AcceptedAt  *time.Time  `db:"accepted_at"`
+	ApprovalID  *uuid.UUID  `db:"approval_id"` // admin-level invites wait for a second admin
 }
 
-const inviteCols = `id, token_hash, email, name, company_role, brand_roles, webauthn_id, invited_by, created_at, expires_at, accepted_at`
+const inviteCols = `id, token_hash, email, name, company_role, brand_roles, webauthn_id, invited_by, created_at, expires_at, accepted_at, approval_id`
 
 func (s *Store) CreateInvite(ctx context.Context, inv Invite) (Invite, error) {
 	roles, err := json.Marshal(inv.BrandRoles)
@@ -119,9 +120,9 @@ func (s *Store) CreateInvite(ctx context.Context, inv Invite) (Invite, error) {
 		return Invite{}, err
 	}
 	rows, err := s.db.Query(ctx, `
-		INSERT INTO invites (token_hash, email, name, company_role, brand_roles, webauthn_id, invited_by, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING `+inviteCols,
-		inv.TokenHash, inv.Email, inv.Name, inv.CompanyRole, roles, inv.WebAuthnID, inv.InvitedBy, inv.ExpiresAt)
+		INSERT INTO invites (token_hash, email, name, company_role, brand_roles, webauthn_id, invited_by, expires_at, approval_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING `+inviteCols,
+		inv.TokenHash, inv.Email, inv.Name, inv.CompanyRole, roles, inv.WebAuthnID, inv.InvitedBy, inv.ExpiresAt, inv.ApprovalID)
 	return one[Invite](rows, err)
 }
 
@@ -150,6 +151,23 @@ func (s *Store) DeleteExpiredOpenInvite(ctx context.Context, email string) error
 // DeleteOpenInvites cancels every unaccepted invite.
 func (s *Store) DeleteOpenInvites(ctx context.Context) error {
 	_, err := s.db.Exec(ctx, `DELETE FROM invites WHERE accepted_at IS NULL`)
+	return err
+}
+
+// InviteApprovalStatus: "" when the invite needs no approval.
+func (s *Store) InviteApprovalStatus(ctx context.Context, inv Invite) (ApprovalStatus, error) {
+	if inv.ApprovalID == nil {
+		return "", nil
+	}
+	var st ApprovalStatus
+	err := s.db.QueryRow(ctx, `SELECT CASE WHEN status = 'pending' AND expires_at <= now() THEN 'expired' ELSE status END
+		FROM approvals WHERE id = $1`, *inv.ApprovalID).Scan(&st)
+	return st, translate(err)
+}
+
+// DeleteInviteByApproval frees the email when an admin invite is rejected.
+func (s *Store) DeleteInviteByApproval(ctx context.Context, approvalID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `DELETE FROM invites WHERE approval_id = $1 AND accepted_at IS NULL`, approvalID)
 	return err
 }
 

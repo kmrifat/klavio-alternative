@@ -87,6 +87,9 @@ func (s *Service) loginBegin(w http.ResponseWriter, r *http.Request) error {
 
 var errPasskeyFailed = httpx.Errorf(http.StatusUnauthorized, "passkey_failed", "that passkey didn't work for this app")
 
+var errFrozen = httpx.Errorf(http.StatusForbidden, "account_frozen",
+	"this account is frozen after unusual activity; an owner has been alerted and can unfreeze it")
+
 func (s *Service) loginFinish(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	sd, err := s.takeCeremony(ctx, r, "login", "")
@@ -111,6 +114,25 @@ func (s *Service) loginFinish(w http.ResponseWriter, r *http.Request) error {
 	if ae := accessEmail(ctx); ae != "" && !strings.EqualFold(ae, user.Email) {
 		return httpx.Errorf(http.StatusForbidden, "access_identity_mismatch",
 			"you're signed in to Cloudflare as %s but this passkey belongs to %s", ae, user.Email)
+	}
+	if user.FrozenAt != nil {
+		return errFrozen
+	}
+	// The anomaly check commits on its own: a freeze must stick even though
+	// no session is created.
+	if s.guard != nil {
+		var frozen bool
+		err := s.store.InTx(ctx, func(tx *store.Store) error {
+			var err error
+			frozen, err = s.guard.CheckSignIn(ctx, tx, user, httpx.ClientIP(r), r.Header.Get("CF-IPCountry"), hex.EncodeToString(cred.ID))
+			return err
+		})
+		if err != nil {
+			return err
+		}
+		if frozen {
+			return errFrozen
+		}
 	}
 
 	err = s.store.InTx(ctx, func(tx *store.Store) error {
@@ -223,6 +245,15 @@ func (s *Service) openInvite(r *http.Request) (store.Invite, error) {
 		return inv, httpx.Errorf(http.StatusForbidden, "access_identity_mismatch",
 			"this invite is for %s but you're signed in to Cloudflare as %s", inv.Email, ae)
 	}
+	switch st, err := s.store.InviteApprovalStatus(r.Context(), inv); {
+	case err != nil:
+		return inv, err
+	case st == store.ApprovalPending:
+		return inv, httpx.Errorf(http.StatusConflict, "invite_awaiting_approval",
+			"this invite gives admin rights, so a second admin has to approve it first — try again later")
+	case st != "" && st != store.ApprovalApproved:
+		return inv, httpx.Errorf(http.StatusNotFound, "invite_invalid", "this invite link is invalid, used or expired")
+	}
 	return inv, nil
 }
 
@@ -299,6 +330,9 @@ func (s *Service) inviteFinish(w http.ResponseWriter, r *http.Request) error {
 			}
 		}
 		if err := tx.AddPasskey(ctx, user.ID, *cred); err != nil {
+			return err
+		}
+		if err := tx.RecordSignIn(ctx, user.ID, httpx.ClientIP(r), r.Header.Get("CF-IPCountry"), hex.EncodeToString(cred.ID)); err != nil {
 			return err
 		}
 		if err := s.startSession(ctx, tx, w, r, user.ID); err != nil {

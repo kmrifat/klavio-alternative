@@ -223,7 +223,17 @@ type Facts struct {
 	Existing   map[string]store.Contact // by email
 	NoMailbox  map[string]bool          // by domain
 	Now        time.Time
+	// QuarantineAfter: no sign of life for this long → quarantine (default 12 months).
+	QuarantineAfter time.Duration
 }
+
+// GateLimits are the S17 "Imports" safety limits, as fractions.
+type GateLimits struct {
+	Invalid        float64
+	RoleDisposable float64
+}
+
+var DefaultGate = GateLimits{Invalid: InvalidLimit, RoleDisposable: RoleDisposableLimit}
 
 // Classify decides every row's outcome. First matching rule wins.
 func Classify(rows []Row, f Facts) {
@@ -251,7 +261,7 @@ func Classify(rows []Row, f Facts) {
 				} else {
 					r.Outcome = Existing
 				}
-			} else if stale(r, f.Now) {
+			} else if stale(r, f.Now, f.QuarantineAfter) {
 				r.Outcome = Quarantine
 			} else {
 				r.Outcome = Ready
@@ -265,7 +275,10 @@ func Classify(rows []Row, f Facts) {
 
 // stale: no sign of life in the last year (or no dates at all) → quarantine.
 // A 4–5 star rating is a sign of life.
-func stale(r *Row, now time.Time) bool {
+func stale(r *Row, now time.Time, after time.Duration) bool {
+	if after <= 0 {
+		after = QuarantineAfter
+	}
 	if r.Engaged() {
 		return false
 	}
@@ -276,7 +289,7 @@ func stale(r *Row, now time.Time) bool {
 	if r.ConsentedAt != nil && (last == nil || r.ConsentedAt.After(*last)) {
 		last = r.ConsentedAt
 	}
-	return last == nil || now.Sub(*last) > QuarantineAfter
+	return last == nil || now.Sub(*last) > after
 }
 
 // CheckResult is shown on S4's right-hand panel and stored with the import.
@@ -301,7 +314,11 @@ type Gate struct {
 	Problems            []string `json:"problems"`
 }
 
-func Summarize(rows []Row, c Consent, m Mapping, noMailbox []string, now time.Time) CheckResult {
+func Summarize(rows []Row, c Consent, m Mapping, noMailbox []string, now time.Time, limits ...GateLimits) CheckResult {
+	gl := DefaultGate
+	if len(limits) > 0 {
+		gl = limits[0]
+	}
 	res := CheckResult{
 		Total: len(rows), Counts: map[Outcome]int{}, Samples: map[Outcome][]string{},
 		NoMailboxDomains: noMailbox, DatesMapped: m.ConsentedAt != "" || m.LastEngagedAt != "" || m.Rating != "", CheckedAt: now,
@@ -325,9 +342,9 @@ func Summarize(rows []Row, c Consent, m Mapping, noMailbox []string, now time.Ti
 	total := float64(max(len(rows), 1))
 	g := Gate{
 		InvalidRate:         float64(res.Counts[Invalid]+res.Counts[NoMailbox]) / total,
-		InvalidLimit:        InvalidLimit,
+		InvalidLimit:        gl.Invalid,
 		RoleDisposableRate:  float64(res.Counts[Role]+res.Counts[Disposable]) / total,
-		RoleDisposableLimit: RoleDisposableLimit,
+		RoleDisposableLimit: gl.RoleDisposable,
 		Problems:            c.Problems(),
 	}
 	g.ConsentRecorded = len(g.Problems) == 0
