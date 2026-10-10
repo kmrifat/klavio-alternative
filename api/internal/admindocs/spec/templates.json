@@ -3,22 +3,1227 @@
     "name": "Templates",
     "description": "Templates, the brand layout and the link allowlist."
   },
-  "x-todo": [
-    "GET /admin/v1/brands/{slug}/layout",
-    "PUT /admin/v1/brands/{slug}/layout",
-    "POST /admin/v1/brands/{slug}/layout/preview",
-    "GET /admin/v1/brands/{slug}/link-allowlist",
-    "POST /admin/v1/brands/{slug}/link-allowlist",
-    "DELETE /admin/v1/brands/{slug}/link-allowlist/{domain}",
-    "GET /admin/v1/brands/{slug}/templates",
-    "POST /admin/v1/brands/{slug}/templates",
-    "POST /admin/v1/brands/{slug}/templates/preview",
-    "DELETE /admin/v1/brands/{slug}/templates/{id}",
-    "GET /admin/v1/brands/{slug}/templates/{id}",
-    "PUT /admin/v1/brands/{slug}/templates/{id}"
-  ],
-  "paths": {},
+  "x-todo": [],
+  "paths": {
+    "/brands/{slug}/layout": {
+      "get": {
+        "operationId": "getBrandLayout",
+        "summary": "The brand layout",
+        "description": "The layout that wraps every email the brand sends, with a preview (compiled with sample content and sample merge-tag values) and its check results. Until a brand admin saves one, this is the default layout (`version` 0, `is_default` true). Compiled layouts are cached, so this rarely compiles. Approvers count as viewers.",
+        "x-role": "brand:viewer",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "not_found",
+          "compiler_busy",
+          "compile_timeout"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The layout.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplatesLayoutResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "503": {
+            "$ref": "#/components/responses/TemplatesCompileUnavailable"
+          }
+        }
+      },
+      "put": {
+        "operationId": "putBrandLayout",
+        "summary": "Change the brand layout",
+        "description": "The layout is checked first, compiled with sample content: any issue of severity `error` refuses it with 422 `layout_has_errors` and the issues. `version` must be the version being edited (0 while the default is in use), or the answer is 409 `stale`.\n\nBecause the layout wraps every email the brand sends, a second admin must approve the change. If someone else can (an owner, an approver, or another admin of this brand, not frozen), it is filed as a `layout_change` approval that expires after 7 days, and the answer is 202; when approved it is checked again and applied. If nobody else can approve and the company has never had two admins, the change applies at once (200) and its audit entry records `no_second_admin`; otherwise 409 `no_approver`.\n\nApplying a change saves a new version, starts a new template generation and queues a background rebuild of every live template. Recorded in the audit log: `approval.requested` (202), `layout.updated` (200, or when the approval is carried out).",
+        "x-role": "brand:brand_admin",
+        "x-step-up": true,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "step_up_required",
+          "not_found",
+          "bad_json",
+          "stale",
+          "no_approver",
+          "compiler_busy",
+          "compile_timeout",
+          "layout_has_errors"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplatesLayoutInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Applied without a second admin (the company has never had two). The saved layout, with `templates_queued`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplatesLayoutResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Filed for a second admin's approval; nothing changed yet.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "approval"
+                  ],
+                  "properties": {
+                    "approval": {
+                      "$ref": "#/components/schemas/TemplatesApproval"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadJSON"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenOrStepUp"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "`stale`: someone saved a newer version since `version`; reload. `no_approver`: a second admin must approve, and nobody else can right now.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`layout_has_errors`: the layout fails a check. The body carries the issues.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplatesRejected"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/TemplatesCompileUnavailable"
+          }
+        }
+      }
+    },
+    "/brands/{slug}/layout/preview": {
+      "post": {
+        "operationId": "previewBrandLayout",
+        "summary": "Preview a layout",
+        "description": "Compiles and checks a layout without saving it, for the layout editor. The answer has the same shape as reading the layout; `version` only sets `is_default` (true when 0).",
+        "x-role": "brand:brand_admin",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "not_found",
+          "bad_json",
+          "compiler_busy",
+          "compile_timeout"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplatesLayoutInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The preview and its issues.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplatesLayoutResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadJSON"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "503": {
+            "$ref": "#/components/responses/TemplatesCompileUnavailable"
+          }
+        }
+      }
+    },
+    "/brands/{slug}/link-allowlist": {
+      "get": {
+        "operationId": "getLinkAllowlist",
+        "summary": "The link allowlist",
+        "description": "Domains, besides the brand's own sending and link domains, that the brand's emails may link to. Approvers count as viewers.",
+        "x-role": "brand:viewer",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "not_found"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The allowlist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplatesAllowlist"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "post": {
+        "operationId": "allowLinkDomain",
+        "summary": "Allow a link domain",
+        "description": "Adds a domain. It is trimmed, lowercased, and loses a trailing dot and a leading `https://` or `http://`. Refused with 400: not a domain name (`invalid_domain`), a link shortener (`shortener`), or a public suffix such as `co.uk` or `github.io` (`public_suffix`). Starts a new template generation and queues a background rebuild of every live template. Recorded in the audit log (`link_allowlist.added`).",
+        "x-role": "brand:brand_admin",
+        "x-step-up": true,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "step_up_required",
+          "not_found",
+          "bad_json",
+          "already_allowed",
+          "invalid_domain",
+          "shortener",
+          "public_suffix"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "domain"
+                ],
+                "properties": {
+                  "domain": {
+                    "type": "string",
+                    "examples": [
+                      "shop.example.com"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Added. The whole allowlist, with `templates_queued`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplatesAllowlist"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields. `invalid_domain`, `shortener`, `public_suffix`: the domain can't be allowed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenOrStepUp"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "`already_allowed`: the domain is already on the allowlist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/brands/{slug}/link-allowlist/{domain}": {
+      "delete": {
+        "operationId": "disallowLinkDomain",
+        "summary": "Remove a link domain",
+        "description": "Removes a domain (matched lowercased). Starts a new template generation and queues a background rebuild of every live template, whose links to it then fail their checks. Recorded in the audit log (`link_allowlist.removed`).",
+        "x-role": "brand:brand_admin",
+        "x-step-up": true,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "step_up_required",
+          "not_found"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          },
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "description": "A domain on the allowlist.",
+            "schema": {
+              "type": "string",
+              "examples": [
+                "shop.example.com"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Removed. The whole allowlist, with `templates_queued`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplatesAllowlist"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenOrStepUp"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/brands/{slug}/templates": {
+      "get": {
+        "operationId": "listTemplates",
+        "summary": "List templates",
+        "description": "The brand's live (not archived) templates, most recently updated first. Approvers count as viewers.",
+        "x-role": "brand:viewer",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "not_found"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The templates.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "templates"
+                  ],
+                  "properties": {
+                    "templates": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/TemplatesTemplateSummary"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createTemplate",
+        "summary": "Create a template",
+        "description": "Compiles the template inside the brand layout and checks it, then saves it whatever the checks found: issues of severity `error` block sending, not saving. `name` is trimmed and must be 1–200 characters (400 `invalid_name`); `mjml` must not be blank (400 `invalid_mjml`). `version` is ignored. Recorded in the audit log (`template.created`).",
+        "x-role": "brand:editor",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "not_found",
+          "bad_json",
+          "invalid_name",
+          "template_name_taken",
+          "layout_changing",
+          "compiler_busy",
+          "compile_timeout",
+          "invalid_mjml"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplatesTemplateInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplatesTemplateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields. `invalid_name`: the name is empty or too long. `invalid_mjml`: the template is empty.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "`template_name_taken`: another template of this brand has that name. `layout_changing`: the layout or allowlist kept changing while saving; save again in a moment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/TemplatesCompileUnavailable"
+          }
+        }
+      }
+    },
+    "/brands/{slug}/templates/preview": {
+      "post": {
+        "operationId": "previewTemplate",
+        "summary": "Preview a template",
+        "description": "Compiles and checks template MJML inside the brand layout without saving it, for the editor. The previews are filled with sample merge-tag values; they are empty when the template doesn't compile. `name` and `version` are accepted and ignored.",
+        "x-role": "brand:editor",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "not_found",
+          "bad_json",
+          "compiler_busy",
+          "compile_timeout"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplatesTemplateInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The preview and its issues.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplatesPreview"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadJSON"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "503": {
+            "$ref": "#/components/responses/TemplatesCompileUnavailable"
+          }
+        }
+      }
+    },
+    "/brands/{slug}/templates/{id}": {
+      "get": {
+        "operationId": "getTemplate",
+        "summary": "One template",
+        "description": "A live template with its compiled HTML and text, and previews filled with sample merge-tag values. Archived templates answer 404. Approvers count as viewers.",
+        "x-role": "brand:viewer",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "not_found"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          },
+          {
+            "$ref": "#/components/parameters/ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The template.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplatesTemplateResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateTemplate",
+        "summary": "Edit a template",
+        "description": "Replaces the name and MJML, compiling and checking as on create; issues don't block saving. `version` must be the version being edited, or the answer is 409 `stale`. Same name and MJML rules as create (400 `invalid_name`, `invalid_mjml`). Archived templates answer 404. Recorded in the audit log (`template.updated`).",
+        "x-role": "brand:editor",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "not_found",
+          "bad_json",
+          "invalid_name",
+          "stale",
+          "template_name_taken",
+          "layout_changing",
+          "compiler_busy",
+          "compile_timeout",
+          "invalid_mjml"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          },
+          {
+            "$ref": "#/components/parameters/ID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplatesTemplateInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplatesTemplateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields. `invalid_name`: the name is empty or too long. `invalid_mjml`: the template is empty.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "`stale`: someone saved a newer version since `version`; reload. `template_name_taken`: another template of this brand has that name. `layout_changing`: the layout or allowlist kept changing while saving; save again in a moment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/TemplatesCompileUnavailable"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "archiveTemplate",
+        "summary": "Archive a template",
+        "description": "Archives the template: it leaves the list and can no longer be read or edited. Recorded in the audit log (`template.archived`).",
+        "x-role": "brand:editor",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "not_found"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          },
+          {
+            "$ref": "#/components/parameters/ID"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Archived."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    }
+  },
   "components": {
-    "schemas": {}
+    "responses": {
+      "TemplatesCompileUnavailable": {
+        "description": "`compiler_busy`: every compile slot stayed taken; try again (sent with `Retry-After: 5`). `compile_timeout`: compiling took too long; make the template smaller.",
+        "headers": {
+          "Retry-After": {
+            "description": "Seconds to wait, with `compiler_busy`.",
+            "schema": {
+              "type": "integer",
+              "examples": [
+                5
+              ]
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "TemplatesIssue": {
+        "type": "object",
+        "description": "One problem found while compiling or checking.",
+        "required": [
+          "code",
+          "severity",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "What was found, e.g. `mjml`, `too_large`, `missing_unsubscribe`, `link_not_allowed`, `unknown_merge_tag`, `template_breaks_layout`, `layout_broken`, `insecure_link`.",
+            "examples": [
+              "missing_alt"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "error",
+              "warning"
+            ],
+            "description": "Errors block sending (and saving a layout); warnings are advice."
+          },
+          "message": {
+            "type": "string"
+          },
+          "where": {
+            "type": "string",
+            "enum": [
+              "template",
+              "layout"
+            ],
+            "description": "For MJML errors: which source `line` is in. Absent otherwise."
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "For MJML errors: the line in the template or layout. Absent otherwise."
+          }
+        }
+      },
+      "TemplatesTag": {
+        "type": "object",
+        "description": "A merge tag the sender fills per recipient, written `{{name}}` or `{{name | fallback}}`.",
+        "required": [
+          "name",
+          "description",
+          "url"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "examples": [
+              "first_name"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "url": {
+            "type": "boolean",
+            "description": "A link the app generates; fine as an href."
+          }
+        }
+      },
+      "TemplatesLayout": {
+        "type": "object",
+        "required": [
+          "mjml",
+          "version",
+          "is_default",
+          "updated_at"
+        ],
+        "properties": {
+          "mjml": {
+            "type": "string",
+            "description": "A full MJML document with `{{content}}` exactly once, where templates go."
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "0 while the default layout is in use."
+          },
+          "is_default": {
+            "type": "boolean",
+            "description": "True when `version` is 0."
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Null for the default layout."
+          }
+        }
+      },
+      "TemplatesLayoutInput": {
+        "type": "object",
+        "required": [
+          "mjml",
+          "version"
+        ],
+        "properties": {
+          "mjml": {
+            "type": "string",
+            "description": "At most 32 KB and 80 MJML elements (larger fails the checks with `too_large`)."
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The version being edited; 0 when editing the default."
+          }
+        }
+      },
+      "TemplatesLayoutResponse": {
+        "type": "object",
+        "required": [
+          "layout",
+          "preview_html",
+          "issues",
+          "tags"
+        ],
+        "properties": {
+          "layout": {
+            "$ref": "#/components/schemas/TemplatesLayout"
+          },
+          "preview_html": {
+            "type": "string",
+            "description": "The layout compiled with sample content and sample merge-tag values; empty if it doesn't compile."
+          },
+          "issues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TemplatesIssue"
+            }
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TemplatesTag"
+            }
+          },
+          "templates_queued": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Only after a save: live templates queued for a background rebuild."
+          }
+        }
+      },
+      "TemplatesRejected": {
+        "type": "object",
+        "description": "An Error that also carries the issues that refused the save.",
+        "required": [
+          "error",
+          "issues"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "examples": [
+                  "layout_has_errors"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          },
+          "issues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TemplatesIssue"
+            }
+          }
+        }
+      },
+      "TemplatesApproval": {
+        "type": "object",
+        "description": "The approval request filed for the change.",
+        "required": [
+          "id",
+          "status",
+          "expires_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "rejected",
+              "cancelled",
+              "expired"
+            ],
+            "description": "`pending` when just filed."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "7 days after the request."
+          }
+        }
+      },
+      "TemplatesAllowedDomain": {
+        "type": "object",
+        "required": [
+          "domain",
+          "added_by",
+          "created_at"
+        ],
+        "properties": {
+          "domain": {
+            "type": "string",
+            "examples": [
+              "shop.example.com"
+            ]
+          },
+          "added_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "TemplatesAllowlist": {
+        "type": "object",
+        "required": [
+          "domains",
+          "brand_domains"
+        ],
+        "properties": {
+          "domains": {
+            "type": "array",
+            "description": "Sorted by domain.",
+            "items": {
+              "$ref": "#/components/schemas/TemplatesAllowedDomain"
+            }
+          },
+          "brand_domains": {
+            "type": "array",
+            "description": "The brand's sending domain and link domain, always allowed.",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "type": "string"
+            }
+          },
+          "templates_queued": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Only after a change: live templates queued for a background rebuild."
+          }
+        }
+      },
+      "TemplatesTemplateInput": {
+        "type": "object",
+        "required": [
+          "name",
+          "mjml"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Trimmed; unique among the brand's templates."
+          },
+          "mjml": {
+            "type": "string",
+            "description": "The children of `<mj-body>`, placed into the layout at `{{content}}`. At most 64 KB and 150 MJML elements (larger fails the checks with `too_large`)."
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "On edit: the version being edited (optimistic concurrency). Ignored on create and preview."
+          }
+        }
+      },
+      "TemplatesTemplate": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "mjml",
+          "html",
+          "text",
+          "issues",
+          "error_count",
+          "warning_count",
+          "layout_version",
+          "stale",
+          "version",
+          "created_by",
+          "updated_by",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "mjml": {
+            "type": "string"
+          },
+          "html": {
+            "type": "string",
+            "description": "Compiled inside the layout, merge tags still in place; empty if it didn't compile."
+          },
+          "text": {
+            "type": "string",
+            "description": "The plain-text part, merge tags still in place."
+          },
+          "issues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TemplatesIssue"
+            }
+          },
+          "error_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Issues of severity `error`; more than 0 means it can't be sent."
+          },
+          "warning_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "layout_version": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The layout version it was built against."
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "The layout or allowlist changed and the background rebuild hasn't reached this template yet; its checks may be out of date."
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "created_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "updated_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "TemplatesTemplateSummary": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "error_count",
+          "warning_count",
+          "stale",
+          "updated_at",
+          "updated_by_name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "error_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "warning_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "Waiting for the background rebuild after a layout or allowlist change."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_by_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "TemplatesTemplateResponse": {
+        "type": "object",
+        "required": [
+          "template",
+          "preview_html",
+          "preview_text",
+          "tags"
+        ],
+        "properties": {
+          "template": {
+            "$ref": "#/components/schemas/TemplatesTemplate"
+          },
+          "preview_html": {
+            "type": "string",
+            "description": "`html` filled with sample merge-tag values."
+          },
+          "preview_text": {
+            "type": "string",
+            "description": "`text` filled with sample merge-tag values."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TemplatesTag"
+            }
+          }
+        }
+      },
+      "TemplatesPreview": {
+        "type": "object",
+        "required": [
+          "preview_html",
+          "preview_text",
+          "issues"
+        ],
+        "properties": {
+          "preview_html": {
+            "type": "string",
+            "description": "Empty if the template doesn't compile."
+          },
+          "preview_text": {
+            "type": "string"
+          },
+          "issues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TemplatesIssue"
+            }
+          }
+        }
+      }
+    }
   }
 }

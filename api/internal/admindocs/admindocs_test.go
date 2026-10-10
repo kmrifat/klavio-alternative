@@ -11,26 +11,34 @@ func TestBuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	type op struct {
+		Tags        []string
+		Description string
+		Security    *[]any
+	}
 	var doc struct {
 		OpenAPI string `json:"openapi"`
 		Tags    []struct{ Name string }
-		Paths   map[string]map[string]struct {
-			Tags        []string
-			Description string
-			Security    *[]any
-		}
+		Paths   map[string]map[string]json.RawMessage // operations, and path-level parameters
 	}
 	if err := json.Unmarshal(s.JSON, &doc); err != nil {
 		t.Fatal(err)
 	}
+	get := func(path, method string) op {
+		var o op
+		if err := json.Unmarshal(doc.Paths[path][method], &o); err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		return o
+	}
 	if doc.OpenAPI != "3.1.0" || len(doc.Tags) != len(Areas) {
 		t.Fatalf("openapi %q, %d tags", doc.OpenAPI, len(doc.Tags))
 	}
-	me := doc.Paths["/me"]["get"]
+	me := get("/me", "get")
 	if len(me.Tags) != 1 || me.Tags[0] != "Meta" || !strings.HasPrefix(me.Description, "**Role:** `signed_in` · **Errors:** `unauthenticated`") {
 		t.Fatalf("/me: %+v", me)
 	}
-	if meta := doc.Paths["/meta"]["get"]; meta.Security == nil || len(*meta.Security) != 0 {
+	if meta := get("/meta", "get"); meta.Security == nil || len(*meta.Security) != 0 {
 		t.Fatal("a public operation must have empty security")
 	}
 }

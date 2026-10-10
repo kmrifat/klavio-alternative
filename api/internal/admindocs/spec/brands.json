@@ -3,15 +3,584 @@
     "name": "Brands",
     "description": "Brands, their sending domains and the DNS check."
   },
-  "x-todo": [
-    "GET /admin/v1/brands",
-    "POST /admin/v1/brands",
-    "GET /admin/v1/brands/{slug}",
-    "PATCH /admin/v1/brands/{slug}",
-    "POST /admin/v1/brands/{slug}/dns-check"
-  ],
-  "paths": {},
+  "x-todo": [],
+  "paths": {
+    "/brands": {
+      "get": {
+        "operationId": "listBrands",
+        "summary": "List brands",
+        "description": "The brands the caller can see, by name: every brand for owners and approvers, otherwise the brands they hold a role on. Each carries the caller's role on it (`my_role`): owners get `brand_admin` everywhere; an approver with no role on a brand gets an empty string.",
+        "x-role": "signed_in",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated"
+        ],
+        "responses": {
+          "200": {
+            "description": "The brands.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "brands"
+                  ],
+                  "properties": {
+                    "brands": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/BrandsBrandListItem"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createBrand",
+        "summary": "Create a brand",
+        "description": "Stores the brand (status `setup`), sets up its sending domain in SES, records the DNS records it must publish (DKIM CNAMEs, MAIL FROM MX and SPF at `bounce.<sending_domain>`, DMARC), and creates its first topic, `Newsletter`. The MAIL FROM domain is `bounce.<sending_domain>` and the SES configuration set `brand-<slug>`. If SES fails nothing is stored (500 `internal`); SES setup is idempotent, so retrying is safe. Step-up is checked before the role, so a non-owner without a fresh passkey confirmation gets `step_up_required`. Recorded in the audit log (`brand.created`).",
+        "x-role": "company:owner",
+        "x-step-up": true,
+        "x-error-codes": [
+          "unauthenticated",
+          "step_up_required",
+          "forbidden",
+          "bad_json",
+          "invalid_name",
+          "brand_exists",
+          "invalid_slug",
+          "invalid_color",
+          "invalid_postal_address",
+          "invalid_sending_domain",
+          "invalid_link_domain"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrandsCreateBrand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The new brand and the DNS records it must publish.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrandsBrandDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call, or has unknown fields. `invalid_name`, `invalid_slug`, `invalid_color`, `invalid_postal_address`, `invalid_sending_domain`, `invalid_link_domain`: that field breaks a rule in the request schema (the first one found is reported).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenOrStepUp"
+          },
+          "409": {
+            "description": "`brand_exists`: a brand with this slug or one of these domains already exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/brands/{slug}": {
+      "get": {
+        "operationId": "getBrand",
+        "summary": "Get a brand",
+        "description": "The brand and its DNS records with their last check results. Approvers count as viewers.",
+        "x-role": "brand:viewer",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "not_found"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The brand.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrandsBrandDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateBrand",
+        "summary": "Update a brand",
+        "description": "Changes the name, color or postal address; fields left out keep their value. Domains can't change: a different domain is a different sender with its own reputation, i.e. a new brand. Approvers without the brand admin role get 403. Recorded in the audit log (`brand.updated`, with the three fields before and after).",
+        "x-role": "brand:brand_admin",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "not_found",
+          "forbidden",
+          "bad_json",
+          "invalid_name",
+          "invalid_color",
+          "invalid_postal_address"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrandsUpdateBrand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated brand.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrandsBrandDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_json`: the body isn't valid JSON for this call (an empty body included; send `{}` at least), or has unknown fields. `invalid_name`, `invalid_color`, `invalid_postal_address`: that field, after the change, breaks a rule in the request schema.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/brands/{slug}/dns-check": {
+      "post": {
+        "operationId": "checkBrandDNS",
+        "summary": "Check a brand's DNS",
+        "description": "Looks up each of the brand's DNS records and asks SES for the domain's verification status, stores the results, and moves the brand between `setup` and `ready`: `ready` when no record is `failing` and SES reports `SUCCESS`, `setup` otherwise. A `paused` brand stays paused (only brake recovery resumes it). If SES can't be reached, the last known SES status is kept. A daily job runs the same check for every brand. No request body. Approvers count as viewers.",
+        "x-role": "brand:viewer",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "not_found"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The brand and its DNS records, as just checked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrandsBrandDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    }
+  },
   "components": {
-    "schemas": {}
+    "schemas": {
+      "BrandsBrand": {
+        "type": "object",
+        "required": [
+          "id",
+          "slug",
+          "name",
+          "color",
+          "postal_address",
+          "sending_domain",
+          "mail_from_domain",
+          "link_domain",
+          "ses_configuration_set",
+          "ses_identity_status",
+          "status",
+          "dns_checked_at",
+          "warmup_started_on",
+          "repermission_on",
+          "brake_state",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "slug": {
+            "type": "string",
+            "examples": [
+              "brightside"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "examples": [
+              "Brightside"
+            ]
+          },
+          "color": {
+            "type": "string",
+            "pattern": "^#[0-9a-f]{6}$",
+            "examples": [
+              "#f97316"
+            ]
+          },
+          "postal_address": {
+            "type": "string",
+            "description": "Printed in every marketing email."
+          },
+          "sending_domain": {
+            "type": "string",
+            "examples": [
+              "news.brightside.com"
+            ]
+          },
+          "mail_from_domain": {
+            "type": "string",
+            "description": "`bounce.<sending_domain>`.",
+            "examples": [
+              "bounce.news.brightside.com"
+            ]
+          },
+          "link_domain": {
+            "type": "string",
+            "description": "Tracked links go through this domain.",
+            "examples": [
+              "go.brightside.com"
+            ]
+          },
+          "ses_configuration_set": {
+            "type": "string",
+            "description": "`brand-<slug>`.",
+            "examples": [
+              "brand-brightside"
+            ]
+          },
+          "ses_identity_status": {
+            "type": "string",
+            "description": "The sending domain's status as SES last reported it (`PENDING`, `SUCCESS`, `FAILED`, …); `pending` until the first check.",
+            "examples": [
+              "SUCCESS"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "setup",
+              "ready",
+              "paused"
+            ],
+            "description": "`setup`: DNS or SES not done yet, can't send. `ready`: may send. `paused`: stopped by a brake."
+          },
+          "dns_checked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When DNS was last checked; null if never."
+          },
+          "warmup_started_on": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The day sending warm-up started (midnight UTC); null if it hasn't."
+          },
+          "repermission_on": {
+            "type": "boolean",
+            "description": "Whether quarantined imported contacts get re-permission emails."
+          },
+          "brake_state": {
+            "type": "string",
+            "enum": [
+              "healthy",
+              "watch",
+              "slowed",
+              "paused"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "BrandsBrandListItem": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/BrandsBrand"
+          },
+          {
+            "type": "object",
+            "required": [
+              "my_role"
+            ],
+            "properties": {
+              "my_role": {
+                "description": "The caller's role on the brand; empty for an approver without one.",
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/BrandRole"
+                  },
+                  {
+                    "type": "string",
+                    "const": ""
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "BrandsDNSRecord": {
+        "type": "object",
+        "required": [
+          "id",
+          "purpose",
+          "type",
+          "name",
+          "value",
+          "status",
+          "detail",
+          "checked_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "dkim",
+              "mail_from_mx",
+              "mail_from_spf",
+              "dmarc"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "CNAME",
+              "MX",
+              "TXT"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "examples": [
+              "_dmarc.news.brightside.com"
+            ]
+          },
+          "value": {
+            "type": "string",
+            "description": "What to publish.",
+            "examples": [
+              "v=DMARC1; p=none; rua=mailto:dmarc-reports@brightside.com"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "ok",
+              "warning",
+              "failing"
+            ],
+            "description": "`pending`: not checked yet. `warning`: works but should be improved (e.g. DMARC `p=none`). `failing`: sending stays blocked."
+          },
+          "detail": {
+            "type": "string",
+            "description": "What the last check found; empty when there's nothing to say.",
+            "examples": [
+              "record not found"
+            ]
+          },
+          "checked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "BrandsBrandDetail": {
+        "type": "object",
+        "required": [
+          "brand",
+          "dns_records"
+        ],
+        "properties": {
+          "brand": {
+            "$ref": "#/components/schemas/BrandsBrand"
+          },
+          "dns_records": {
+            "type": "array",
+            "description": "Ordered by purpose, then name.",
+            "items": {
+              "$ref": "#/components/schemas/BrandsDNSRecord"
+            }
+          }
+        }
+      },
+      "BrandsCreateBrand": {
+        "type": "object",
+        "description": "Every value is trimmed; slug, color and domains are lowercased, and a trailing dot on a domain is dropped.",
+        "required": [
+          "name",
+          "slug",
+          "color",
+          "postal_address",
+          "sending_domain",
+          "link_domain"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Required (`invalid_name`).",
+            "examples": [
+              "Brightside"
+            ]
+          },
+          "slug": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$",
+            "description": "3–32 lowercase letters, digits or dashes, not starting or ending with a dash (`invalid_slug`). Can't change later.",
+            "examples": [
+              "brightside"
+            ]
+          },
+          "color": {
+            "type": "string",
+            "pattern": "^#[0-9a-f]{6}$",
+            "description": "`invalid_color` otherwise.",
+            "examples": [
+              "#f97316"
+            ]
+          },
+          "postal_address": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Required: every marketing email shows it (`invalid_postal_address`)."
+          },
+          "sending_domain": {
+            "type": "string",
+            "description": "A subdomain of a registrable domain (`news.brightside.com`, not `brightside.com`), so bulk mail never shares a reputation with the team's everyday email (`invalid_sending_domain`). Can't change later.",
+            "examples": [
+              "news.brightside.com"
+            ]
+          },
+          "link_domain": {
+            "type": "string",
+            "description": "A subdomain, as for `sending_domain`, and a different one (`invalid_link_domain`). Can't change later.",
+            "examples": [
+              "go.brightside.com"
+            ]
+          }
+        }
+      },
+      "BrandsUpdateBrand": {
+        "type": "object",
+        "description": "Values are trimmed; color is lowercased.",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Not empty (`invalid_name`)."
+          },
+          "color": {
+            "type": "string",
+            "pattern": "^#[0-9a-f]{6}$",
+            "description": "`invalid_color` otherwise.",
+            "examples": [
+              "#f97316"
+            ]
+          },
+          "postal_address": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Not empty (`invalid_postal_address`)."
+          }
+        }
+      }
+    }
   }
 }
