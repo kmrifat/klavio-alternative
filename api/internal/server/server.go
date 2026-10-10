@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -24,6 +25,11 @@ type Options struct {
 	Version        string
 	Env            string
 	AllowedOrigins []string
+
+	// RegisterAdmin adds the feature routes under /admin/v1.
+	RegisterAdmin func(mux *http.ServeMux)
+	// AdminMiddleware wraps every /admin request (authentication).
+	AdminMiddleware func(http.Handler) http.Handler
 }
 
 // New returns the root handler with all routes and middleware.
@@ -53,7 +59,14 @@ func New(o Options) http.Handler {
 	admin.HandleFunc("GET /admin/v1/meta", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"version": o.Version, "env": o.Env})
 	})
-	mux.Handle("/admin/", cors(o.AllowedOrigins, admin))
+	if o.RegisterAdmin != nil {
+		o.RegisterAdmin(admin)
+	}
+	var adminH http.Handler = admin
+	if o.AdminMiddleware != nil {
+		adminH = o.AdminMiddleware(adminH)
+	}
+	mux.Handle("/admin/", cors(o.AllowedOrigins, csrf(o.AllowedOrigins, adminH)))
 
 	return recoverer(o.Log, requestLog(o.Log, mux))
 }
@@ -80,6 +93,28 @@ func cors(allowed []string, next http.Handler) http.Handler {
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// csrf blocks cross-site writes. Browsers can't send a JSON content type
+// cross-site without a CORS preflight, which cors() only allows for our origins;
+// the Origin check is a second line of defence.
+func csrf(allowed []string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			next.ServeHTTP(w, r)
+			return
+		}
+		if origin := r.Header.Get("Origin"); origin != "" && !slices.Contains(allowed, origin) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": map[string]string{"code": "bad_origin", "message": "request from an unknown origin"}})
+			return
+		}
+		if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+			writeJSON(w, http.StatusUnsupportedMediaType, map[string]any{"error": map[string]string{"code": "json_required", "message": "send Content-Type: application/json"}})
+			return
 		}
 		next.ServeHTTP(w, r)
 	})

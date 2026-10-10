@@ -46,7 +46,7 @@ func TestMigrateAndWorkJob(t *testing.T) {
 		t.Error("citext extension missing after migrate")
 	}
 
-	client, err := jobs.NewWorker(pool, log)
+	client, err := jobs.NewWorker(pool, log, jobs.Deps{})
 	if err != nil {
 		t.Fatal(err)
 	}
