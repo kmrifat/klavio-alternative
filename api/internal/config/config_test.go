@@ -34,10 +34,14 @@ func TestLoadDefaults(t *testing.T) {
 
 func TestLoadProductionUsesJSONLogs(t *testing.T) {
 	cfg, err := Load(envFrom(map[string]string{
-		"APP_ENV":         "production",
-		"DATABASE_URL":    "postgres://x",
-		"REDIS_URL":       "redis://x",
-		"ALLOWED_ORIGINS": "https://app.example.com, https://admin.example.com ,",
+		"APP_ENV":               "production",
+		"DATABASE_URL":          "postgres://x",
+		"REDIS_URL":             "redis://x",
+		"ALLOWED_ORIGINS":       "https://app.example.com, https://admin.example.com ,",
+		"CF_ACCESS_TEAM_DOMAIN": "acme.cloudflareaccess.com",
+		"CF_ACCESS_AUD":         "aud123",
+		"SES_EVENT_BUS_ARN":     "arn:aws:events:us-east-1:123:event-bus/default",
+		"WEBAUTHN_RP_ID":        "example.com",
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -64,5 +68,38 @@ func TestLoadReportsAllErrors(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %s", err, want)
 		}
+	}
+}
+
+func TestLoadDevelopmentDefaults(t *testing.T) {
+	cfg, err := Load(envFrom(map[string]string{"DATABASE_URL": "postgres://x", "REDIS_URL": "redis://x"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SESMode != "fake" || cfg.WebAuthnRPID != "localhost" || cfg.SecureCookies() {
+		t.Errorf("unexpected dev defaults: %+v", cfg)
+	}
+}
+
+func TestLoadProductionRequiresSafetySettings(t *testing.T) {
+	_, err := Load(envFrom(map[string]string{
+		"APP_ENV": "production", "DATABASE_URL": "postgres://x", "REDIS_URL": "redis://x", "SES_MODE": "fake",
+	}))
+	if err == nil {
+		t.Fatal("expected errors")
+	}
+	for _, want := range []string{"CF_ACCESS_TEAM_DOMAIN", "SES_MODE must be aws", "WEBAUTHN_RP_ID"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %s", err, want)
+		}
+	}
+}
+
+func TestLoadAccessNeedsBothSettings(t *testing.T) {
+	_, err := Load(envFrom(map[string]string{
+		"DATABASE_URL": "postgres://x", "REDIS_URL": "redis://x", "CF_ACCESS_AUD": "aud",
+	}))
+	if err == nil || !strings.Contains(err.Error(), "set both") {
+		t.Fatalf("got %v", err)
 	}
 }

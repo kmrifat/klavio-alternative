@@ -1,4 +1,4 @@
-import { useMeta } from "../api/client";
+import { useMeta } from "../api/hooks";
 
 // Shows whether the Go API is reachable. Replaced by the brand health pill in M6.
 export function ApiStatus() {
@@ -11,7 +11,7 @@ export function ApiStatus() {
       : ["bg-green-500", `API ${data.version}`, "bg-green-50 text-green-700"];
 
   return (
-    <span role="status" className={`flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${tone}`}>
+    <span className={`flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${tone}`}>
       <span className={`size-1.5 rounded-full ${dot}`} />
       {label}
     </span>

@@ -68,7 +68,7 @@ Why this shape:
 |---|---|---|
 | Language | **Go 1.23+** | I/O-bound work, great AWS SDK, tiny static binary |
 | HTTP | `net/http` (Go 1.22 routing) or `chi` | Standard, few dependencies |
-| DB | **PostgreSQL 16** + `pgx` + `sqlc` | Relational data, SQL for segments, type-safe queries |
+| DB | **PostgreSQL 17** + `pgx` (hand-written queries in `internal/store`) | Relational data, SQL for segments; `sqlc` can be added later |
 | Migrations | `goose` or `atlas` | Plain SQL files |
 | Jobs / queue | **`river`** (Postgres-based) | Retries, scheduling, no extra infra |
 | AWS | `aws-sdk-go-v2` (`sesv2`, `sqs`) | Official |
