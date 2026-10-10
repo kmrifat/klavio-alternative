@@ -3,6 +3,7 @@ package jobs
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+
+	"github.com/kmrifat/klavio-alternative/api/internal/confirm"
 )
 
 type Client = river.Client[pgx.Tx]
@@ -326,6 +329,17 @@ type ConfirmationArgs struct {
 	BrandID   uuid.UUID `json:"brand_id"`
 	ContactID uuid.UUID `json:"contact_id"`
 	RequestID uuid.UUID `json:"request_id"` // topic request; Nil for a sign-up
+	QueuedAt  time.Time `json:"queued_at"`
+}
+
+// ConfirmationMaxWait: a confirmation the brakes hold back is retried until
+// this old, then dropped (the person can sign up again).
+const ConfirmationMaxWait = 48 * time.Hour
+
+// confirmationRetryIn: wait half as long as it has waited so far, between
+// a minute and half an hour.
+func confirmationRetryIn(waited time.Duration) time.Duration {
+	return min(max(waited/2, time.Minute), 30*time.Minute)
 }
 
 func (ConfirmationArgs) Kind() string { return "contacts.confirmation_email" }
@@ -333,10 +347,26 @@ func (ConfirmationArgs) Kind() string { return "contacts.confirmation_email" }
 type ConfirmationWorker struct {
 	river.WorkerDefaults[ConfirmationArgs]
 	Deps Deps
+	Log  *slog.Logger
 }
 
 func (w *ConfirmationWorker) Work(ctx context.Context, j *river.Job[ConfirmationArgs]) error {
-	return w.Deps.Opt.SendConfirmation(ctx, j.Args.BrandID, j.Args.ContactID, j.Args.RequestID)
+	err := w.Deps.Opt.SendConfirmation(ctx, j.Args.BrandID, j.Args.ContactID, j.Args.RequestID)
+	if !errors.Is(err, confirm.ErrGateClosed) {
+		return err
+	}
+	queued := j.Args.QueuedAt
+	if queued.IsZero() {
+		queued = j.CreatedAt
+	}
+	waited := time.Since(queued)
+	if waited > ConfirmationMaxWait {
+		w.Log.WarnContext(ctx, "confirmation email dropped: held back by the brakes for too long",
+			"brand_id", j.Args.BrandID, "contact_id", j.Args.ContactID, "waited", waited.Round(time.Minute), "reason", err)
+		return nil
+	}
+	// Snoozing doesn't use up an attempt: it waits for the gate to open.
+	return river.JobSnooze(confirmationRetryIn(waited))
 }
 
 // RepermissionArgs sends re-permission emails to quarantined imports (hourly,
@@ -423,7 +453,8 @@ func (r Runner) QueueCampaignStep(ctx context.Context, campaignID uuid.UUID, at 
 }
 
 func (r Runner) QueueConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID) error {
-	_, err := r.Client.Insert(ctx, ConfirmationArgs{BrandID: brandID, ContactID: contactID, RequestID: requestID}, &river.InsertOpts{MaxAttempts: 5})
+	_, err := r.Client.Insert(ctx, ConfirmationArgs{BrandID: brandID, ContactID: contactID, RequestID: requestID, QueuedAt: time.Now()},
+		&river.InsertOpts{MaxAttempts: 5})
 	return err
 }
 
@@ -495,7 +526,7 @@ func NewWorker(pool *pgxpool.Pool, log *slog.Logger, deps Deps) (*Client, error)
 		jobs = append(jobs, periodic(2*time.Minute, BrakesArgs{}, true))
 	}
 	if deps.Opt != nil {
-		river.AddWorker(workers, &ConfirmationWorker{Deps: deps})
+		river.AddWorker(workers, &ConfirmationWorker{Deps: deps, Log: log})
 		river.AddWorker(workers, &RepermissionWorker{Deps: deps})
 		river.AddWorker(workers, &APIHousekeepingWorker{Deps: deps, Log: log})
 		jobs = append(jobs, periodic(time.Hour, RepermissionArgs{}, true), periodic(time.Hour, APIHousekeepingArgs{}, true))

@@ -383,10 +383,11 @@
             "type": "string",
             "enum": [
               "sent",
+              "delayed",
               "limit_reached",
               "not_sent"
             ],
-            "description": "sent; limit_reached (3 a day per address already went out); not_sent (temporary problem, retry later)"
+            "description": "sent; delayed (sending is paused for now: it goes out once it resumes, within 48 hours); limit_reached (3 a day per address already went out); not_sent (temporary problem, retry later)"
           }
         }
       },

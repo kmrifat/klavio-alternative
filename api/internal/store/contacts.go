@@ -265,12 +265,13 @@ func (s *Store) InsertContact(ctx context.Context, c NewContact) (uuid.UUID, err
 	var id uuid.UUID
 	err := s.db.QueryRow(ctx, `
 		INSERT INTO contacts (brand_id, email, email_hash, first_name, last_name, status, consent_basis,
-			consent_source, consented_at, last_click_at, last_engaged_at, tracking_allowed, tags, timezone, country, import_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+			consent_source, consented_at, last_click_at, last_engaged_at, tracking_allowed, tags, timezone, country, import_id,
+			imported_click_at, imported_engaged_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $10, $17)
 		RETURNING id`,
 		c.BrandID, c.Email, EmailHash(c.Email), c.FirstName, c.LastName, c.Status, c.ConsentBasis,
 		c.ConsentSource, c.ConsentedAt, c.LastClickAt, c.lastEngaged(), c.TrackingAllowed, c.Tags,
-		c.Timezone, c.Country, c.ImportID).Scan(&id)
+		c.Timezone, c.Country, c.ImportID, c.EngagedAt).Scan(&id)
 	return id, translate(err)
 }
 
@@ -289,6 +290,8 @@ func (s *Store) MergeImportedFields(ctx context.Context, id uuid.UUID, c NewCont
 			tags       = ARRAY(SELECT DISTINCT unnest(tags || $6::text[])),
 			last_click_at   = CASE WHEN tracking_allowed THEN GREATEST(last_click_at, $7) ELSE last_click_at END,
 			last_engaged_at = CASE WHEN tracking_allowed THEN GREATEST(last_engaged_at, $7, $8) ELSE last_engaged_at END,
+			imported_click_at   = GREATEST(imported_click_at, $7),
+			imported_engaged_at = GREATEST(imported_engaged_at, $8),
 			updated_at = now()
 		WHERE id = $1`, id, c.FirstName, c.LastName, c.Timezone, c.Country, c.Tags, c.LastClickAt, c.EngagedAt)
 	return err

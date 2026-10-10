@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/kmrifat/klavio-alternative/api/internal/brakes"
 	"github.com/kmrifat/klavio-alternative/api/internal/cache"
 	"github.com/kmrifat/klavio-alternative/api/internal/httpx"
 	"github.com/kmrifat/klavio-alternative/api/internal/imports"
@@ -43,10 +44,16 @@ type ConfirmationQueue interface {
 	QueueConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID) error
 }
 
+// Gate tells whether the brakes let email out now (M4's *brakes.Service).
+type Gate interface {
+	CheckGate(ctx context.Context, tx *store.Store, brandID uuid.UUID) (brakes.Gate, error)
+}
+
 type API struct {
 	Store   *store.Store
 	Limiter cache.Limiter
 	Queue   ConfirmationQueue
+	Gate    Gate // nil: no brakes
 	Log     *slog.Logger
 	now     func() time.Time
 }
@@ -483,8 +490,9 @@ func (a *API) subscribe(c *call) (result, error) {
 
 // queueConfirmation sends the double opt-in email, at most a few a day per
 // address and brand however often the API is called for it. It reports
-// "sent", "limit_reached", or "not_sent" (the limiter or queue failed: no
-// email rather than an unlimited one).
+// "sent", "delayed" (the brakes hold email back for now; it goes once they
+// let it, within 48 hours), "limit_reached", or "not_sent" (the limiter or
+// queue failed: no email rather than an unlimited one).
 func (a *API) queueConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID, email string) string {
 	key := "api:confirm:" + brandID.String() + ":" + hex.EncodeToString(store.EmailHash(email))
 	ok, err := a.Limiter.Allow(ctx, key, ConfirmEmailsPerDay, 24*time.Hour)
@@ -495,11 +503,19 @@ func (a *API) queueConfirmation(ctx context.Context, brandID, contactID, request
 	case !ok:
 		return "limit_reached"
 	}
+	outcome := "sent"
+	if a.Gate != nil {
+		if g, err := a.Gate.CheckGate(ctx, nil, brandID); err != nil {
+			a.Log.WarnContext(ctx, "brake gate for a confirmation", "err", err)
+		} else if !g.Allowed {
+			outcome = "delayed" // queued all the same: the job waits for the gate
+		}
+	}
 	if err := a.Queue.QueueConfirmation(ctx, brandID, contactID, requestID); err != nil {
 		a.Log.ErrorContext(ctx, "queueing confirmation email", "err", err)
 		return "not_sent"
 	}
-	return "sent"
+	return outcome
 }
 
 func (a *API) pathEmail(c *call) (string, error) {

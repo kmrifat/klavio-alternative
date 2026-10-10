@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -256,5 +257,52 @@ func TestDQSKeyNeverReachesViewers(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), key) || !strings.Contains(logs.String(), "<dqs-key>") {
 		t.Fatalf("log should have the error with the key redacted: %s", logs.String())
+	}
+}
+
+// countingResolver counts lookups (the checker runs them in parallel).
+type countingResolver struct{ n atomic.Int64 }
+
+func (c *countingResolver) LookupHost(_ context.Context, host string) ([]string, error) {
+	c.n.Add(1)
+	return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+}
+
+// A worker that dies after claiming a blocklist lookup blocks the next one
+// for a few minutes, not for the whole interval.
+func TestBlocklistClaimAfterACrash(t *testing.T) {
+	st := store.New(testdb.New(t))
+	ctx := context.Background()
+	b, err := st.CreateBrand(ctx, store.Brand{Slug: "acme", Name: "Acme", Color: "#000000", PostalAddress: "1 Main St",
+		SendingDomain: "news.acme.test", MailFromDomain: "bounce.news.acme.test", LinkDomain: "go.acme.test", SESConfigurationSet: "acme"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &countingResolver{}
+	svc := NewService(st, &ses.Fake{}, nil, warmup.NewService(st), Config{Blocklists: &blocklist.Checker{R: r}},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	// The crash: claimed, never finished.
+	if ok, err := st.ClaimBlocklistCheck(ctx, b.ID, time.Hour); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if err := svc.CheckBlocklists(ctx, b, time.Hour); err != nil || r.n.Load() != 0 {
+		t.Fatalf("a fresh claim is someone else's: %d lookups, %v", r.n.Load(), err)
+	}
+	if err := st.ExecForTest(ctx, `UPDATE blocklist_checks SET claimed_at = now() - interval '6 minutes'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.CheckBlocklists(ctx, b, time.Hour); err != nil || r.n.Load() != 9 {
+		t.Fatalf("after the claim went stale: %d lookups, %v", r.n.Load(), err)
+	}
+	// Finished: nothing again until the interval passes, claim or no claim.
+	if err := svc.CheckBlocklists(ctx, b, time.Hour); err != nil || r.n.Load() != 9 {
+		t.Fatalf("right after a finished lookup: %d lookups, %v", r.n.Load(), err)
+	}
+	if err := st.ExecForTest(ctx, `UPDATE blocklist_checks SET claimed_at = now() - interval '2 hours', checked_at = now() - interval '2 hours'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.CheckBlocklists(ctx, b, time.Hour); err != nil || r.n.Load() != 18 {
+		t.Fatalf("after the interval: %d lookups, %v", r.n.Load(), err)
 	}
 }

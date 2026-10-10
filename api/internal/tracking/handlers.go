@@ -86,8 +86,15 @@ func (r *Recorder) Click(ctx context.Context, l Link, h Hit) error {
 		}
 		bot, reason, burst := r.Classifier.Click(h, pc)
 		if len(burst) > 0 {
-			if err := tx.MarkClicksBot(ctx, burst, reason); err != nil {
+			flipped, err := tx.MarkClicksBot(ctx, burst, reason)
+			if err != nil {
 				return err
+			}
+			// A click that already counted was a scanner after all.
+			if flipped {
+				if err := tx.RecomputeEngagement(ctx, l.BrandID, l.ContactID); err != nil {
+					return err
+				}
 			}
 		}
 		// Engagement comes later, when the click settles (Settle): until
@@ -101,7 +108,7 @@ func (r *Recorder) Click(ctx context.Context, l Link, h Hit) error {
 // Settle is the minutely job: clicks past the settle window are final, and
 // the people behind the human ones count as engaged.
 func (r *Recorder) Settle(ctx context.Context) error {
-	return r.Store.SettleClicks(ctx, time.Now().Add(-SettleWindow))
+	return r.Store.SettleClicks(ctx, SettleWindow)
 }
 
 // Open records a pixel load (never used for tiers or brakes).

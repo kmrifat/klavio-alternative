@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/kmrifat/klavio-alternative/api/internal/events"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
@@ -63,7 +62,7 @@ func TestFeedbackLoop(t *testing.T) {
 	if got, _ := f.a.Store.ContactByID(ctx, f.brandID, bob); got.LastClickAt != nil {
 		t.Fatal("a click counted as engagement before it settled")
 	}
-	if err := f.a.Store.SettleClicks(ctx, time.Now().Add(time.Second)); err != nil {
+	if err := f.a.Store.SettleClicks(ctx, 0); err != nil { // settle now
 		t.Fatal(err)
 	}
 	if got, _ := f.a.Store.ContactByID(ctx, f.brandID, bob); got.LastClickAt == nil {

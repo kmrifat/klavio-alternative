@@ -47,23 +47,50 @@ func (s *Store) ClicksSince(ctx context.Context, sendID int64, since time.Time) 
 	return all[PriorClick](rows, err)
 }
 
-// MarkClicksBot turns unsettled clicks into bot clicks (settled ones were
-// already counted, and are past the windows that could change them).
-func (s *Store) MarkClicksBot(ctx context.Context, ids []int64, reason string) error {
-	_, err := s.db.Exec(ctx, `UPDATE clicks SET is_bot = true, bot_reason = $2 WHERE id = ANY($1) AND NOT is_bot AND settled_at IS NULL`, ids, reason)
+// MarkClicksBot turns clicks into bot clicks, settled ones included (a
+// honeypot hit or a burst can come after a click settled). It reports
+// whether any settled click flipped: its contact's engagement then needs
+// recomputing (RecomputeEngagement).
+func (s *Store) MarkClicksBot(ctx context.Context, ids []int64, reason string) (flippedSettled bool, err error) {
+	err = s.db.QueryRow(ctx, `
+		WITH flipped AS (
+			UPDATE clicks SET is_bot = true, bot_reason = $2 WHERE id = ANY($1) AND NOT is_bot RETURNING settled_at)
+		SELECT EXISTS (SELECT 1 FROM flipped WHERE settled_at IS NOT NULL)`, ids, reason).Scan(&flippedSettled)
+	return flippedSettled, err
+}
+
+// SettleClicks: a send's clicks settle once it has had no click recorded
+// for `window` (by when the recorder wrote them, so a recorder that lags
+// can't settle a click before the rest of its burst arrives). Each
+// contact's newest human click among them becomes engagement (only with
+// tracking consent).
+func (s *Store) SettleClicks(ctx context.Context, window time.Duration) error {
+	_, err := s.db.Exec(ctx, `
+		WITH due AS (
+			SELECT k.id FROM clicks k
+			WHERE k.settled_at IS NULL AND k.at < now() - make_interval(secs => $1)
+			  AND NOT EXISTS (SELECT 1 FROM clicks r WHERE r.send_id = k.send_id AND r.recorded_at >= now() - make_interval(secs => $1))
+			FOR UPDATE OF k SKIP LOCKED),
+		settled AS (
+			UPDATE clicks SET settled_at = now() FROM due WHERE clicks.id = due.id
+			RETURNING clicks.brand_id, clicks.contact_id, clicks.at, clicks.is_bot),
+		human AS (SELECT brand_id, contact_id, max(at) AS at FROM settled WHERE NOT is_bot GROUP BY 1, 2)
+		UPDATE contacts c SET last_click_at = GREATEST(c.last_click_at, h.at), last_engaged_at = GREATEST(c.last_engaged_at, h.at)
+		FROM human h WHERE c.brand_id = h.brand_id AND c.id = h.contact_id AND c.tracking_allowed`, window.Seconds())
 	return err
 }
 
-// SettleClicks: clicks older than `before` are final. Each contact's newest
-// human click among them becomes engagement (only with tracking consent).
-func (s *Store) SettleClicks(ctx context.Context, before time.Time) error {
+// RecomputeEngagement rebuilds a contact's last click and last engagement
+// from the evidence still standing: settled human clicks, what an import
+// brought (the old tool's clicks and ratings), and their opt-in or
+// confirmation. Used when a click that counted turns out to be a bot.
+func (s *Store) RecomputeEngagement(ctx context.Context, brandID, contactID uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `
-		WITH settled AS (
-			UPDATE clicks SET settled_at = now() WHERE settled_at IS NULL AND at < $1
-			RETURNING brand_id, contact_id, at, is_bot),
-		human AS (SELECT brand_id, contact_id, max(at) AS at FROM settled WHERE NOT is_bot GROUP BY 1, 2)
-		UPDATE contacts c SET last_click_at = GREATEST(c.last_click_at, h.at), last_engaged_at = GREATEST(c.last_engaged_at, h.at)
-		FROM human h WHERE c.brand_id = h.brand_id AND c.id = h.contact_id AND c.tracking_allowed`, before)
+		UPDATE contacts c SET
+			last_click_at = GREATEST(c.imported_click_at, h.at),
+			last_engaged_at = GREATEST(c.imported_click_at, c.imported_engaged_at, h.at, c.consented_at)
+		FROM (SELECT max(at) AS at FROM clicks WHERE contact_id = $2 AND NOT is_bot AND settled_at IS NOT NULL) h
+		WHERE c.brand_id = $1 AND c.id = $2 AND c.tracking_allowed`, brandID, contactID)
 	return err
 }
 

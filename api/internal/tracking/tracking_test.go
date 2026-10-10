@@ -118,7 +118,7 @@ type fixture struct {
 func (f fixture) settle(t *testing.T) store.Contact {
 	t.Helper()
 	ctx := context.Background()
-	if err := f.st.ExecForTest(ctx, `UPDATE clicks SET at = at - interval '2 minutes' WHERE settled_at IS NULL`); err != nil {
+	if err := f.st.ExecForTest(ctx, `UPDATE clicks SET at = at - interval '2 minutes', recorded_at = recorded_at - interval '2 minutes' WHERE settled_at IS NULL`); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.rec.Settle(ctx); err != nil {
@@ -306,7 +306,7 @@ func TestHoneypotClassifier(t *testing.T) {
 	prior := []PriorClick{
 		{ID: 1, At: now.Add(-5 * time.Second), LinkNo: 1, IP: "198.51.100.4", UserAgent: "x"},
 		{ID: 2, At: now.Add(-5 * time.Second), LinkNo: 2, IP: "203.0.113.1", UserAgent: "someone else"}, // another visitor
-		{ID: 3, At: now.Add(-2 * time.Minute), LinkNo: 1, IP: "198.51.100.4", UserAgent: "x"},           // too long ago
+		{ID: 3, At: now.Add(-20 * time.Minute), LinkNo: 1, IP: "198.51.100.4", UserAgent: "x"},          // too long ago
 	}
 	bot, reason, burst := Classifier{}.Click(Hit{At: now, Method: "GET", UserAgent: "x", IP: ip, Flags: Honeypot}, prior)
 	if !bot || reason != "honeypot_link" || len(burst) != 1 || burst[0] != 1 {
@@ -320,5 +320,91 @@ func TestHoneypotClassifier(t *testing.T) {
 	}
 	if bot, _, _ := (Classifier{}).Click(h, []PriorClick{{ID: 9, At: now.Add(-time.Second), LinkNo: 0, IP: "203.0.113.50", UserAgent: "other"}}); bot {
 		t.Fatal("another visitor's honeypot hit marked this click")
+	}
+	// The same browser from another network is someone else; the same /24 is the same scanner.
+	h.UserAgent = "Mozilla/5.0 same browser"
+	if bot, _, _ := (Classifier{}).Click(h, []PriorClick{{ID: 9, At: now.Add(-time.Second), LinkNo: 0, IP: "203.0.113.50", UserAgent: h.UserAgent}}); bot {
+		t.Fatal("a matching user agent alone tainted the click")
+	}
+	if bot, _, _ := (Classifier{}).Click(h, []PriorClick{{ID: 9, At: now.Add(-time.Second), LinkNo: 0, IP: "198.51.100.200"}}); !bot {
+		t.Fatal("the same /24 as the honeypot hit wasn't tainted")
+	}
+	h.IP = netip.MustParseAddr("2001:db8:1:2::99")
+	if bot, _, _ := (Classifier{}).Click(h, []PriorClick{{ID: 9, At: now.Add(-time.Second), LinkNo: 0, IP: "2001:db8:1:2::1"}}); !bot {
+		t.Fatal("the same /64 as the honeypot hit wasn't tainted")
+	}
+	if bot, _, _ := (Classifier{}).Click(h, []PriorClick{{ID: 9, At: now.Add(-time.Second), LinkNo: 0, IP: "2001:db8:1:3::1"}}); bot {
+		t.Fatal("another /64 was tainted")
+	}
+}
+
+// click records a click directly, as the recorder would after a lag: it
+// happened at `at` but is written now.
+func (f fixture) clickAt(t *testing.T, at time.Time, linkNo int, flags byte) {
+	t.Helper()
+	l := Link{BrandID: f.brand.ID, ContactID: f.contact, SendID: f.send, LinkNo: linkNo, LinkCount: 3, URL: "https://acme.test/x", Flags: flags}
+	if err := f.rec.Click(context.Background(), l, Hit{At: at, Method: "GET", UserAgent: chrome, IP: netip.MustParseAddr("198.51.100.7"),
+		LinkNo: linkNo, LinkCount: 3, Flags: flags}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f fixture) lastClick(t *testing.T) *time.Time {
+	t.Helper()
+	c, err := f.st.ContactByID(context.Background(), f.brand.ID, f.contact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c.LastClickAt
+}
+
+// (a) The recorder lags: a click from 58 s ago is written just now. It
+// doesn't settle while its email is still getting clicks, so the rest of
+// the burst arriving later still unmasks it.
+func TestLaggingRecorderDoesNotSettleEarly(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	start := time.Now().Add(-58 * time.Second)
+	f.clickAt(t, start, 1, 0)
+	if err := f.rec.Settle(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if f.lastClick(t) != nil {
+		t.Fatal("a click written seconds ago settled because it happened a minute ago")
+	}
+	f.clickAt(t, start.Add(time.Second), 2, 0)
+	f.clickAt(t, start.Add(2*time.Second), 3, 0)
+	if c := f.settle(t); c.LastClickAt != nil {
+		t.Fatalf("a lagged scanner burst became engagement: %v", c.LastClickAt)
+	}
+	if h, b := f.clicks(t); h != 0 || b != 3 {
+		t.Fatalf("%d humans %d bots", h, b)
+	}
+}
+
+// (b) A click that already counted is unmasked later (a honeypot hit from
+// the same network a minute after it settled, or the rest of a burst): it
+// flips to a bot and the contact's engagement is rebuilt from what's left.
+func TestSettledClickUnmaskedLater(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	// Evidence from an import that must survive: the old tool's last click.
+	imported := time.Now().Add(-100 * 24 * time.Hour).Truncate(time.Second)
+	if err := f.st.ExecForTest(ctx, `UPDATE contacts SET imported_click_at = $2, last_click_at = $2, last_engaged_at = $2 WHERE id = $1`, f.contact, imported); err != nil {
+		t.Fatal(err)
+	}
+	first := time.Now().Add(-61 * time.Second)
+	f.clickAt(t, first, 1, 0)
+	if c := f.settle(t); c.LastClickAt == nil || c.LastClickAt.Before(first.Add(-3*time.Minute)) || c.Tier != store.TierActive {
+		t.Fatalf("settled human click: %+v", c)
+	}
+	// The honeypot, 60 s after the click (it was moved 2 minutes back to settle).
+	f.clickAt(t, time.Now(), 0, Honeypot)
+	c, _ := f.st.ContactByID(ctx, f.brand.ID, f.contact)
+	if c.LastClickAt == nil || !c.LastClickAt.Equal(imported) || c.Tier != store.TierAtRisk {
+		t.Fatalf("engagement not rebuilt from the remaining evidence: last click %v, tier %s", c.LastClickAt, c.Tier)
+	}
+	if h, b := f.clicks(t); h != 0 || b != 2 {
+		t.Fatalf("%d humans %d bots", h, b)
 	}
 }

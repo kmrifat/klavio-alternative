@@ -37,12 +37,12 @@ const (
 	BurstWindow    = 10 * time.Second
 	BurstMinLinks  = 3
 	botHeadRequest = "head_request"
-	// SettleWindow: a click becomes engagement only this long after it
-	// happened, once later clicks (a burst, the honeypot) can no longer
-	// show it was a scanner. TaintWindow, how far back a honeypot hit
-	// marks the same visitor's clicks, must not be longer.
+	// SettleWindow: a click becomes engagement once its email has had no
+	// new clicks recorded for this long. A burst or honeypot hit after that
+	// can still unmask it; the contact's engagement is then recomputed.
 	SettleWindow = time.Minute
-	TaintWindow  = SettleWindow
+	// TaintWindow: how far back a honeypot hit marks the same network's clicks.
+	TaintWindow = 10 * time.Minute
 )
 
 // scannerAgents are user-agent fragments of mail security scanners, link
@@ -84,13 +84,8 @@ func scannerUA(ua string) bool {
 // clicks (by id) that this click shows to be bots too: the rest of a burst,
 // or whatever the same visitor clicked before following the honeypot.
 func (c Classifier) Click(h Hit, prior []PriorClick) (bot bool, reason string, burst []int64) {
-	ip := ""
-	if h.IP.IsValid() {
-		ip = h.IP.String()
-	}
 	sameVisitor := func(p PriorClick) bool {
-		return h.At.Sub(p.At) >= 0 && h.At.Sub(p.At) <= TaintWindow &&
-			((ip != "" && p.IP == ip) || (h.UserAgent != "" && p.UserAgent == h.UserAgent))
+		return h.At.Sub(p.At) >= 0 && h.At.Sub(p.At) <= TaintWindow && sameNetwork(h.IP, p.IP)
 	}
 	if h.Flags&Honeypot != 0 {
 		for _, p := range prior {
@@ -140,6 +135,26 @@ func (c Classifier) Click(h Hit, prior []PriorClick) (bot bool, reason string, b
 		return true, "many_links_at_once", inBurst
 	}
 	return false, "", nil
+}
+
+// sameNetwork: the same visitor, by address: the same IP, or the same /24
+// (IPv4) or /64 (IPv6), as a scanner's requests spread over its range. The
+// browser alone never counts: everyone on Chrome sends the same one.
+func sameNetwork(a netip.Addr, b string) bool {
+	pb, err := netip.ParseAddr(b)
+	if !a.IsValid() || err != nil {
+		return false
+	}
+	a, pb = a.Unmap(), pb.Unmap()
+	if a.Is4() != pb.Is4() {
+		return false
+	}
+	bits := 64
+	if a.Is4() {
+		bits = 24
+	}
+	pa, _ := a.Prefix(bits)
+	return pa.Contains(pb)
 }
 
 // applePrivacyNet: Apple's own range, which Mail Privacy Protection's proxy uses.

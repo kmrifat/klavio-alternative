@@ -112,7 +112,7 @@ func TestHealthAndSafetyCenter(t *testing.T) {
 		t.Fatalf("blocklists re-queried within the hour: %s", h.raw)
 	}
 	// …but the periodic job (results older than the interval) does.
-	if err := a.Store.ExecForTest(ctx, `UPDATE blocklist_checks SET claimed_at = now() - interval '7 hours'`); err != nil {
+	if err := a.Store.ExecForTest(ctx, `UPDATE blocklist_checks SET claimed_at = now() - interval '7 hours', checked_at = now() - interval '7 hours'`); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.Health.CheckAllBlocklists(ctx); err != nil {
@@ -171,7 +171,7 @@ func TestHealthAndSafetyCenter(t *testing.T) {
 	vic.must(403, vic.do("POST", "/admin/v1/brands/brightside/health/recheck", nil))
 
 	// Parallel re-checks claim the lookup once: 3 domains × 3 lists = 9 queries.
-	if err := a.Store.ExecForTest(ctx, `UPDATE blocklist_checks SET claimed_at = now() - interval '2 hours'`); err != nil {
+	if err := a.Store.ExecForTest(ctx, `UPDATE blocklist_checks SET claimed_at = now() - interval '2 hours', checked_at = now() - interval '2 hours'`); err != nil {
 		t.Fatal(err)
 	}
 	dns.mu.Lock()

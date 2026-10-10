@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -21,6 +22,7 @@ import (
 	"github.com/kmrifat/klavio-alternative/api/internal/auth"
 	"github.com/kmrifat/klavio-alternative/api/internal/blocklist"
 	"github.com/kmrifat/klavio-alternative/api/internal/config"
+	"github.com/kmrifat/klavio-alternative/api/internal/confirm"
 	"github.com/kmrifat/klavio-alternative/api/internal/mailer"
 	"github.com/kmrifat/klavio-alternative/api/internal/ses"
 	"github.com/kmrifat/klavio-alternative/api/internal/testdb"
@@ -232,9 +234,46 @@ func (r inlineRunner) StartCommit(ctx context.Context, brandID, id uuid.UUID) er
 	return (*r.a).Imports.RunCommit(context.WithoutCancel(ctx), brandID, id)
 }
 
-// QueueConfirmation sends the double opt-in email right away.
+// QueueConfirmation sends the double opt-in email right away. One the
+// brakes hold back waits in `held`, like the river job would, until a test
+// calls retryHeld.
 func (r inlineRunner) QueueConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID) error {
-	return (*r.a).Confirm.SendConfirmation(context.WithoutCancel(ctx), brandID, contactID, requestID)
+	a := *r.a
+	send := func() error { return a.Confirm.SendConfirmation(context.Background(), brandID, contactID, requestID) }
+	err := send()
+	if errors.Is(err, confirm.ErrGateClosed) {
+		heldMu.Lock()
+		held[a] = append(held[a], send)
+		heldMu.Unlock()
+		return nil
+	}
+	return err
+}
+
+var (
+	heldMu sync.Mutex
+	held   = map[*app.App][]func() error{}
+)
+
+// retryHeld runs the held confirmation jobs once; ones still held stay.
+func retryHeld(t *testing.T, a *app.App) {
+	t.Helper()
+	heldMu.Lock()
+	jobs := held[a]
+	held[a] = nil
+	heldMu.Unlock()
+	for _, job := range jobs {
+		err := job()
+		if errors.Is(err, confirm.ErrGateClosed) {
+			heldMu.Lock()
+			held[a] = append(held[a], job)
+			heldMu.Unlock()
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 // mails holds each test app's outbox (*app.App → *mailer.Memory).
