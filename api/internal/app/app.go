@@ -21,6 +21,7 @@ import (
 	"github.com/kmrifat/klavio-alternative/api/internal/ses"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
 	"github.com/kmrifat/klavio-alternative/api/internal/team"
+	"github.com/kmrifat/klavio-alternative/api/internal/templates"
 )
 
 type Deps struct {
@@ -36,10 +37,11 @@ type Deps struct {
 }
 
 type App struct {
-	deps   Deps
-	Store  *store.Store
-	Auth   *auth.Service
-	Brands *brands.Service
+	deps      Deps
+	Store     *store.Store
+	Auth      *auth.Service
+	Brands    *brands.Service
+	Templates *templates.Service
 }
 
 func New(d Deps) (*App, error) {
@@ -55,10 +57,11 @@ func New(d Deps) (*App, error) {
 		return nil, err
 	}
 	return &App{
-		deps:   d,
-		Store:  st,
-		Auth:   authSvc,
-		Brands: brands.NewService(st, d.SES, dnscheck.Checker{R: d.DNS}, d.Log),
+		deps:      d,
+		Store:     st,
+		Auth:      authSvc,
+		Brands:    brands.NewService(st, d.SES, dnscheck.Checker{R: d.DNS}, d.Log),
+		Templates: templates.NewService(st, d.Log),
 	}, nil
 }
 
@@ -97,6 +100,7 @@ func (a *App) Handler() http.Handler {
 		RegisterAdmin: func(mux *http.ServeMux) {
 			a.Auth.Routes(mux)
 			a.Brands.Routes(mux, a.Auth)
+			a.Templates.Routes(mux, a.Auth)
 			teamH.Routes(mux)
 		},
 	})

@@ -11,6 +11,9 @@ import { SettingsLayout, SettingsPlaceholder, settingsTabs } from "../routes/set
 import { BrandsList } from "../routes/settings/BrandsList";
 import { NewBrand } from "../routes/settings/NewBrand";
 import { BrandSettings } from "../routes/settings/BrandSettings";
+import { TemplatesPage } from "../routes/templates/TemplatesPage";
+import { TemplateEditor } from "../routes/templates/TemplateEditor";
+import { LayoutEditor } from "../routes/templates/LayoutEditor";
 import { Spinner } from "../components/ui";
 import { brandScreens, companyScreens } from "../lib/screens";
 
@@ -24,6 +27,18 @@ function KnownBrand() {
 
 const builtCompanyScreens: Record<string, RouteObject> = {
   team: { path: "team", element: <TeamPage /> },
+};
+
+const builtBrandScreens: Record<string, RouteObject> = {
+  templates: {
+    path: "templates",
+    children: [
+      { index: true, element: <TemplatesPage /> },
+      { path: "new", element: <TemplateEditor /> },
+      { path: "layout", element: <LayoutEditor /> },
+      { path: ":id", element: <TemplateEditor /> },
+    ],
+  },
 };
 
 export const routes: RouteObject[] = [
@@ -58,7 +73,9 @@ export const routes: RouteObject[] = [
             element: <KnownBrand />,
             children: [
               { index: true, element: <Navigate to="campaigns" replace /> },
-              ...brandScreens.map((s) => ({ path: s.path, element: <ScreenPlaceholder screen={s} /> })),
+              ...brandScreens.map(
+                (s) => builtBrandScreens[s.path] ?? { path: s.path, element: <ScreenPlaceholder screen={s} /> },
+              ),
             ],
           },
           { path: "*", element: <NotFound /> },
