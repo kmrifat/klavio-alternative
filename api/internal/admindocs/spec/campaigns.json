@@ -1,0 +1,29 @@
+{
+  "tag": {
+    "name": "Campaigns",
+    "description": "Campaigns, seed addresses and the brand's sender."
+  },
+  "x-todo": [
+    "GET /admin/v1/brands/{slug}/campaigns",
+    "POST /admin/v1/brands/{slug}/campaigns",
+    "GET /admin/v1/brands/{slug}/campaigns/{id}",
+    "PUT /admin/v1/brands/{slug}/campaigns/{id}",
+    "POST /admin/v1/brands/{slug}/campaigns/{id}/cancel",
+    "GET /admin/v1/brands/{slug}/campaigns/{id}/monitor",
+    "POST /admin/v1/brands/{slug}/campaigns/{id}/pause",
+    "GET /admin/v1/brands/{slug}/campaigns/{id}/report",
+    "POST /admin/v1/brands/{slug}/campaigns/{id}/resume",
+    "GET /admin/v1/brands/{slug}/campaigns/{id}/review",
+    "POST /admin/v1/brands/{slug}/campaigns/{id}/schedule",
+    "POST /admin/v1/brands/{slug}/campaigns/{id}/test",
+    "GET /admin/v1/brands/{slug}/seeds",
+    "POST /admin/v1/brands/{slug}/seeds",
+    "DELETE /admin/v1/brands/{slug}/seeds/{email}",
+    "GET /admin/v1/brands/{slug}/sender",
+    "PUT /admin/v1/brands/{slug}/sender"
+  ],
+  "paths": {},
+  "components": {
+    "schemas": {}
+  }
+}

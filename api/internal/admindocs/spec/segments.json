@@ -1,0 +1,19 @@
+{
+  "tag": {
+    "name": "Segments",
+    "description": "Saved segments."
+  },
+  "x-todo": [
+    "GET /admin/v1/brands/{slug}/segments",
+    "POST /admin/v1/brands/{slug}/segments",
+    "POST /admin/v1/brands/{slug}/segments/preview",
+    "DELETE /admin/v1/brands/{slug}/segments/{id}",
+    "GET /admin/v1/brands/{slug}/segments/{id}",
+    "PUT /admin/v1/brands/{slug}/segments/{id}",
+    "GET /admin/v1/segments/fields"
+  ],
+  "paths": {},
+  "components": {
+    "schemas": {}
+  }
+}

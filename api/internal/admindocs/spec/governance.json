@@ -1,0 +1,22 @@
+{
+  "tag": {
+    "name": "Governance",
+    "description": "Approvals, safety limits, exports and the audit log."
+  },
+  "x-todo": [
+    "GET /admin/v1/approvals",
+    "POST /admin/v1/approvals/{id}/approve",
+    "POST /admin/v1/approvals/{id}/cancel",
+    "POST /admin/v1/approvals/{id}/reject",
+    "GET /admin/v1/audit",
+    "POST /admin/v1/brands/{slug}/exports",
+    "GET /admin/v1/exports",
+    "GET /admin/v1/exports/{id}/download",
+    "GET /admin/v1/safety-limits",
+    "PUT /admin/v1/safety-limits"
+  ],
+  "paths": {},
+  "components": {
+    "schemas": {}
+  }
+}

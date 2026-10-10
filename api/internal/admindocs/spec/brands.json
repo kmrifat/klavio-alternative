@@ -1,0 +1,17 @@
+{
+  "tag": {
+    "name": "Brands",
+    "description": "Brands, their sending domains and the DNS check."
+  },
+  "x-todo": [
+    "GET /admin/v1/brands",
+    "POST /admin/v1/brands",
+    "GET /admin/v1/brands/{slug}",
+    "PATCH /admin/v1/brands/{slug}",
+    "POST /admin/v1/brands/{slug}/dns-check"
+  ],
+  "paths": {},
+  "components": {
+    "schemas": {}
+  }
+}

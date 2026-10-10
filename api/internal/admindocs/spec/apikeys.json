@@ -1,0 +1,21 @@
+{
+  "tag": {
+    "name": "API keys",
+    "description": "Contacts API keys, consent wordings, re-permission and the API call log."
+  },
+  "x-todo": [
+    "GET /admin/v1/brands/{slug}/api-calls",
+    "GET /admin/v1/brands/{slug}/api-keys",
+    "POST /admin/v1/brands/{slug}/api-keys",
+    "POST /admin/v1/brands/{slug}/api-keys/{id}/revoke",
+    "GET /admin/v1/brands/{slug}/consent-wordings",
+    "POST /admin/v1/brands/{slug}/consent-wordings",
+    "POST /admin/v1/brands/{slug}/consent-wordings/{id}/retire",
+    "GET /admin/v1/brands/{slug}/repermission",
+    "PUT /admin/v1/brands/{slug}/repermission"
+  ],
+  "paths": {},
+  "components": {
+    "schemas": {}
+  }
+}

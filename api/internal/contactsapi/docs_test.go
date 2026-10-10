@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/kmrifat/klavio-alternative/api/internal/scalar"
 )
 
 func TestDocsPage(t *testing.T) {
@@ -36,7 +38,7 @@ func TestDocsPage(t *testing.T) {
 
 	csp := res.Header.Get("Content-Security-Policy")
 	for _, want := range []string{"default-src 'none'", "connect-src 'self'", "img-src 'self' data:", "frame-ancestors 'none'",
-		"script-src https://cdn.jsdelivr.net/npm/@scalar/api-reference@" + scalarVersion + "/dist/browser/standalone.js "} {
+		"script-src " + scalar.URL + " "} {
 		if !strings.Contains(csp, want) {
 			t.Errorf("CSP lacks %q: %s", want, csp)
 		}

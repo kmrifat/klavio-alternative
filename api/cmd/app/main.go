@@ -94,7 +94,10 @@ func run(ctx context.Context, f flags, cfg config.Config, log *slog.Logger) erro
 	}
 
 	log.Info("starting", "version", version, "env", cfg.Env, "ses", cfg.SESMode, "cloudflare_access", cfg.AccessTeamDomain != "",
-		"trust_cloudflare_headers", cfg.TrustCloudflareHeaders, "trusted_proxies", cfg.TrustedProxies)
+		"trust_cloudflare_headers", cfg.TrustCloudflareHeaders, "trusted_proxies", cfg.TrustedProxies, "debug", cfg.Debug)
+	if cfg.Debug && cfg.Env == config.EnvProduction {
+		log.Warn("DEBUG is on in production: the admin API reference is served at /admin/v1/docs to signed-in users; turn it off when you're done")
+	}
 	g, ctx := errgroup.WithContext(ctx)
 	if f.mode == "api" || f.mode == "all" {
 		g.Go(func() error { return a.ServeHTTP(ctx) })

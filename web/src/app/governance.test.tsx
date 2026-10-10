@@ -202,3 +202,22 @@ describe("team, alerts and exports", () => {
     expect(api.calls.find((c) => c.method === "POST")?.body).toEqual({ filter: { tiers: ["active", "warm"], status: "", tag: "" }, reason: "CRM sync" });
   });
 });
+
+describe("admin API reference link", () => {
+  it("shows in Settings only when the server runs with DEBUG on", async () => {
+    const limits = { "GET /admin/v1/safety-limits": { status: 200, body: { limits: [limit({})] } } };
+    fakeApi({ ...signedIn, ...limits });
+    renderAt("/settings/limits");
+    await screen.findByLabelText("Campaign pause · bounces");
+    expect(screen.queryByRole("link", { name: /Admin API \(debug\)/ })).not.toBeInTheDocument();
+  });
+
+  it("opens the reference in a new tab", async () => {
+    const limits = { "GET /admin/v1/safety-limits": { status: 200, body: { limits: [limit({})] } } };
+    fakeApi({ ...signedIn, ...limits, "GET /admin/v1/meta": { status: 200, body: { ...meta.body, debug: true } } });
+    renderAt("/settings/limits");
+    const link = await screen.findByRole("link", { name: /Admin API \(debug\)/ });
+    expect(link.getAttribute("href")).toMatch(/\/admin\/v1\/docs$/);
+    expect(link.getAttribute("target")).toBe("_blank");
+  });
+});

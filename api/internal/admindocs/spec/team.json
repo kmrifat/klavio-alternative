@@ -1,0 +1,16 @@
+{
+  "tag": {
+    "name": "Team",
+    "description": "Members, invites and roles."
+  },
+  "x-todo": [
+    "GET /admin/v1/team",
+    "POST /admin/v1/team/invites",
+    "PUT /admin/v1/team/members/{id}/roles",
+    "POST /admin/v1/team/members/{id}/unfreeze"
+  ],
+  "paths": {},
+  "components": {
+    "schemas": {}
+  }
+}

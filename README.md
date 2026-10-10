@@ -130,6 +130,7 @@ per IP and per token; logs show `/u/[token]`.
 | `SES_EVENTS_QUEUE_URL` | — | required in production: the SQS queue of SES events (`ses_events_queue_url` output); bounces and complaints arrive there |
 | `TRACKING_SCANNER_CIDRS` | — | comma-separated ranges of mail security scanners; their clicks count as bots |
 | `TRACKING_HONEYPOT` | `false` | `true` adds a hidden link only scanners follow (can look spammy to filters) |
+| `DEBUG` | `true` (dev), `false` (prod) | `true` serves the admin API reference at `/admin/v1/docs` (spec: `/admin/v1/openapi.json`) to signed-in members, linked from Settings. Allowed in production, with a warning at startup; off, both routes don't exist (404) |
 | `PUBLIC_BASE_URL_OVERRIDE` | — | development only, e.g. `http://localhost:8080` instead of `https://<link domain>` |
 | `TRUST_CLOUDFLARE_HEADERS` | `false` (dev), `true` (prod) | believe `CF-Connecting-IP` / `CF-IPCountry` from `TRUSTED_PROXY_CIDRS` |
 | `TRUSTED_PROXY_CIDRS` | `127.0.0.1/32,::1/128` | comma-separated IPs/CIDRs of the `cloudflared` sidecar (docker-compose: `10.210.250.10/32`) |

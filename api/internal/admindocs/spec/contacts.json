@@ -1,0 +1,20 @@
+{
+  "tag": {
+    "name": "Contacts",
+    "description": "Contacts and topics."
+  },
+  "x-todo": [
+    "GET /admin/v1/brands/{slug}/contacts",
+    "POST /admin/v1/brands/{slug}/contacts",
+    "GET /admin/v1/brands/{slug}/contacts/stats",
+    "GET /admin/v1/brands/{slug}/contacts/{id}",
+    "POST /admin/v1/brands/{slug}/contacts/{id}/suppress",
+    "POST /admin/v1/brands/{slug}/contacts/{id}/unsubscribe",
+    "GET /admin/v1/brands/{slug}/topics",
+    "POST /admin/v1/brands/{slug}/topics"
+  ],
+  "paths": {},
+  "components": {
+    "schemas": {}
+  }
+}

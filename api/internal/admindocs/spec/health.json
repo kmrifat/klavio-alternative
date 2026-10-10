@@ -1,0 +1,15 @@
+{
+  "tag": {
+    "name": "Health",
+    "description": "Brand health and the safety center."
+  },
+  "x-todo": [
+    "GET /admin/v1/brands/{slug}/health",
+    "POST /admin/v1/brands/{slug}/health/recheck",
+    "GET /admin/v1/safety-center"
+  ],
+  "paths": {},
+  "components": {
+    "schemas": {}
+  }
+}
