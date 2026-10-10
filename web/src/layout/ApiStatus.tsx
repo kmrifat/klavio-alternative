@@ -1,6 +1,6 @@
 import { useMeta } from "../api/hooks";
 
-// Shows whether the Go API is reachable. Replaced by the brand health pill in M6.
+// Shows whether the Go API is reachable. On brand pages the health pill takes its place.
 export function ApiStatus() {
   const { data, isPending, isError } = useMeta();
 

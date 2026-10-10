@@ -20,6 +20,8 @@ import { ApprovalsPage } from "../routes/approvals/ApprovalsPage";
 import { AuditPage } from "../routes/audit/AuditPage";
 import { SafetyLimits } from "../routes/settings/SafetyLimits";
 import { ImportWizard } from "../routes/contacts/ImportWizard";
+import { SafetyCenter } from "../routes/safety/SafetyCenter";
+import { BrandHealthPage } from "../routes/health/BrandHealthPage";
 import { brandScreens, companyScreens } from "../lib/screens";
 
 // KnownBrand renders brand pages only for brands the user can see.
@@ -34,9 +36,11 @@ const builtCompanyScreens: Record<string, RouteObject> = {
   team: { path: "team", element: <TeamPage /> },
   approvals: { path: "approvals", element: <ApprovalsPage /> },
   audit: { path: "audit", element: <AuditPage /> },
+  safety: { path: "safety", element: <SafetyCenter /> },
 };
 
 const builtBrandScreens: Record<string, RouteObject> = {
+  health: { path: "health", element: <BrandHealthPage /> },
   templates: {
     path: "templates",
     children: [
