@@ -73,6 +73,7 @@ func (a *API) Routes(mux *http.ServeMux) {
 		w.Header().Set("Cache-Control", "public, max-age=300")
 		_, _ = w.Write(openAPISpec)
 	})
+	mux.HandleFunc("GET /api/v1/docs", serveDocs)
 	mux.HandleFunc("POST /api/v1/contacts", a.handle(ScopeWrite, true, a.subscribe))
 	mux.HandleFunc("GET /api/v1/contacts/{email}", a.handle(ScopeRead, false, a.lookup))
 	mux.HandleFunc("POST /api/v1/contacts/{email}/unsubscribe", a.handle(ScopeWrite, true, a.unsubscribe))

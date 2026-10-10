@@ -33,6 +33,7 @@ export function ContactsApiPage() {
   const brand = useBrands().data?.find((b) => b.slug === slug);
   const isAdmin = me.user.company_role === "owner" || brand?.my_role === "brand_admin";
   const specURL = `${API_URL}/api/v1/openapi.json`;
+  const docsURL = `${API_URL}/api/v1/docs`;
 
   return (
     <div className="max-w-5xl space-y-5">
@@ -40,11 +41,17 @@ export function ContactsApiPage() {
         title="Contacts API"
         description="Let your website and apps add people to this brand's list. Every sign-up gets a confirmation email first (double opt-in)."
         action={
-          <a href={specURL} target="_blank" rel="noreferrer">
-            <Button>
-              <ExternalLink className="size-4" /> OpenAPI spec
-            </Button>
-          </a>
+          <div className="flex gap-2">
+            {/* The spec as JSON, for tools that read OpenAPI. */}
+            <a href={specURL} target="_blank" rel="noreferrer" title="The OpenAPI document, for tools">
+              <Button variant="ghost">OpenAPI JSON</Button>
+            </a>
+            <a href={docsURL} target="_blank" rel="noreferrer">
+              <Button>
+                <ExternalLink className="size-4" /> API reference
+              </Button>
+            </a>
+          </div>
         }
       />
 
