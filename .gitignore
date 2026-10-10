@@ -1,0 +1,26 @@
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+
+# Go
+/api/bin/
+*.test
+coverage.out
+
+# Web
+node_modules/
+/web/dist/
+*.local
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Infra
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
