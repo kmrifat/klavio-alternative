@@ -276,6 +276,60 @@ func TestCampaignSendsEndToEnd(t *testing.T) {
 	}
 }
 
+// Several workers stepping the same campaign at once must never send an
+// email twice: sends are claimed with row locks, and every state change
+// checks the state it starts from.
+func TestCampaignConcurrentWorkers(t *testing.T) {
+	w := newCampaignWorld(t)
+	ctx := context.Background()
+	for i := range 120 {
+		w.contact(fmt.Sprintf("c%03d@example.com", i), store.ContactSubscribed, 24*time.Hour, true)
+	}
+	c := w.draft(nil)
+	id := c["id"].(string)
+	cid := uuid.MustParse(id)
+	w.owner.must(200, w.owner.do("POST", campaignBase+"/campaigns/"+id+"/schedule", map[string]any{"version": 1, "confirm": "120"}))
+	for range 40 {
+		got, err := w.a.Store.CampaignByID(ctx, w.brand.ID, cid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.State == store.CampaignDone {
+			break
+		}
+		_ = w.a.Store.ForceCampaignDueForTest(ctx, cid)
+		var wg sync.WaitGroup
+		errs := make(chan error, 5)
+		for range 5 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := w.a.Campaigns.Step(ctx, cid); err != nil {
+					errs <- err
+				}
+			}()
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Fatal(err)
+		}
+	}
+	msgs := w.sender.Messages()
+	seen := map[string]int{}
+	for _, m := range msgs {
+		seen[m.To]++
+	}
+	for to, n := range seen {
+		if n > 1 {
+			t.Errorf("%s got %d copies", to, n)
+		}
+	}
+	if len(seen) != 120 {
+		t.Errorf("%d people got the campaign, want 120", len(seen))
+	}
+}
+
 // fakeWarmup allows `daily` sends per brand per UTC day.
 type fakeWarmup struct {
 	mu    sync.Mutex
