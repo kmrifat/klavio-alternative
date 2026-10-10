@@ -51,13 +51,9 @@ const Keep = 8 * 24 * time.Hour
 
 type Service struct {
 	store *store.Store
-	limit func(ctx context.Context, key string) float64
 }
 
-// NewService: limit reads a safety limit (limits.Service.Get).
-func NewService(st *store.Store, limit func(ctx context.Context, key string) float64) *Service {
-	return &Service{store: st, limit: limit}
-}
+func NewService(st *store.Store) *Service { return &Service{store: st} }
 
 // Limits in force now.
 type Limits struct {
@@ -66,12 +62,21 @@ type Limits struct {
 	SameBrandGap time.Duration `json:"same_brand_gap"`
 }
 
-func (s *Service) Limits(ctx context.Context) Limits {
-	return Limits{
-		PerDay:       int(s.limit(ctx, limits.CapPerDay)),
-		PerWeek:      int(s.limit(ctx, limits.CapPerWeek)),
-		SameBrandGap: time.Duration(s.limit(ctx, limits.SameBrandGapHours) * float64(time.Hour)),
+// Limits in force, read through q (the caller's transaction, if any).
+func (s *Service) Limits(ctx context.Context, q *store.Store) (Limits, error) {
+	if q == nil {
+		q = s.store
 	}
+	day, err := limits.Read(ctx, q, limits.CapPerDay)
+	if err != nil {
+		return Limits{}, err
+	}
+	week, err := limits.Read(ctx, q, limits.CapPerWeek)
+	if err != nil {
+		return Limits{}, err
+	}
+	gap, err := limits.Read(ctx, q, limits.SameBrandGapHours)
+	return Limits{PerDay: int(day), PerWeek: int(week), SameBrandGap: time.Duration(gap * float64(time.Hour))}, err
 }
 
 // Filter splits contacts into those who may get a marketing email from the
@@ -81,7 +86,11 @@ func (s *Service) Filter(ctx context.Context, tx *store.Store, brandID uuid.UUID
 	if tx == nil {
 		tx = s.store
 	}
-	l := s.Limits(ctx)
+	// Everything through tx: no second connection while the caller holds one.
+	l, err := s.Limits(ctx, tx)
+	if err != nil {
+		return nil, nil, err
+	}
 	hist, err := tx.SendHistory(ctx, brandID, contactIDs, now)
 	if err != nil {
 		return nil, nil, err

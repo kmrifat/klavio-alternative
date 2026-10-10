@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/kmrifat/klavio-alternative/api/internal/freqcap"
-	"github.com/kmrifat/klavio-alternative/api/internal/limits"
 	"github.com/kmrifat/klavio-alternative/api/internal/mailer"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
 	"github.com/kmrifat/klavio-alternative/api/internal/testdb"
@@ -42,11 +41,10 @@ func repermissionSetup(t *testing.T, sender mailer.Sender) (*Service, *store.Sto
 			t.Fatal(err)
 		}
 	}
-	limit := func(_ context.Context, key string) float64 { d, _ := limits.Find(key); return d.Value }
 	signer, _ := NewSigner("confirm-test-secret-aaaaaaaaaaaaaaaaaaaa")
 	unsub, _ := unsubscribe.NewSigner("confirm-test-secret-aaaaaaaaaaaaaaaaaaaa")
-	svc := NewService(Deps{Store: st, Signer: signer, Unsub: unsub, Sender: sender, Caps: freqcap.NewService(st, limit),
-		Warmup: warmup.NewService(st), Limit: limit, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	svc := NewService(Deps{Store: st, Signer: signer, Unsub: unsub, Sender: sender, Caps: freqcap.NewService(st),
+		Warmup: warmup.NewService(st), Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	return svc, st, b
 }
 

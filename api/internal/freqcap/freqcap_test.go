@@ -10,15 +10,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/kmrifat/klavio-alternative/api/internal/limits"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
 	"github.com/kmrifat/klavio-alternative/api/internal/testdb"
 )
-
-func defaults(_ context.Context, key string) float64 {
-	d, _ := limits.Find(key)
-	return d.Value
-}
 
 type fixture struct {
 	st     *store.Store
@@ -32,7 +26,7 @@ func setup(t *testing.T, nBrands int) fixture {
 	t.Helper()
 	ctx := context.Background()
 	st := store.New(testdb.New(t))
-	f := fixture{st: st, caps: NewService(st, defaults)}
+	f := fixture{st: st, caps: NewService(st)}
 	for i := range nBrands {
 		slug := fmt.Sprintf("brand%d", i)
 		b, err := st.CreateBrand(ctx, store.Brand{Slug: slug, Name: slug, Color: "#000000", PostalAddress: "1 Main St",

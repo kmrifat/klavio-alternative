@@ -40,7 +40,6 @@ type Service struct {
 	sender   mailer.Sender
 	caps     *freqcap.Service
 	warm     *warmup.Service
-	limit    func(ctx context.Context, key string) float64
 	override string // PUBLIC_BASE_URL_OVERRIDE (development)
 	log      *slog.Logger
 	now      func() time.Time
@@ -53,14 +52,13 @@ type Deps struct {
 	Sender   mailer.Sender
 	Caps     *freqcap.Service
 	Warmup   *warmup.Service
-	Limit    func(ctx context.Context, key string) float64
 	Override string
 	Log      *slog.Logger
 }
 
 func NewService(d Deps) *Service {
 	return &Service{store: d.Store, signer: d.Signer, unsub: d.Unsub, sender: d.Sender, caps: d.Caps, warm: d.Warmup,
-		limit: d.Limit, override: d.Override, log: d.Log, now: time.Now}
+		override: d.Override, log: d.Log, now: time.Now}
 }
 
 // SetSender swaps the sender (the SES sender, once it exists).
@@ -193,20 +191,30 @@ func (s *Service) SendRepermissions(ctx context.Context) error {
 // repermissionBrand claims a batch under a per-brand lock (so parallel runs
 // can't overshoot the daily limit), sends it, and gives back the claim, the
 // warm-up allowance and the frequency-cap record of every email that fails.
+//
+// While the transaction is open every query goes through it: a second pool
+// connection, wanted while holding one, deadlocks a small pool. If another
+// run holds the brand's lock it's already sending; this one skips the brand
+// instead of queueing a connection behind it. Emails go out after commit.
 func (s *Service) repermissionBrand(ctx context.Context, b store.Brand) error {
 	now := s.now()
 	y, m, d := now.UTC().Date()
 	today := time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 	var batch []store.Contact
 	err := s.store.InTx(ctx, func(tx *store.Store) error {
-		if err := tx.Lock(ctx, "repermission:"+b.ID.String()); err != nil {
+		locked, err := tx.TryLock(ctx, "repermission:"+b.ID.String())
+		if err != nil || !locked {
 			return err
 		}
 		sent, err := tx.RepermissionSentSince(ctx, b.ID, today)
 		if err != nil {
 			return err
 		}
-		room := int(s.limit(ctx, limits.RepermissionEmailsPerDay)) - sent
+		perDay, err := limits.Read(ctx, tx, limits.RepermissionEmailsPerDay)
+		if err != nil {
+			return err
+		}
+		room := int(perDay) - sent
 		if room <= 0 {
 			return nil
 		}

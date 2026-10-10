@@ -168,7 +168,7 @@ func New(d Deps) (*App, error) {
 	}, d.Log)
 
 	// Segments, Contacts API, frequency cap, double opt-in (M7).
-	a.FreqCap = freqcap.NewService(st, a.Limits.Get)
+	a.FreqCap = freqcap.NewService(st)
 	if a.confirmer, err = confirm.NewSigner(d.Config.UnsubscribeSecret, d.Config.UnsubscribeSecretOld); err != nil {
 		return nil, err
 	}
@@ -177,7 +177,7 @@ func New(d Deps) (*App, error) {
 	}
 	a.Confirm = confirm.NewService(confirm.Deps{
 		Store: st, Signer: a.confirmer, Unsub: a.Unsubscribe, Sender: d.Mailer, Caps: a.FreqCap, Warmup: a.Warmup,
-		Limit: a.Limits.Get, Override: d.Config.PublicBaseURLOverride, Log: d.Log,
+		Override: d.Config.PublicBaseURLOverride, Log: d.Log,
 	})
 	queue := d.ConfirmationQueue
 	if queue == nil {
