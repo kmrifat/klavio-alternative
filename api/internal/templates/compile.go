@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"regexp"
 	"strings"
 	"time"
@@ -221,7 +222,62 @@ func templateSourceIssues(content string) []Issue {
 	if len(stack) > 0 {
 		issues = append(issues, errorf("template_unbalanced", "<%s> is never closed", stack[len(stack)-1]))
 	}
+	issues = append(issues, styleIssues(content)...)
 	return append(issues, htmlBalance(lower)...)
+}
+
+// Inline styles a template may not use: each can lift content out of its
+// slot and over the layout's footer (Apple Mail and iOS render them), hiding
+// the unsubscribe link while the footer's markup stays intact.
+var bannedCSS = map[string]bool{
+	"position": true, "z-index": true, "top": true, "bottom": true, "left": true, "right": true, "inset": true,
+	"transform": true, "translate": true, "rotate": true, "scale": true, "zoom": true,
+	"float": true, "clip": true, "clip-path": true, "mask": true, "mask-image": true, "filter": true,
+	"backdrop-filter": true, "mix-blend-mode": true, "content": true, "behavior": true, "-moz-binding": true,
+	"overflow": true, "contain": true, "will-change": true, "isolation": true, "perspective": true,
+}
+
+var (
+	styleAttrRe = regexp.MustCompile(`(?is)\bstyle\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))`)
+	// Any MJML attribute with a negative value (padding="-40px").
+	negativeAttrRe = regexp.MustCompile(`(?is)<mj-[a-z-]+\b[^>]*?\s([a-z-]+)\s*=\s*["']\s*-\s*[0-9.]`)
+	negativeLenRe  = regexp.MustCompile(`(^|[\s,(])-\s*[0-9.]`)
+)
+
+func styleIssues(content string) []Issue {
+	var issues []Issue
+	seen := map[string]bool{}
+	add := func(is Issue) {
+		if !seen[is.Message] {
+			seen[is.Message] = true
+			issues = append(issues, is)
+		}
+	}
+	for _, m := range styleAttrRe.FindAllStringSubmatch(content, -1) {
+		// Browsers decode entities before reading CSS: &#112;osition is position.
+		css := strings.ToLower(html.UnescapeString(m[1] + m[2] + m[3]))
+		if strings.ContainsAny(css, `\`) || strings.Contains(css, "expression(") || strings.Contains(css, "/*") {
+			add(errorf("template_css", "a style uses CSS escapes, comments or expression(); write plain CSS"))
+			continue
+		}
+		for _, decl := range strings.Split(css, ";") {
+			prop, val, ok := strings.Cut(decl, ":")
+			if !ok {
+				continue
+			}
+			prop = strings.TrimSpace(prop)
+			switch {
+			case bannedCSS[prop]:
+				add(errorf("template_css", "templates can't use the CSS property %s: it can move content over the brand layout", prop))
+			case strings.HasPrefix(prop, "margin") && negativeLenRe.MatchString(strings.TrimSpace(val)):
+				add(errorf("template_css", "templates can't use negative margins (%s: %s): they can pull content over the brand layout", prop, strings.TrimSpace(val)))
+			}
+		}
+	}
+	for _, m := range negativeAttrRe.FindAllStringSubmatch(content, -1) {
+		add(errorf("template_css", "templates can't use negative values (%s): they can pull content over the brand layout", strings.ToLower(m[1])))
+	}
+	return issues
 }
 
 // Tags that must be closed as often as they're opened. Browsers confine an
@@ -231,15 +287,15 @@ func templateSourceIssues(content string) []Issue {
 var balancedTags = []string{"a", "b", "blockquote", "center", "div", "em", "font", "h1", "h2", "h3", "h4", "h5", "h6",
 	"i", "ol", "s", "small", "span", "strong", "sub", "sup", "table", "tbody", "td", "th", "thead", "tr", "u", "ul"}
 
-var htmlOpenRe = regexp.MustCompile(`<([a-z][a-z0-9]*)\b[^>]*?(/?)>`)
+var htmlOpenRe = regexp.MustCompile(`<([a-z][a-z0-9]*)\b[^>]*>`)
 var htmlCloseRe = regexp.MustCompile(`</([a-z][a-z0-9]*)\s*>`)
 
 func htmlBalance(lower string) []Issue {
 	open := map[string]int{}
+	// Every counted tag is a normal element, so "<div/>" still opens a div:
+	// HTML ignores the slash there.
 	for _, m := range htmlOpenRe.FindAllStringSubmatch(lower, -1) {
-		if m[2] != "/" {
-			open[m[1]]++
-		}
+		open[m[1]]++
 	}
 	for _, m := range htmlCloseRe.FindAllStringSubmatch(lower, -1) {
 		open[m[1]]--
@@ -256,9 +312,11 @@ func htmlBalance(lower string) []Issue {
 	return issues
 }
 
+// countElements counts opening MJML tags. MJML accepts any letter case
+// (<MJ-TEXT>), so the count must too.
 func countElements(s string) int {
 	n := 0
-	for _, m := range mjTagRe.FindAllStringSubmatch(s, -1) {
+	for _, m := range mjTagRe.FindAllStringSubmatch(strings.ToLower(s), -1) {
 		if m[1] != "/" {
 			n++
 		}
