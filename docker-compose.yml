@@ -1,0 +1,47 @@
+# Local development stack.
+#   docker compose up -d db          # just Postgres (run the Go app with `make run`)
+#   docker compose up --build        # Postgres + migrations + app
+#   TUNNEL_TOKEN=... docker compose --profile tunnel up   # also expose via Cloudflare Tunnel
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mail
+      POSTGRES_PASSWORD: mail
+      POSTGRES_DB: mail
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mail -d mail"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build: ./api
+    command: ["-mode=migrate"]
+    environment: &app-env
+      APP_ENV: development
+      DATABASE_URL: postgres://mail:mail@db:5432/mail?sslmode=disable
+      ALLOWED_ORIGINS: http://localhost:5173
+    depends_on:
+      db: { condition: service_healthy }
+
+  app:
+    build: ./api
+    command: ["-mode=all"]
+    environment: *app-env
+    ports: ["8080:8080"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    profiles: [tunnel]
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN}
+    depends_on: [app]
+
+volumes:
+  pgdata:
