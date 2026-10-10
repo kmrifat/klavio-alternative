@@ -1,0 +1,14 @@
+﻿Email Address,First Name,Last Name,Address,Phone Number,MEMBER_RATING,OPTIN_TIME,OPTIN_IP,CONFIRM_TIME,CONFIRM_IP,LATITUDE,LONGITUDE,GMTOFF,DSTOFF,TIMEZONE,CC,REGION,LAST_CHANGED,LEID,EUID,NOTES,TAGS
+ann@example.com,Ann,Lee,,,4,"2026-03-01 09:15:00",203.0.113.7,"2026-03-01 09:16:10",203.0.113.7,,,,,"Europe/Dublin",IE,,"2026-03-01 09:16:10",1001,a1,,"""VIP"",""Spring sale"""
+BOB@Example.com ,Bob,Stone,,,2,"2026-09-20 18:00:00",,,,,,,,,US,,"2026-09-20 18:00:00",1002,a2,,
+
+carol@example.com,Carol,,,,3,"2019-05-05 10:00:00",,"2019-05-05 10:01:00",,,,,,"Not/AZone",GBR,,"2019-05-05 10:01:00",1003,a3,,
+not-an-email,Dan,,,,1,"2026-01-01 00:00:00",,,,,,,,,,,,1004,a4,,
+info@example.com,,,,,2,"2026-02-02 00:00:00",,,,,,,,,,,,1005,a5,,
+x@mailinator.com,,,,,2,"2026-02-02 00:00:00",,,,,,,,,,,,1006,a6,,
+ann@example.com,Ann,Again,,,2,"2026-04-01 00:00:00",,,,,,,,,,,,1007,a7,,
+eve@nomail.example,Eve,,,,2,"2026-04-01 00:00:00",,,,,,,,,,,,1008,a8,,
+gone@example.com,Gone,,,,2,"2026-04-01 00:00:00",,,,,,,,,,,,1009,a9,,
+nodate@example.com,No,Date,,,2,,,,,,,,,,,,,1010,a10,,
+loyal@example.com,Lou,,,,5,"2018-01-01 00:00:00",,,,,,,,,,,,1011,a11,,
+meh@example.com,Mel,,,,2,"2018-01-01 00:00:00",,,,,,,,,,,,1012,a12,,
