@@ -221,10 +221,15 @@ func (r inlineRunner) QueueRebuild(ctx context.Context, brandID uuid.UUID) error
 }
 
 func setup(t *testing.T) (*app.App, *httptest.Server, *fakeDNS) {
+	return setupWith(t, nil)
+}
+
+// setupWith lets a test change the dependencies before the app is built.
+func setupWith(t *testing.T, tweak func(*app.Deps)) (*app.App, *httptest.Server, *fakeDNS) {
 	pool := testdb.New(t)
 	var appRef *app.App
 	dns := &fakeDNS{cname: map[string]string{}, mx: map[string][]*net.MX{}, txt: map[string][]string{}, hosts: map[string]bool{}}
-	a, err := app.New(app.Deps{
+	d := app.Deps{
 		Config: config.Config{
 			Env: config.EnvDevelopment, AllowedOrigins: []string{origin}, AppURL: origin,
 			WebAuthnRPID: "localhost", WebAuthnRPName: "Test",
@@ -239,7 +244,11 @@ func setup(t *testing.T) (*app.App, *httptest.Server, *fakeDNS) {
 		Version:           "test",
 		ImportRunner:      inlineRunner{a: &appRef},
 		TemplateRebuilder: inlineRunner{a: &appRef},
-	})
+	}
+	if tweak != nil {
+		tweak(&d)
+	}
+	a, err := app.New(d)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/kmrifat/klavio-alternative/api/internal/auth"
 	"github.com/kmrifat/klavio-alternative/api/internal/brands"
 	"github.com/kmrifat/klavio-alternative/api/internal/cache"
+	"github.com/kmrifat/klavio-alternative/api/internal/campaigns"
 	"github.com/kmrifat/klavio-alternative/api/internal/config"
 	"github.com/kmrifat/klavio-alternative/api/internal/contacts"
 	"github.com/kmrifat/klavio-alternative/api/internal/dnscheck"
@@ -35,12 +36,16 @@ type Deps struct {
 	Ceremonies auth.CeremonyStore
 	Access     *auth.AccessVerifier // nil = Cloudflare Access off
 	SES        ses.Provisioner
-	DNS        Resolver
+	// Sender sends campaign email (SES in production, a fake otherwise).
+	Sender ses.Sender
+	DNS    Resolver
 	// ImportRunner overrides the river job runner (tests run imports inline).
 	ImportRunner imports.Runner
 	// TemplateRebuilder overrides the river job that recompiles templates
 	// after a layout or allowlist change (tests run it inline).
 	TemplateRebuilder templates.Rebuilder
+	// CampaignRunner overrides the river job that runs campaign steps.
+	CampaignRunner campaigns.Runner
 	// Limiter rate-limits the public unsubscribe POSTs (Redis in production).
 	Limiter cache.Limiter
 	Version string
@@ -59,6 +64,7 @@ type App struct {
 	Brands    *brands.Service
 	Imports   *imports.Service
 	Templates *templates.Service
+	Campaigns *campaigns.Service
 	// Unsubscribe signs the unsubscribe/preferences links in every email.
 	Unsubscribe *unsubscribe.Signer
 	unsubSvc    *unsubscribe.Service
@@ -84,8 +90,8 @@ func New(d Deps) (*App, error) {
 		Imports:   imports.NewService(st, d.DNS, d.Log),
 		Templates: templates.NewService(st, d.Log),
 	}
-	runner, rebuilder := d.ImportRunner, d.TemplateRebuilder
-	if runner == nil || rebuilder == nil {
+	runner, rebuilder, campaignRunner := d.ImportRunner, d.TemplateRebuilder, d.CampaignRunner
+	if runner == nil || rebuilder == nil || campaignRunner == nil {
 		client, err := jobs.NewInserter(d.Pool, d.Log)
 		if err != nil {
 			return nil, err
@@ -96,12 +102,24 @@ func New(d Deps) (*App, error) {
 		if rebuilder == nil {
 			rebuilder = jobs.Runner{Client: client}
 		}
+		if campaignRunner == nil {
+			campaignRunner = jobs.Runner{Client: client}
+		}
 	}
 	a.Imports.SetRunner(runner)
 	a.Templates.SetRebuilder(rebuilder)
 	if a.Unsubscribe, err = unsubscribe.NewSigner(d.Config.UnsubscribeSecret, d.Config.UnsubscribeSecretOld); err != nil {
 		return nil, err
 	}
+	sender := d.Sender
+	if sender == nil {
+		sender = &ses.FakeSender{}
+	}
+	a.Campaigns = campaigns.NewService(st, campaigns.Config{
+		Sender: sender, Signer: a.Unsubscribe, PublicBaseURL: d.Config.PublicBaseURLOverride,
+		SendsPerSecond: d.Config.SESMaxSendRate,
+	}, d.Log)
+	a.Campaigns.SetRunner(campaignRunner)
 	a.unsubSvc = unsubscribe.NewService(st)
 	if a.deps.Limiter == nil {
 		a.deps.Limiter = &cache.MemoryLimiter{}
@@ -127,7 +145,7 @@ func FromConfig(ctx context.Context, cfg config.Config, log *slog.Logger, pool *
 		if err != nil {
 			return nil, err
 		}
-		d.SES = aws
+		d.SES, d.Sender = aws, aws
 	}
 	return New(d)
 }
@@ -147,6 +165,7 @@ func (a *App) Handler() http.Handler {
 			a.Auth.Routes(mux)
 			a.Brands.Routes(mux, a.Auth)
 			a.Templates.Routes(mux, a.Auth)
+			a.Campaigns.Routes(mux, a.Auth)
 			teamH.Routes(mux)
 			contactsH.Routes(mux)
 			a.Imports.Routes(mux, a.Auth)
@@ -194,7 +213,7 @@ func (a *App) ServeHTTP(ctx context.Context) error {
 // RunWorker works background jobs until ctx is cancelled.
 func (a *App) RunWorker(ctx context.Context) error {
 	log := a.deps.Log
-	client, err := jobs.NewWorker(a.deps.Pool, log, jobs.Deps{Brands: a.Brands, Sessions: a.Store, Imports: a.Imports, ImportFiles: a.Store, Templates: a.Templates})
+	client, err := jobs.NewWorker(a.deps.Pool, log, jobs.Deps{Brands: a.Brands, Sessions: a.Store, Imports: a.Imports, ImportFiles: a.Store, Templates: a.Templates, Campaigns: a.Campaigns})
 	if err != nil {
 		return err
 	}

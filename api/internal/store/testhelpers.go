@@ -30,3 +30,16 @@ func (s *Store) BackdateImportForTest(ctx context.Context, id uuid.UUID, by time
 	_, err := s.db.Exec(ctx, `UPDATE imports SET updated_at = now() - make_interval(secs => $2) WHERE id = $1`, id, by.Seconds())
 	return err
 }
+
+// ForceCampaignDueForTest makes a campaign's cancel window and test-slice
+// hold look over, and its queued sends due.
+func (s *Store) ForceCampaignDueForTest(ctx context.Context, id uuid.UUID) error {
+	if _, err := s.db.Exec(ctx, `
+		UPDATE campaigns SET start_at = now() - interval '1 second',
+			hold_until = CASE WHEN hold_until IS NULL THEN NULL ELSE now() - interval '1 second' END
+		WHERE id = $1`, id); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(ctx, `UPDATE sends SET send_after = now() - interval '1 second' WHERE campaign_id = $1 AND status = 'queued'`, id)
+	return err
+}
