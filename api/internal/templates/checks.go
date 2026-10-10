@@ -26,6 +26,9 @@ type CheckContext struct {
 // including the unsubscribe link.
 const GmailClipBytes = 102 << 10
 
+// clipMargin leaves room for merge tags filled in at send time.
+const clipMargin = 4 << 10
+
 // FooterClass marks the layout's footer (css-class on its mj-section). The
 // unsubscribe link and postal address must be inside it, and a template
 // must leave it exactly as the layout made it.
@@ -75,8 +78,9 @@ func Check(htmlBody string, cc CheckContext) []Issue {
 			c.add(errorf("unknown_merge_tag", "{{%s}} is not a merge tag we can fill", name))
 		}
 	}
-	if len(htmlBody) > GmailClipBytes {
-		c.add(warnf("gmail_clipping", "the email is %d KB; Gmail clips anything over 102 KB and hides the unsubscribe link", len(htmlBody)>>10))
+	if len(htmlBody)+clipMargin > GmailClipBytes {
+		c.add(errorf("gmail_clipping", "the email is %d KB; Gmail clips anything over 102 KB, which hides the footer and its unsubscribe link. Keep it under %d KB",
+			len(htmlBody)>>10, (GmailClipBytes-clipMargin)>>10))
 	}
 	if c.images && len(strings.ReplaceAll(collapse(c.text.String()), " ", "")) < 100 {
 		c.add(warnf("image_only", "the email is mostly images; add real text, or many readers (and spam filters) see nothing"))
@@ -162,6 +166,8 @@ func (c *checker) element(n *html.Node) {
 			key = strings.ToLower(a.Namespace) + ":" + key
 		}
 		switch {
+		case key == "ping":
+			c.add(errorf("unsafe_html", "remove the ping attribute: it reports clicks to another address"))
 		case strings.HasPrefix(key, "on"):
 			c.add(errorf("unsafe_html", "remove the %s attribute: email clients block scripts", a.Key))
 		case key == "href" || strings.HasSuffix(key, ":href"):

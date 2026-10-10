@@ -145,8 +145,12 @@ func runMJML(ctx context.Context, doc string) (string, error) {
 }
 
 var (
-	mjTagRe   = regexp.MustCompile(`<(/?)(mj-[a-z-]+|mjml)\b[^>]*?(/?)>`)
-	htmlTagRe = regexp.MustCompile(`(?i)<\s*(style|link|meta|base)\b`)
+	mjTagRe = regexp.MustCompile(`<(/?)(mj-[a-z-]+|mjml)\b[^>]*?(/?)>`)
+	// Elements a template may not contain at all: stylesheets and
+	// metadata belong to the layout, and SVG, MathML and embedded content
+	// bring their own painting (opacity, transforms) that the CSS rules
+	// below can't see.
+	htmlTagRe = regexp.MustCompile(`(?i)<\s*(style|link|meta|base|svg|math|object|embed|iframe|frame|frameset|video|audio|canvas|form|input|button|select|textarea|script|noscript|template|portal|applet)\b`)
 )
 
 func layoutSourceIssues(layout string) []Issue {
@@ -193,7 +197,7 @@ func templateSourceIssues(content string) []Issue {
 		issues = append(issues, errorf("template_has_content_tag", "{{content}} belongs in the layout, not in a template"))
 	}
 	if m := htmlTagRe.FindStringSubmatch(content); m != nil {
-		issues = append(issues, errorf("template_style", "templates can't add <%s> elements; the brand layout sets styles", strings.ToLower(m[1])))
+		issues = append(issues, errorf("template_style", "templates can't contain <%s> elements", strings.ToLower(m[1])))
 	}
 
 	var stack []string
@@ -221,6 +225,7 @@ func templateSourceIssues(content string) []Issue {
 	if len(stack) > 0 {
 		issues = append(issues, errorf("template_unbalanced", "<%s> is never closed", stack[len(stack)-1]))
 	}
+	issues = append(issues, styleIssues(content)...)
 	return append(issues, htmlBalance(lower)...)
 }
 
@@ -231,15 +236,15 @@ func templateSourceIssues(content string) []Issue {
 var balancedTags = []string{"a", "b", "blockquote", "center", "div", "em", "font", "h1", "h2", "h3", "h4", "h5", "h6",
 	"i", "ol", "s", "small", "span", "strong", "sub", "sup", "table", "tbody", "td", "th", "thead", "tr", "u", "ul"}
 
-var htmlOpenRe = regexp.MustCompile(`<([a-z][a-z0-9]*)\b[^>]*?(/?)>`)
+var htmlOpenRe = regexp.MustCompile(`<([a-z][a-z0-9]*)\b[^>]*>`)
 var htmlCloseRe = regexp.MustCompile(`</([a-z][a-z0-9]*)\s*>`)
 
 func htmlBalance(lower string) []Issue {
 	open := map[string]int{}
+	// Every counted tag is a normal element, so "<div/>" still opens a div:
+	// HTML ignores the slash there.
 	for _, m := range htmlOpenRe.FindAllStringSubmatch(lower, -1) {
-		if m[2] != "/" {
-			open[m[1]]++
-		}
+		open[m[1]]++
 	}
 	for _, m := range htmlCloseRe.FindAllStringSubmatch(lower, -1) {
 		open[m[1]]--
@@ -256,9 +261,11 @@ func htmlBalance(lower string) []Issue {
 	return issues
 }
 
+// countElements counts opening MJML tags. MJML accepts any letter case
+// (<MJ-TEXT>), so the count must too.
 func countElements(s string) int {
 	n := 0
-	for _, m := range mjTagRe.FindAllStringSubmatch(s, -1) {
+	for _, m := range mjTagRe.FindAllStringSubmatch(strings.ToLower(s), -1) {
 		if m[1] != "/" {
 			n++
 		}
