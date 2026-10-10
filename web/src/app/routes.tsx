@@ -28,6 +28,7 @@ import { Home } from "../routes/Home";
 import { SegmentEditor, SegmentsPage } from "../routes/segments/SegmentsPage";
 import { ContactsApiPage } from "../routes/api/ContactsApiPage";
 import { BrandHealthPage } from "../routes/health/BrandHealthPage";
+import { AccountBrakePage, RecoveryPage } from "../routes/health/RecoveryPage";
 import { brandScreens, companyScreens } from "../lib/screens";
 
 // KnownBrand renders brand pages only for brands the user can see.
@@ -42,7 +43,13 @@ const builtCompanyScreens: Record<string, RouteObject> = {
   team: { path: "team", element: <TeamPage /> },
   approvals: { path: "approvals", element: <ApprovalsPage /> },
   audit: { path: "audit", element: <AuditPage /> },
-  safety: { path: "safety", element: <SafetyCenter /> },
+  safety: {
+    path: "safety",
+    children: [
+      { index: true, element: <SafetyCenter /> },
+      { path: "account-brake", element: <AccountBrakePage /> },
+    ],
+  },
 };
 
 const builtBrandScreens: Record<string, RouteObject> = {
@@ -64,7 +71,13 @@ const builtBrandScreens: Record<string, RouteObject> = {
     ],
   },
   api: { path: "api", element: <ContactsApiPage /> },
-  health: { path: "health", element: <BrandHealthPage /> },
+  health: {
+    path: "health",
+    children: [
+      { index: true, element: <BrandHealthPage /> },
+      { path: "recovery", element: <RecoveryPage /> },
+    ],
+  },
   templates: {
     path: "templates",
     children: [

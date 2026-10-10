@@ -93,3 +93,14 @@ func (s *Store) SetAccountBrake(ctx context.Context, reason string) (bool, error
 		WHERE company_state.account_brake_at IS NULL`, reason)
 	return tag.RowsAffected() == 1, err
 }
+
+// ResumeBrand ends a pause (S8 recovery): new brake state and status.
+func (s *Store) ResumeBrand(ctx context.Context, brandID uuid.UUID, brake string, status BrandStatus) error {
+	return expectOne(s.db.Exec(ctx, `UPDATE brands SET brake_state = $2, status = $3, updated_at = now() WHERE id = $1`, brandID, brake, status))
+}
+
+// ReleaseAccountBrake lets every brand send again.
+func (s *Store) ReleaseAccountBrake(ctx context.Context) error {
+	_, err := s.db.Exec(ctx, `UPDATE company_state SET account_brake_at = NULL, account_brake_reason = '' WHERE id = 1`)
+	return err
+}

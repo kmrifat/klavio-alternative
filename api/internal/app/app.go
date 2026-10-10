@@ -119,6 +119,7 @@ type App struct {
 	Tracking *tracking.Signer // the sending worker signs links and the pixel with it
 	recorder *tracking.Recorder
 	Brakes   *brakes.Service // the sending worker checks Brakes.CheckGate between batches
+	recovery *brakes.Recovery
 }
 
 func New(d Deps) (*App, error) {
@@ -234,6 +235,8 @@ func New(d Deps) (*App, error) {
 	a.recorder = &tracking.Recorder{Store: st, Classifier: tracking.Classifier{ScannerNets: d.Config.TrackingScannerNets}, Log: d.Log}
 	a.Brakes = brakes.NewService(st, d.SES, d.Log)
 	a.Health.SetReputationSource(a.Brakes)
+	a.recovery = &brakes.Recovery{Service: a.Brakes, Store: st, Auth: authSvc, Approvals: a.Approvals, Log: d.Log}
+	a.recovery.RegisterApprovals()
 	return a, nil
 }
 
@@ -313,6 +316,7 @@ func (a *App) Handler() http.Handler {
 			(&health.Handlers{Service: a.Health, Store: a.Store, Approvals: a.Approvals}).Routes(mux)
 			(&segments.Handlers{Store: a.Store, Limiter: a.deps.Limiter, Log: a.deps.Log}).Routes(mux)
 			a.contactsAdm.Routes(mux)
+			a.recovery.Routes(mux)
 		},
 		RegisterPublic: func(mux *http.ServeMux) {
 			(&unsubscribe.Handlers{Signer: a.Unsubscribe, Service: a.unsubSvc, Limiter: a.deps.Limiter, Log: a.deps.Log}).Routes(mux)
