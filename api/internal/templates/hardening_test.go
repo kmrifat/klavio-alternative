@@ -61,7 +61,6 @@ func TestTemplateCannotCoverTheFooter(t *testing.T) {
 		"visibility":                   text("visibility:hidden"),
 		"background image":             text("background:url(https://brightside.co/x.png)"),
 		"calc to go negative":          text("margin-top:calc(0px - 900px)"),
-		"display none":                 text("display:none"),
 		"not a declaration":            text("color:red;opacity"),
 	}
 	for name, content := range cases {
@@ -81,6 +80,62 @@ func TestTemplateCannotCoverTheFooter(t *testing.T) {
 	} {
 		if got := buildCodes(t, body+`<mj-raw>`+el+`</mj-raw>`); !slices.Contains(got, "template_style") {
 			t.Errorf("%.30s: got %v, want template_style", el, got)
+		}
+	}
+}
+
+// Third re-probe: elements the browser positions itself, MJML and HTML
+// heights that let text spill, and sizes that push the footer out of reach.
+func TestTemplateCannotDisplaceTheFooter(t *testing.T) {
+	text := func(style string) string {
+		return body + `<mj-section><mj-column><mj-text><div style="` + style + `">x</div></mj-text></mj-column></mj-section>`
+	}
+	raw := func(markup string) string { return body + `<mj-raw>` + markup + `</mj-raw>` }
+	words := strings.Repeat("Lots of words that would spill over the footer. ", 40)
+	cases := []struct{ name, content, want string }{
+		{"dialog (review probe)", raw(`<dialog open style="width:600px;background-color:#f4f4f5">x</dialog>`), "template_element"},
+		{"details", raw(`<details open><summary>x</summary></details>`), "template_element"},
+		{"marquee", raw(`<marquee>x</marquee>`), "template_element"},
+		{"Outlook namespace tag", raw(`<o:p>x</o:p>`), "template_element"},
+		{"mj-text height (review probe)", `<mj-section><mj-column><mj-text height="1px">` + words + `</mj-text></mj-column></mj-section>`, "template_css"},
+		{"mj-column height", `<mj-section><mj-column height="1px"><mj-text>` + words + `</mj-text></mj-column></mj-section>`, "template_css"},
+		{"mj-image huge height", `<mj-section><mj-column><mj-image src="https://brightside.co/a.png" alt="A" height="99999px" /></mj-column></mj-section>`, "template_css"},
+		{"mj-section huge padding", `<mj-section padding-bottom="99999px"><mj-column><mj-text>x</mj-text></mj-column></mj-section>`, "template_css"},
+		{"mj-section huge border", `<mj-section border="50000px solid #f4f4f5"><mj-column><mj-text>x</mj-text></mj-column></mj-section>`, "template_css"},
+		{"huge margin (review probe)", text("margin-bottom:99999px"), "template_css"},
+		{"huge min-height (review probe)", text("min-height:99999px"), "template_css"},
+		{"huge border (review probe)", text("border:50000px solid #f4f4f5"), "template_css"},
+		{"huge width", text("width:99999px"), "template_css"},
+		{"em to get big", text("margin-bottom:9999em"), "template_css"},
+		{"viewport units", text("margin-bottom:500vh"), "template_css"},
+		{"height without clipping", text("height:20px"), "template_css"},
+		{"max-height without clipping", text("max-height:20px"), "template_css"},
+		{"HTML height on a div", raw(`<div height="1">` + words + `</div>`), "template_css"},
+		{"HTML huge width", raw(`<table width="99999"><tr><td>x</td></tr></table>`), "template_css"},
+		{"HTML huge cellpadding", raw(`<table cellpadding="5000"><tr><td>x</td></tr></table>`), "template_css"},
+		{"font size attribute", raw(`<font size="9">x</font>`), "template_css"},
+		{"vertical-align length", text("vertical-align:-900px"), "template_css"},
+		{"min()", text("margin-top:min(0px, 100px)"), "template_css"},
+		{"max()", text("width:max(100px, 99999px)"), "template_css"},
+		{"clamp()", text("width:clamp(1px, 2px, 3px)"), "template_css"},
+		{"arithmetic without calc", text("margin-top:600px*-1"), "template_css"},
+	}
+	for _, c := range cases {
+		if got := buildCodes(t, c.content); !slices.Contains(got, c.want) {
+			t.Errorf("%s: got %v, want %s", c.name, got, c.want)
+		}
+	}
+
+	ok := []struct{ name, content string }{
+		{"hidden preheader pattern", text("display:none;max-height:0;overflow:hidden;mso-hide:all")},
+		{"clipped fixed height", text("height:40px;overflow:hidden")},
+		{"table cell height", raw(`<table width="600" cellpadding="0" cellspacing="0" border="0"><tr><td height="24" style="height:24px;line-height:24px">x</td></tr></table>`)},
+		{"mj-image and mj-spacer heights", `<mj-section><mj-column><mj-image src="https://brightside.co/a.png" alt="A" height="200px" width="300px" /><mj-spacer height="24px" /><mj-text>x</mj-text></mj-column></mj-section>`},
+		{"font element", raw(`<font size="2" color="#52525b" face="Arial">small print</font>`)},
+	}
+	for _, c := range ok {
+		if got := buildCodes(t, c.content); len(got) != 0 {
+			t.Errorf("%s should pass: %v", c.name, got)
 		}
 	}
 }
