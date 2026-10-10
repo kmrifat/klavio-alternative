@@ -61,6 +61,13 @@ type Config struct {
 	// PostmasterCredentialsFile: Google service-account JSON for Postmaster
 	// Tools. Mount it as a secret; never commit it. "" = not connected.
 	PostmasterCredentialsFile string
+
+	// Feedback loop (M4). SESEventsQueueURL: the SQS queue EventBridge fills
+	// with SES events (infra output ses_events_queue_url); required in
+	// production. TrackingScannerNets: address ranges of mail security
+	// scanners whose clicks are bots.
+	SESEventsQueueURL   string
+	TrackingScannerNets []netip.Prefix
 	// Cloudflare's CF-Connecting-IP / CF-IPCountry headers are believed only
 	// when TrustCloudflareHeaders is on and the request's socket peer is in
 	// TrustedProxies (the cloudflared sidecar). Anyone else could forge them.
@@ -141,6 +148,17 @@ func Load(getenv func(string) string) (Config, error) {
 	cfg.UnsubscribeSecret = get("UNSUBSCRIBE_SECRET", "")
 	cfg.UnsubscribeSecretOld = get("UNSUBSCRIBE_SECRET_OLD", "")
 	cfg.PublicBaseURLOverride = get("PUBLIC_BASE_URL_OVERRIDE", "")
+	cfg.SESEventsQueueURL = get("SES_EVENTS_QUEUE_URL", "")
+	for _, s := range strings.Split(get("TRACKING_SCANNER_CIDRS", ""), ",") {
+		if s = strings.TrimSpace(s); s == "" {
+			continue
+		}
+		if p, err := parsePrefix(s); err != nil {
+			errs = append(errs, fmt.Errorf("TRACKING_SCANNER_CIDRS: %q is not an IP or CIDR", s))
+		} else {
+			cfg.TrackingScannerNets = append(cfg.TrackingScannerNets, p)
+		}
+	}
 	cfg.BlocklistResolver = get("BLOCKLIST_RESOLVER", "")
 	cfg.SpamhausDQSKey = get("SPAMHAUS_DQS_KEY", "")
 	cfg.PostmasterCredentialsFile = get("POSTMASTER_CREDENTIALS_FILE", "")
@@ -200,6 +218,9 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		if cfg.SESMode != "aws" {
 			errs = append(errs, errors.New("SES_MODE must be aws in production"))
+		}
+		if cfg.SESEventsQueueURL == "" {
+			errs = append(errs, errors.New("SES_EVENTS_QUEUE_URL is required in production: bounces and complaints arrive there"))
 		}
 		if getenv("WEBAUTHN_RP_ID") == "" {
 			errs = append(errs, errors.New("WEBAUTHN_RP_ID is required in production"))

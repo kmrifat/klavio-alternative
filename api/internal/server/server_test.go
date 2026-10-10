@@ -160,9 +160,11 @@ func TestCSRF(t *testing.T) {
 func TestRedactPath(t *testing.T) {
 	for in, want := range map[string]string{
 		"/u/abc123": "/u/[token]", "/p/xyz": "/p/[token]", "/admin/v1/me": "/admin/v1/me", "/u/": "/u/",
-		"/confirm/tok":                                 "/confirm/[token]",
-		"/api/v1/contacts":                             "/api/v1/contacts",
-		"/api/v1/contacts/ann@example.com":             "/api/v1/contacts/[email]",
+		"/confirm/tok":                     "/confirm/[token]",
+		"/c/tok":                           "/c/[token]",
+		"/o/tok.gif":                       "/o/[token]",
+		"/api/v1/contacts":                 "/api/v1/contacts",
+		"/api/v1/contacts/ann@example.com": "/api/v1/contacts/[email]",
 		"/api/v1/contacts/ann@example.com/unsubscribe": "/api/v1/contacts/[email]/unsubscribe",
 	} {
 		if got := redactPath(in); got != want {

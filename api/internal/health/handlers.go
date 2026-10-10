@@ -331,6 +331,8 @@ type brandHealth struct {
 	BlocklistsOn bool           `json:"blocklists_on"`
 	Postmaster   postmasterView `json:"postmaster"`
 	Events       []store.Alert  `json:"events"`
+	// SafetyEvents: what the brakes did (M4).
+	SafetyEvents []store.SafetyEvent `json:"safety_events"`
 }
 
 func (h *Handlers) brandHealth(w http.ResponseWriter, r *http.Request) error {
@@ -404,6 +406,12 @@ func (h *Handlers) writeHealth(w http.ResponseWriter, r *http.Request, b store.B
 	}
 	if out.Events == nil {
 		out.Events = []store.Alert{}
+	}
+	if out.SafetyEvents, err = h.Store.SafetyEvents(ctx, b.ID, 20); err != nil {
+		return err
+	}
+	if out.SafetyEvents == nil {
+		out.SafetyEvents = []store.SafetyEvent{}
 	}
 	httpx.WriteJSON(w, http.StatusOK, out)
 	return nil
