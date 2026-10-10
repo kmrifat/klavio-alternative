@@ -32,6 +32,9 @@ func (t Tier) Valid() bool {
 	return t == TierActive || t == TierWarm || t == TierAtRisk || t == TierSunset
 }
 
+// TierSQL is the tier of contact c as SQL (for segment rules).
+const TierSQL = tierExpr
+
 // Without tracking consent there are no clicks, so nobody can prove they're
 // Active: the best such a contact reaches is Warm (from the opt-in date).
 const tierExpr = `CASE
@@ -374,6 +377,7 @@ type NewConsentRecord struct {
 	RecordedBy *uuid.UUID
 	ImportID   *uuid.UUID
 	CampaignID *uuid.UUID // the email an unsubscribe came from
+	WordingID  *uuid.UUID // the consent wording agreed to (Contacts API)
 }
 
 func (s *Store) AddConsentRecord(ctx context.Context, r NewConsentRecord) error {
@@ -381,10 +385,10 @@ func (s *Store) AddConsentRecord(ctx context.Context, r NewConsentRecord) error 
 		r.OccurredAt = time.Now()
 	}
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO consent_records (brand_id, contact_id, email_hash, kind, method, source, wording, page_url, ip, occurred_at, recorded_by, import_id, campaign_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		INSERT INTO consent_records (brand_id, contact_id, email_hash, kind, method, source, wording, page_url, ip, occurred_at, recorded_by, import_id, campaign_id, wording_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
 		r.BrandID, r.ContactID, EmailHash(r.Email), r.Kind, r.Method, r.Source, r.Wording, r.PageURL, r.IP,
-		r.OccurredAt, r.RecordedBy, r.ImportID, r.CampaignID)
+		r.OccurredAt, r.RecordedBy, r.ImportID, r.CampaignID, r.WordingID)
 	return err
 }
 

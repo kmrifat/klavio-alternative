@@ -21,6 +21,7 @@ import (
 	"github.com/kmrifat/klavio-alternative/api/internal/auth"
 	"github.com/kmrifat/klavio-alternative/api/internal/blocklist"
 	"github.com/kmrifat/klavio-alternative/api/internal/config"
+	"github.com/kmrifat/klavio-alternative/api/internal/mailer"
 	"github.com/kmrifat/klavio-alternative/api/internal/ses"
 	"github.com/kmrifat/klavio-alternative/api/internal/testdb"
 	"github.com/kmrifat/klavio-alternative/api/internal/webauthntest"
@@ -231,6 +232,19 @@ func (r inlineRunner) StartCommit(ctx context.Context, brandID, id uuid.UUID) er
 	return (*r.a).Imports.RunCommit(context.WithoutCancel(ctx), brandID, id)
 }
 
+// QueueConfirmation sends the double opt-in email right away.
+func (r inlineRunner) QueueConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID) error {
+	return (*r.a).Confirm.SendConfirmation(context.WithoutCancel(ctx), brandID, contactID, requestID)
+}
+
+// mails holds each test app's outbox (*app.App → *mailer.Memory).
+var mails sync.Map
+
+func outbox(a *app.App) []mailer.Message {
+	m, _ := mails.Load(a)
+	return m.(*mailer.Memory).Sent()
+}
+
 // QueueRebuild recompiles templates right away, after the change committed.
 func (r inlineRunner) QueueRebuild(ctx context.Context, brandID uuid.UUID) error {
 	return (*r.a).Templates.RebuildBrand(context.WithoutCancel(ctx), brandID)
@@ -255,6 +269,7 @@ func setupWith(t *testing.T, edit func(*config.Config)) (*app.App, *httptest.Ser
 func setupDeps(t *testing.T, tweak func(*app.Deps)) (*app.App, *httptest.Server, *fakeDNS) {
 	pool := testdb.New(t)
 	var appRef *app.App
+	mem := &mailer.Memory{}
 	dns := &fakeDNS{cname: map[string]string{}, mx: map[string][]*net.MX{}, txt: map[string][]string{}, hosts: map[string]bool{}, answers: map[string][]string{}}
 	d := app.Deps{
 		Config: config.Config{
@@ -275,6 +290,8 @@ func setupDeps(t *testing.T, tweak func(*app.Deps)) (*app.App, *httptest.Server,
 		ImportRunner:      inlineRunner{a: &appRef},
 		TemplateRebuilder: inlineRunner{a: &appRef},
 		Blocklists:        &blocklist.Checker{R: dns},
+		Mailer:            mem,
+		ConfirmationQueue: inlineRunner{a: &appRef},
 	}
 	if tweak != nil {
 		tweak(&d)
@@ -284,6 +301,7 @@ func setupDeps(t *testing.T, tweak func(*app.Deps)) (*app.App, *httptest.Server,
 		t.Fatal(err)
 	}
 	appRef = a
+	mails.Store(a, mem)
 	srv := httptest.NewServer(a.Handler())
 	t.Cleanup(srv.Close)
 	return a, srv, dns

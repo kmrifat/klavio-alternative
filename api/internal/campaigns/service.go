@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/kmrifat/klavio-alternative/api/internal/approvals"
+	"github.com/kmrifat/klavio-alternative/api/internal/freqcap"
 	"github.com/kmrifat/klavio-alternative/api/internal/sending"
 	"github.com/kmrifat/klavio-alternative/api/internal/ses"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
@@ -60,6 +61,8 @@ type Warmup interface {
 	// Reserve takes up to want sends from the brand's allowance for the
 	// UTC day, atomically, inside tx, and returns how many were granted.
 	Reserve(ctx context.Context, tx *store.Store, brandID uuid.UUID, day time.Time, want int) (int, error)
+	// Release gives back n sends reserved for day that didn't go out.
+	Release(ctx context.Context, tx *store.Store, brandID uuid.UUID, day time.Time, n int) error
 	// InWarmup reports whether sends on day need a warm-up approval.
 	InWarmup(ctx context.Context, brandID uuid.UUID, day time.Time) (bool, error)
 }
@@ -70,13 +73,16 @@ type Brakes interface {
 	AfterTestSlice(ctx context.Context, c store.Campaign) (pause bool, reason string, err error)
 }
 
-// FreqCap keeps one person from getting too much email across brands (M7).
-// Until it is wired in, there is no cap.
+// FreqCap keeps one person from getting too much email across brands
+// (M7's *freqcap.Service). Without one there is no cap.
 type FreqCap interface {
-	// Reserve checks and records sends for these contacts inside tx and
-	// returns who may get one now; the rest map to a reason
-	// ("freq_cap_day", "freq_cap_week", "same_brand_gap" …).
-	Reserve(ctx context.Context, tx *store.Store, brandID uuid.UUID, contactIDs []uuid.UUID, now time.Time) (allowed []uuid.UUID, excluded map[uuid.UUID]string, err error)
+	// Filter says who would be held back now (read-only; tx may be nil).
+	Filter(ctx context.Context, tx *store.Store, brandID uuid.UUID, contactIDs []uuid.UUID, now time.Time) (allowed []uuid.UUID, excluded []freqcap.Excluded, err error)
+	// Reserve is Filter plus recording a send at now for everyone allowed,
+	// inside tx.
+	Reserve(ctx context.Context, tx *store.Store, brandID uuid.UUID, contactIDs []uuid.UUID, now time.Time) (allowed []uuid.UUID, excluded []freqcap.Excluded, err error)
+	// Release forgets sends reserved at `at` that didn't go out.
+	Release(ctx context.Context, tx *store.Store, brandID uuid.UUID, contactIDs []uuid.UUID, at time.Time) error
 }
 
 // Runner queues the worker's next step (river jobs in production).
@@ -201,7 +207,7 @@ func (s *Service) Review(ctx context.Context, b store.Brand, c store.Campaign) (
 		TestSlicePct: s.limits.Get(ctx, LimitTestSlicePct),
 		HoldMinutes:  int(s.limits.Get(ctx, LimitHoldMinutes)),
 	}
-	sum, err := s.store.AudienceSummary(ctx, b.ID, c.TopicID, c.IncludeAtRisk)
+	sum, err := s.audience(ctx, s.store, b.ID, c)
 	if err != nil {
 		return rv, tpl, err
 	}
@@ -327,7 +333,11 @@ func (s *Service) Schedule(ctx context.Context, b store.Brand, c store.Campaign,
 		if locked.Version != in.Version {
 			return store.ErrStale
 		}
-		included, excluded, err := tx.SnapshotAudience(ctx, locked, rv.TestSlicePct)
+		capped, err := s.capped(ctx, tx, b.ID, locked)
+		if err != nil {
+			return err
+		}
+		included, excluded, err := tx.SnapshotAudience(ctx, locked, rv.TestSlicePct, capped)
 		if err != nil {
 			return err
 		}
@@ -460,7 +470,11 @@ func (s *Service) Cancel(ctx context.Context, c store.Campaign, audit store.Audi
 		if !ok {
 			return ErrFinished
 		}
-		if err := tx.SkipQueuedSends(ctx, c.ID, "cancelled"); err != nil {
+		held, err := tx.SkipQueuedSends(ctx, c.ID, "cancelled")
+		if err != nil {
+			return err
+		}
+		if err := s.giveBack(ctx, tx, c.BrandID, held); err != nil {
 			return err
 		}
 		audit.Action, audit.TargetType, audit.TargetID = "campaign.cancelled", "campaign", c.ID.String()
@@ -745,7 +759,7 @@ func (s *Service) batch(ctx context.Context, c store.Campaign, stage string, st 
 		for i, r := range rest {
 			ids[i] = r.ID
 		}
-		return s.store.ReleaseSends(bg, rest[0].Token, ids)
+		return s.store.ReleaseClaimedSends(bg, rest[0].Token, ids)
 	}
 	for i, cs := range claimed {
 		// Stop claiming time we don't have: put the rest back for the next step.
@@ -767,12 +781,14 @@ func (s *Service) batch(ctx context.Context, c store.Campaign, stage string, st 
 	return s.afterBatch(bg, c, stage, len(claimed), st)
 }
 
-// claim takes the next batch of due sends. While the brand warms up, the
-// batch is reserved from its daily allowance in the same transaction, so
-// concurrent workers can't overspend it; whatever isn't granted waits for
-// the recipient's next morning after the UTC day turns. A reserved send that
-// later fails for good still counts against the day: conservative, and the
-// warm-up is about volume offered.
+// claim takes the next batch of due sends and reserves their room in the
+// brand's warm-up allowance and the frequency cap, all in one transaction
+// (and only through it), so concurrent workers can't overspend either.
+// Whatever the warm-up doesn't grant waits for the recipient's next morning
+// after the UTC day turns; whoever the cap holds back is skipped. A send
+// that comes back to the queue (a retry, a pause) keeps its reservation
+// until it is claimed again, and gives it back then; one that ends without
+// going out gives it back at once.
 func (s *Service) claim(ctx context.Context, c store.Campaign, stage string) ([]store.ClaimedSend, error) {
 	var claimed []store.ClaimedSend
 	err := s.store.InTx(ctx, func(tx *store.Store) error {
@@ -780,7 +796,25 @@ func (s *Service) claim(ctx context.Context, c store.Campaign, stage string) ([]
 		if claimed, err = tx.ClaimSends(ctx, c, stage, s.batchSize()); err != nil || len(claimed) == 0 {
 			return err
 		}
-		now := s.now()
+		// Microseconds, as Postgres keeps them: Release matches on it.
+		now := s.now().Truncate(time.Microsecond)
+		var old []store.Reservation
+		var oldIDs []int64
+		for i, cs := range claimed {
+			if cs.ReservedAt != nil {
+				old = append(old, store.Reservation{ContactID: cs.ContactID, ReservedAt: *cs.ReservedAt})
+				oldIDs = append(oldIDs, cs.ID)
+				claimed[i].ReservedAt = nil
+			}
+		}
+		if len(old) > 0 {
+			if err := s.giveBack(ctx, tx, c.BrandID, old); err != nil {
+				return err
+			}
+			if err := tx.SetReserved(ctx, oldIDs, nil); err != nil {
+				return err
+			}
+		}
 		if s.warmup != nil {
 			granted, err := s.warmup.Reserve(ctx, tx, c.BrandID, now, len(claimed))
 			if err != nil {
@@ -807,33 +841,117 @@ func (s *Service) claim(ctx context.Context, c store.Campaign, stage string) ([]
 		}
 		// The frequency cap runs on what the warm-up granted. Someone over
 		// it is skipped for this campaign, not deferred: a later send would
-		// be just as unwelcome. (The warm-up counted them anyway, which is
-		// conservative.)
-		if s.freqcap == nil || len(claimed) == 0 {
-			return nil
-		}
-		ids := make([]uuid.UUID, len(claimed))
-		for i, cs := range claimed {
-			ids[i] = cs.ContactID
-		}
-		_, excluded, err := s.freqcap.Reserve(ctx, tx, c.BrandID, ids, now)
-		if err != nil {
-			return err
-		}
-		kept := claimed[:0]
-		for _, cs := range claimed {
-			if reason, out := excluded[cs.ContactID]; out {
-				if err := tx.MarkSendSkipped(ctx, cs.Claim(), reason); err != nil {
+		// be just as unwelcome. Their warm-up room goes back.
+		if s.freqcap != nil && len(claimed) > 0 {
+			ids := make([]uuid.UUID, len(claimed))
+			for i, cs := range claimed {
+				ids[i] = cs.ContactID
+			}
+			_, excluded, err := s.freqcap.Reserve(ctx, tx, c.BrandID, ids, now)
+			if err != nil {
+				return err
+			}
+			reasons := make(map[uuid.UUID]freqcap.Reason, len(excluded))
+			for _, e := range excluded {
+				reasons[e.ContactID] = e.Reason
+			}
+			kept := claimed[:0]
+			for _, cs := range claimed {
+				if reason, out := reasons[cs.ContactID]; out {
+					if _, err := tx.MarkSendSkipped(ctx, cs.Claim(), string(reason)); err != nil {
+						return err
+					}
+					continue
+				}
+				kept = append(kept, cs)
+			}
+			if s.warmup != nil {
+				if err := s.warmup.Release(ctx, tx, c.BrandID, now, len(claimed)-len(kept)); err != nil {
 					return err
 				}
-				continue
 			}
-			kept = append(kept, cs)
+			claimed = kept
 		}
-		claimed = kept
-		return nil
+		if (s.warmup == nil && s.freqcap == nil) || len(claimed) == 0 {
+			return nil
+		}
+		ids := make([]int64, len(claimed))
+		for i := range claimed {
+			ids[i] = claimed[i].ID
+			claimed[i].ReservedAt = &now
+		}
+		return tx.SetReserved(ctx, ids, &now)
 	})
 	return claimed, err
+}
+
+// giveBack returns reservations of sends that didn't go out, through tx.
+func (s *Service) giveBack(ctx context.Context, tx *store.Store, brandID uuid.UUID, res []store.Reservation) error {
+	byTime := map[time.Time][]uuid.UUID{}
+	for _, r := range res {
+		at := r.ReservedAt.UTC()
+		byTime[at] = append(byTime[at], r.ContactID)
+	}
+	for at, ids := range byTime {
+		if s.warmup != nil {
+			if err := s.warmup.Release(ctx, tx, brandID, at, len(ids)); err != nil {
+				return err
+			}
+		}
+		if s.freqcap != nil {
+			if err := s.freqcap.Release(ctx, tx, brandID, ids, at); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// endUnsent ends a send that didn't go out (skipped, failed) and gives its
+// reservation back, in one transaction.
+func (s *Service) endUnsent(ctx context.Context, c store.Campaign, cs store.ClaimedSend, mark func(*store.Store) (*time.Time, error)) error {
+	return s.store.InTx(ctx, func(tx *store.Store) error {
+		at, err := mark(tx)
+		if err != nil || at == nil {
+			return err
+		}
+		return s.giveBack(ctx, tx, c.BrandID, []store.Reservation{{ContactID: cs.ContactID, ReservedAt: *at}})
+	})
+}
+
+func (s *Service) skip(ctx context.Context, c store.Campaign, cs store.ClaimedSend, reason string) error {
+	return s.endUnsent(ctx, c, cs, func(tx *store.Store) (*time.Time, error) { return tx.MarkSendSkipped(ctx, cs.Claim(), reason) })
+}
+
+// audience counts a draft's audience as it would be now, the frequency cap
+// included (S5). Read through q.
+func (s *Service) audience(ctx context.Context, q *store.Store, brandID uuid.UUID, c store.Campaign) (store.AudienceSummary, error) {
+	capped, err := s.capped(ctx, q, brandID, c)
+	if err != nil {
+		return store.AudienceSummary{}, err
+	}
+	return q.AudienceSummary(ctx, brandID, c.TopicID, c.IncludeAtRisk, capped)
+}
+
+// capped lists who the frequency cap would hold back from the campaign now.
+// Sending checks again, so this is the forecast the sender confirms.
+func (s *Service) capped(ctx context.Context, q *store.Store, brandID uuid.UUID, c store.Campaign) ([]uuid.UUID, error) {
+	if s.freqcap == nil {
+		return nil, nil
+	}
+	ids, err := q.AudienceCandidates(ctx, brandID, c.TopicID, c.IncludeAtRisk)
+	if err != nil || len(ids) == 0 {
+		return nil, err
+	}
+	_, excluded, err := s.freqcap.Filter(ctx, q, brandID, ids, s.now())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]uuid.UUID, len(excluded))
+	for i, e := range excluded {
+		out[i] = e.ContactID
+	}
+	return out, nil
 }
 
 // sendOne re-checks one recipient, sends, and records the outcome. stop
@@ -844,35 +962,35 @@ func (s *Service) sendOne(ctx context.Context, b store.Brand, c store.Campaign, 
 	// erased while a campaign is under way.
 	switch {
 	case cs.Email == nil:
-		return false, s.store.MarkSendSkipped(bg, cs.Claim(), "erased")
+		return false, s.skip(bg, c, cs, "erased")
 	case cs.Suppressed:
-		return false, s.store.MarkSendSkipped(bg, cs.Claim(), "suppressed")
+		return false, s.skip(bg, c, cs, "suppressed")
 	case cs.Status == nil || *cs.Status != string(store.ContactSubscribed):
-		return false, s.store.MarkSendSkipped(bg, cs.Claim(), "no_longer_subscribed")
+		return false, s.skip(bg, c, cs, "no_longer_subscribed")
 	case !cs.InTopic:
-		return false, s.store.MarkSendSkipped(bg, cs.Claim(), "topic_unsubscribed")
+		return false, s.skip(bg, c, cs, "topic_unsubscribed")
 	}
 	msg := s.message(b, c, cs, base)
 	if err := s.pacer.Wait(ctx); err != nil {
-		return true, s.store.ReleaseSends(bg, cs.Token, []int64{cs.ID})
+		return true, s.store.ReleaseClaimedSends(bg, cs.Token, []int64{cs.ID})
 	}
 	// Re-read campaign and brand after the wait, right before sending, so a
 	// pause, a cancel or a failing DNS check stops it within one email.
 	state, err := s.store.CampaignState(ctx, c.ID)
 	if err != nil || state != c.State {
-		return true, errors.Join(err, s.store.ReleaseSends(bg, cs.Token, []int64{cs.ID}))
+		return true, errors.Join(err, s.store.ReleaseClaimedSends(bg, cs.Token, []int64{cs.ID}))
 	}
 	now, err := s.store.BrandByID(ctx, b.ID)
 	if err != nil {
-		return true, errors.Join(err, s.store.ReleaseSends(bg, cs.Token, []int64{cs.ID}))
+		return true, errors.Join(err, s.store.ReleaseClaimedSends(bg, cs.Token, []int64{cs.ID}))
 	}
 	if !brandCanSend(now) {
-		return true, errors.Join(s.store.ReleaseSends(bg, cs.Token, []int64{cs.ID}), s.pauseForBrand(bg, c, now))
+		return true, errors.Join(s.store.ReleaseClaimedSends(bg, cs.Token, []int64{cs.ID}), s.pauseForBrand(bg, c, now))
 	}
 
 	mine, err := s.store.MarkCalling(bg, cs.Claim())
 	if err != nil {
-		return true, errors.Join(err, s.store.ReleaseSends(bg, cs.Token, []int64{cs.ID}))
+		return true, errors.Join(err, s.store.ReleaseClaimedSends(bg, cs.Token, []int64{cs.ID}))
 	}
 	if !mine {
 		// This worker stalled long enough for its claim to be recovered and
@@ -892,9 +1010,9 @@ func (s *Service) sendOne(ctx context.Context, b store.Brand, c store.Campaign, 
 		backoff := time.Duration(math.Pow(4, float64(cs.Attempts))) * 15 * time.Second
 		return false, s.store.RequeueSend(bg, cs.Claim(), sending.SendAfter(s.now().Add(backoff), cs.Timezone), err.Error())
 	case errors.Is(err, ses.ErrUnavailable), errors.Is(err, ses.ErrRejected):
-		return false, s.store.MarkSendFailed(bg, cs.Claim(), err.Error())
+		return false, s.endUnsent(bg, c, cs, func(tx *store.Store) (*time.Time, error) { return tx.MarkSendFailed(bg, cs.Claim(), err.Error()) })
 	case errors.Is(err, ses.ErrSendingPaused):
-		if rerr := s.store.ReleaseSends(bg, cs.Token, []int64{cs.ID}); rerr != nil {
+		if rerr := s.store.ReleaseClaimedSends(bg, cs.Token, []int64{cs.ID}); rerr != nil {
 			return true, rerr
 		}
 		_, perr := s.store.PauseCampaign(bg, c.ID, "Amazon SES stopped sending: "+err.Error())

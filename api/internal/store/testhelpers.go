@@ -76,3 +76,20 @@ func (s *Store) ExecForTest(ctx context.Context, sql string, args ...any) error 
 func (s *Store) QueryRowForTest(ctx context.Context, sql string, dest any, args ...any) error {
 	return s.db.QueryRow(ctx, sql, args...).Scan(dest)
 }
+
+// TryEditWordingForTest attempts the UPDATE the immutability trigger must refuse.
+func (s *Store) TryEditWordingForTest(ctx context.Context, id uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `UPDATE consent_wordings SET text = text || ' (edited)' WHERE id = $1`, id)
+	return err
+}
+
+// AgeIdempotencyForTest makes every in-progress idempotency claim look old.
+func (s *Store) AgeIdempotencyForTest(ctx context.Context) error {
+	_, err := s.db.Exec(ctx, `UPDATE api_idempotency SET created_at = now() - interval '10 minutes' WHERE status = 0`)
+	return err
+}
+
+// QueryIntForTest scans one integer.
+func (s *Store) QueryIntForTest(ctx context.Context, sql string, out *int) error {
+	return s.db.QueryRow(ctx, sql).Scan(out)
+}

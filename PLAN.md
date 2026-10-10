@@ -250,7 +250,10 @@ Rules: tighten automatically, **loosen only with a second admin**. Never past th
 
 `POST /api/v1/contacts` → check key, brand, IP allowlist, rate limits, consent wording →
 create contact `pending_confirmation` → send confirmation email (P2) → person clicks →
-P1 page → `subscribed`. Suppressed emails return `200 suppressed` and nothing changes.
+P1 page → `subscribed`. Suppressed emails get the same `202 pending_confirmation` as
+anyone else and nothing changes (deliberately: the answer mustn't reveal that an address
+bounced or complained at another brand). Adding topics to an existing subscriber needs a
+confirmation too; omitted topics leave an existing contact's topics alone.
 Idempotency-Key header supported.
 
 ### 6.7 Import (S4)

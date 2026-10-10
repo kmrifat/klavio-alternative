@@ -1,0 +1,35 @@
+{{define "page"}}<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>{{if .Brand.Name}}{{.Brand.Name}} · {{end}}Confirm your subscription</title>
+<style>
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f4f4f5;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#18181b;padding:16px;box-sizing:border-box}
+main{width:100%;max-width:440px;background:#fff;border-radius:12px;padding:28px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+h1{font-size:20px;margin:0 0 8px}ul{margin:0 0 16px;padding-left:20px;font-size:15px;color:#3f3f46}p{font-size:15px;line-height:1.5;color:#3f3f46;margin:0 0 16px}
+button{font:inherit;font-weight:600;color:#fff;border:0;border-radius:8px;padding:12px 20px;cursor:pointer}
+.brand{font-weight:600;margin-bottom:16px}.muted{font-size:13px;color:#71717a}
+</style></head>
+<body><main{{if .Brand.Color}} style="border-top:4px solid {{.Brand.Color}}"{{end}}>
+{{if .Brand.Name}}<div class="brand">{{.Brand.Name}}</div>{{end}}
+{{if eq .Page "ask"}}
+<h1>{{if .TopicsLink}}Confirm your new topics{{else}}Confirm your subscription{{end}}</h1>
+<p>{{if .Contact}}{{mask .Contact.Email}}: {{end}}tap the button to {{if .TopicsLink}}add these to your emails from{{else}}start getting emails from{{end}} {{.Brand.Name}}{{if .Topics}}:{{else}}.{{end}}</p>
+{{if .Topics}}<ul>{{range .Topics}}<li>{{.}}</li>{{end}}</ul>{{end}}
+<form method="post"><button type="submit" style="background:{{.Brand.Color}}">Yes, subscribe me</button></form>
+<p class="muted" style="margin-top:16px">Not you? Close this page and nothing happens.</p>
+{{else if eq .Page "confirmed"}}
+<h1>You're subscribed</h1>{{if .Topics}}<ul>{{range .Topics}}<li>{{.}}</li>{{end}}</ul>{{end}}<p>Thanks for confirming. You'll hear from {{.Brand.Name}} soon, and every email has a link to unsubscribe.</p>
+{{else if eq .Page "already"}}
+<h1>Already confirmed</h1><p>You're already subscribed to {{.Brand.Name}}. Nothing else to do.</p>
+{{else if eq .Page "cant"}}
+<h1>This link can't be used</h1><p>This address can't be subscribed with this link anymore. If you'd like emails from {{.Brand.Name}}, sign up again on their website.</p>
+{{else if eq .Page "expired"}}
+<h1>This link has expired</h1><p>Confirmation links work for 30 days. Sign up again to get a fresh one.</p>
+{{else if eq .Page "busy"}}
+<h1>Too many tries</h1><p>Please wait a minute and try again.</p>
+{{else if eq .Page "error"}}
+<h1>Something went wrong</h1><p>Please try again in a moment.</p>
+{{else}}
+<h1>Link not valid</h1><p>This confirmation link isn't valid. Check you copied all of it.</p>
+{{end}}
+</main></body></html>{{end}}

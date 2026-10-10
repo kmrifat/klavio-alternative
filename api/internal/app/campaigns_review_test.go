@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/kmrifat/klavio-alternative/api/internal/campaigns"
+	"github.com/kmrifat/klavio-alternative/api/internal/freqcap"
+	"github.com/kmrifat/klavio-alternative/api/internal/mailer"
 	"github.com/kmrifat/klavio-alternative/api/internal/sending"
 	"github.com/kmrifat/klavio-alternative/api/internal/ses"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
@@ -384,6 +386,118 @@ func TestCampaignStalledWorkerLosesItsClaim(t *testing.T) {
 	}
 	if lease != nil {
 		t.Errorf("lease left behind: %v", lease)
+	}
+}
+
+// M7's frequency cap, wired in: the audience screen (S5) and the confirmed
+// number leave out who it holds back now; sending checks again; and a send
+// that comes back to the queue doesn't trip the cap on its own retry.
+func TestCampaignRealFreqCap(t *testing.T) {
+	w := newCampaignWorld(t)
+	ctx := context.Background()
+	w.a.Campaigns.SetFreqCap(w.a.FreqCap)
+	busy := w.contact("busy@example.com", store.ContactSubscribed, 24*time.Hour, true)
+	recent := w.contact("recent@example.com", store.ContactSubscribed, 24*time.Hour, true)
+	late := w.contact("late@example.com", store.ContactSubscribed, 24*time.Hour, true)
+	w.contact("fine@example.com", store.ContactSubscribed, 24*time.Hour, true)
+	w.contact("throttle@example.com", store.ContactSubscribed, 24*time.Hour, true) // throttled once, then sent
+	history := func(id uuid.UUID, ago string) {
+		w.exec(`INSERT INTO marketing_sends (email_hash, brand_id, contact_id, sent_at)
+			SELECT email_hash, brand_id, id, now() - $2::interval FROM contacts WHERE id = $1`, id, ago)
+	}
+	history(busy, "20 hours") // two today: the daily cap
+	history(busy, "21 hours")
+	history(recent, "2 hours") // this brand, too recently
+
+	id := w.draft(nil)["id"].(string)
+	cid := uuid.MustParse(id)
+	aud := w.owner.must(200, w.owner.do("GET", campaignBase+"/campaigns/"+id, nil)).body["audience"].(map[string]any)
+	if num(aud["included"]) != 3 || num(aud["excluded"].(map[string]any)["frequency_cap"]) != 2 {
+		t.Fatalf("S5 audience: %v", aud)
+	}
+	rv := w.owner.must(200, w.owner.do("GET", campaignBase+"/campaigns/"+id+"/review", nil))
+	if rv.body["confirm_text"] != "3" {
+		t.Fatalf("confirm text %v", rv.body["confirm_text"])
+	}
+	sched := w.owner.must(200, w.owner.do("POST", campaignBase+"/campaigns/"+id+"/schedule", map[string]any{"version": 1, "confirm": "3"}))
+	if b := sched.body["breakdown"].(map[string]any); num(b["frequency_cap"]) != 2 {
+		t.Fatalf("snapshot: %v", b)
+	}
+
+	// Capped after scheduling: skipped when its turn comes.
+	history(late, "20 hours")
+	history(late, "21 hours")
+	done := w.runUntil(id, store.CampaignDone)
+	seen := recipients(w.sender.Messages())
+	if len(seen) != 2 || seen["fine@example.com"] != 1 || seen["throttle@example.com"] != 1 {
+		t.Fatalf("sent to %v, want fine@ and throttle@", seen)
+	}
+	var reason string
+	if err := w.a.Store.QueryRowForTest(ctx, `SELECT s.skip_reason FROM sends s WHERE s.campaign_id = $1 AND s.contact_id = $2`, &reason, done.ID, late); err != nil {
+		t.Fatal(err)
+	}
+	if reason != string(freqcap.ReasonDay) {
+		t.Fatalf("late@ skip reason %q", reason)
+	}
+	// One remembered send per email that went out: the throttled first try
+	// gave its reservation back, and the skipped one never kept one.
+	if n := w.count(`SELECT count(*) FROM marketing_sends WHERE sent_at > now() - interval '1 hour'`); n != 2 {
+		t.Fatalf("%d marketing sends recorded, want 2", n)
+	}
+	if n := w.count(`SELECT count(*) FROM sends WHERE campaign_id = $1 AND status = 'sent' AND reserved_at IS NULL`, cid); n != 0 {
+		t.Fatalf("%d sent rows without their reservation", n)
+	}
+}
+
+// Confirmation and re-permission emails (M7) go out through SES as the
+// brand, paced with campaigns; never while the brand can't send.
+func TestCampaignMailerForConfirmations(t *testing.T) {
+	w := newCampaignWorld(t)
+	ctx := context.Background()
+	m := w.a.Campaigns.Mailer()
+	msg := mailer.Message{Brand: w.brand, To: "new@example.com", Subject: "Please confirm\r\nBcc: x@evil.test", HTML: "<p>Confirm</p>", Text: "Confirm",
+		Headers: map[string]string{"List-Unsubscribe": "<https://go.brightside.co/u/x>"}, Kind: "confirmation"}
+	if err := m.Send(ctx, msg); err != nil {
+		t.Fatal(err)
+	}
+	got := w.sender.Messages()
+	if len(got) != 1 {
+		t.Fatalf("sent %d", len(got))
+	}
+	g := got[0]
+	if g.From != `"Brightside" <hello@news.brightside.co>` || g.ConfigurationSet != "brand-brightside" || g.To != "new@example.com" ||
+		g.Tags["kind"] != "confirmation" || g.Headers["List-Unsubscribe"] == "" || strings.ContainsAny(g.Subject, "\r\n") {
+		t.Fatalf("message: %+v", g)
+	}
+	msg.Brand.Status = store.BrandSetup
+	if err := m.Send(ctx, msg); err == nil {
+		t.Fatal("sent for a brand that can't send")
+	}
+}
+
+// A cancelled campaign gives back the room its unsent, already reserved
+// sends held, so they don't count against the people's cap.
+func TestCampaignCancelGivesBackReservations(t *testing.T) {
+	w := newCampaignWorld(t)
+	w.a.Campaigns.SetFreqCap(w.a.FreqCap)
+	for i := range 10 {
+		w.contact(fmt.Sprintf("g%d@example.com", i), store.ContactSubscribed, 24*time.Hour, true)
+	}
+	id := w.draft(nil)["id"].(string)
+	cid := uuid.MustParse(id)
+	w.schedule(id, 10)
+	w.runUntil(id, store.CampaignSending)
+	// Every rest send is claimed and reserved, then SES pauses sending, so
+	// they all go back to the queue still holding their reservations.
+	w.hooks.set(func(ses.Message) error { return fmt.Errorf("%w: fake", ses.ErrSendingPaused) })
+	w.step(id)
+	if n := w.count(`SELECT count(*) FROM sends WHERE campaign_id = $1 AND status = 'queued' AND reserved_at IS NOT NULL`, cid); n == 0 {
+		t.Fatal("expected released sends to keep their reservation")
+	}
+	// Cancelling a paused campaign (this also once broke on paused_from).
+	w.owner.must(200, w.owner.do("POST", campaignBase+"/campaigns/"+id+"/cancel", nil))
+	if n := w.count(`SELECT count(*) FROM marketing_sends`); n != 1 { // the test slice's one email
+		t.Fatalf("%d marketing sends after cancel, want 1", n)
 	}
 }
 

@@ -103,6 +103,9 @@ CREATE TABLE sends (
     -- Which claim holds it: a worker that stalled and lost the row to
     -- another can't mark, send or record it any more.
     claim_token    uuid,
+    -- When this send took its place in the warm-up allowance and the
+    -- frequency cap. A send that didn't go out gives both back.
+    reserved_at    timestamptz,
     -- Set right before SES is called. A send stuck in 'sending' without it
     -- never reached SES and can safely go back to the queue; with it, the
     -- outcome is unknown and it is never retried.

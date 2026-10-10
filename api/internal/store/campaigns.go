@@ -207,7 +207,7 @@ func (s *Store) ScheduleCampaign(ctx context.Context, id uuid.UUID, sc CampaignS
 // It reports false (and changes nothing) if the campaign wasn't in any of them.
 func (s *Store) SetCampaignState(ctx context.Context, id uuid.UUID, from []CampaignState, to CampaignState) (bool, error) {
 	tag, err := s.db.Exec(ctx, `
-		UPDATE campaigns SET state = $3, updated_at = now(),
+		UPDATE campaigns SET state = $3, updated_at = now(), paused_from = NULL, -- never to 'paused' (PauseCampaign)
 			finished_at = CASE WHEN $3 IN ('done', 'cancelled') THEN now() ELSE finished_at END
 		WHERE id = $1 AND state = ANY($2)`, id, from, to)
 	return err == nil && tag.RowsAffected() == 1, err
@@ -265,12 +265,15 @@ const (
 	ExcludedPending      ExclusionReason = "pending_confirmation"
 	ExcludedSunset       ExclusionReason = "sunset"
 	ExcludedAtRisk       ExclusionReason = "at_risk"
+	ExcludedFreqCap      ExclusionReason = "frequency_cap" // had enough email lately, from any brand (M7)
 )
 
 // audienceQuery classifies every member of a topic: reason NULL = included.
-// $1 brand, $2 topic, $3 include at-risk. Order of precedence: suppressed,
-// then contact status, then engagement tier.
-const audienceQuery = `
+// $1 brand, $2 topic, $3 include at-risk, and capped: the parameter holding
+// the contacts the frequency cap holds back. Order of precedence:
+// suppressed, then contact status, then engagement tier, then the cap.
+func audienceQuery(capped string) string {
+	return `
 	SELECT c.id AS contact_id, c.import_id, CASE
 		WHEN s.email_hash IS NOT NULL THEN 'suppressed'
 		WHEN c.status = 'unsubscribed' THEN 'unsubscribed'
@@ -278,11 +281,31 @@ const audienceQuery = `
 		WHEN c.status = 'pending_confirmation' THEN 'pending_confirmation'
 		WHEN ` + tierExpr + ` = 'sunset' THEN 'sunset'
 		WHEN ` + tierExpr + ` = 'at_risk' AND NOT $3 THEN 'at_risk'
+		WHEN c.id = ANY(` + capped + `::uuid[]) THEN 'frequency_cap'
 	END AS reason
 	FROM contact_topics ct
 	JOIN contacts c ON c.id = ct.contact_id
 	LEFT JOIN suppressions s ON s.email_hash = c.email_hash
 	WHERE ct.brand_id = $1 AND ct.topic_id = $2`
+}
+
+// AudienceCandidates lists who'd get a campaign before the frequency cap.
+func (s *Store) AudienceCandidates(ctx context.Context, brandID, topicID uuid.UUID, includeAtRisk bool) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx, `SELECT contact_id FROM (`+audienceQuery("'{}'")+`) a WHERE reason IS NULL`, brandID, topicID, includeAtRisk)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
 
 // AudienceSummary counts a would-be audience: included, and excluded by reason.
 type AudienceSummary struct {
@@ -294,14 +317,18 @@ type AudienceSummary struct {
 	AtRisk int `json:"at_risk"`
 }
 
-func (s *Store) AudienceSummary(ctx context.Context, brandID, topicID uuid.UUID, includeAtRisk bool) (AudienceSummary, error) {
+// capped: contacts the frequency cap holds back right now.
+func (s *Store) AudienceSummary(ctx context.Context, brandID, topicID uuid.UUID, includeAtRisk bool, capped []uuid.UUID) (AudienceSummary, error) {
 	sum := AudienceSummary{Excluded: map[ExclusionReason]int{}}
+	if capped == nil {
+		capped = []uuid.UUID{}
+	}
 	rows, err := s.db.Query(ctx, `
-		WITH a AS (`+audienceQuery+`)
+		WITH a AS (`+audienceQuery("$4")+`)
 		SELECT coalesce(reason, ''), count(*),
 			count(*) FILTER (WHERE reason IS NULL AND import_id IS NOT NULL
 				AND NOT EXISTS (SELECT 1 FROM sends sd WHERE sd.contact_id = a.contact_id AND sd.status = 'sent'))
-		FROM a GROUP BY 1`, brandID, topicID, includeAtRisk)
+		FROM a GROUP BY 1`, brandID, topicID, includeAtRisk, capped)
 	if err != nil {
 		return sum, err
 	}
@@ -330,9 +357,13 @@ func (s *Store) AudienceSummary(ctx context.Context, brandID, topicID uuid.UUID,
 }
 
 // SnapshotAudience writes the audience of a campaign being scheduled, with
-// a random test slice of testPct percent (at least one person). Returns
-// included and excluded counts.
-func (s *Store) SnapshotAudience(ctx context.Context, c Campaign, testPct float64) (included, excluded int, err error) {
+// a random test slice of testPct percent (at least one person) chosen after
+// the frequency cap's exclusions (capped). Returns included and excluded
+// counts.
+func (s *Store) SnapshotAudience(ctx context.Context, c Campaign, testPct float64, capped []uuid.UUID) (included, excluded int, err error) {
+	if capped == nil {
+		capped = []uuid.UUID{}
+	}
 	if _, err := s.db.Exec(ctx, `DELETE FROM campaign_audience WHERE campaign_id = $1`, c.ID); err != nil {
 		return 0, 0, err
 	}
@@ -344,8 +375,8 @@ func (s *Store) SnapshotAudience(ctx context.Context, c Campaign, testPct float6
 			SELECT a.contact_id, a.reason,
 				count(*) FILTER (WHERE a.reason IS NULL) OVER () AS n,
 				CASE WHEN a.reason IS NULL THEN row_number() OVER (PARTITION BY a.reason IS NULL ORDER BY random()) END AS rn
-			FROM (`+audienceQuery+`) a
-		) x`, c.BrandID, c.TopicID, c.IncludeAtRisk, c.ID, testPct)
+			FROM (`+audienceQuery("$6")+`) a
+		) x`, c.BrandID, c.TopicID, c.IncludeAtRisk, c.ID, testPct, capped)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -418,6 +449,9 @@ type ClaimedSend struct {
 	Suppressed bool      `db:"suppressed"`
 	Timezone   string    `db:"timezone"` // for quiet hours when it has to be rescheduled
 	Token      uuid.UUID `db:"claim_token"`
+	// When an earlier claim of this send reserved warm-up and frequency-cap
+	// room that it never used (it was requeued); nil if it holds none.
+	ReservedAt *time.Time `db:"reserved_at"`
 }
 
 // SendClaim names one claimed send: its row and the claim that holds it.
@@ -440,8 +474,8 @@ func (s *Store) ClaimSends(ctx context.Context, c Campaign, stage string, n int)
 			WHERE id IN (
 				SELECT id FROM sends WHERE campaign_id = $1 AND stage = $2 AND status = 'queued' AND send_after <= now()
 				ORDER BY send_after, id LIMIT $3 FOR UPDATE SKIP LOCKED)
-			RETURNING id, contact_id, attempts, claim_token)
-		SELECT cl.id, cl.contact_id, cl.attempts, cl.claim_token, c.email::text AS email, coalesce(c.first_name, '') AS first_name,
+			RETURNING id, contact_id, attempts, claim_token, reserved_at)
+		SELECT cl.id, cl.contact_id, cl.attempts, cl.claim_token, cl.reserved_at, c.email::text AS email, coalesce(c.first_name, '') AS first_name,
 			coalesce(c.last_name, '') AS last_name, c.status,
 			EXISTS (SELECT 1 FROM contact_topics ct WHERE ct.contact_id = cl.contact_id AND ct.topic_id = $4) AS in_topic,
 			EXISTS (SELECT 1 FROM suppressions sp WHERE sp.email_hash = c.email_hash) AS suppressed,
@@ -460,14 +494,38 @@ func (s *Store) MarkSent(ctx context.Context, cl SendClaim, messageID string) er
 	return err
 }
 
-func (s *Store) MarkSendFailed(ctx context.Context, cl SendClaim, msg string) error {
-	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'failed', error = $3 WHERE id = $1 AND claim_token = $2 AND status = 'sending'`, cl.ID, cl.Token, msg)
+// MarkSendFailed and MarkSendSkipped end a send that didn't go out. They
+// return its reservation (nil: none, or the claim wasn't ours) to give back.
+func (s *Store) MarkSendFailed(ctx context.Context, cl SendClaim, msg string) (*time.Time, error) {
+	return s.endUnsent(ctx, cl, `status = 'failed', error = $3`, msg)
+}
+
+func (s *Store) MarkSendSkipped(ctx context.Context, cl SendClaim, reason string) (*time.Time, error) {
+	return s.endUnsent(ctx, cl, `status = 'skipped', skip_reason = $3`, reason)
+}
+
+func (s *Store) endUnsent(ctx context.Context, cl SendClaim, set, arg string) (*time.Time, error) {
+	var at *time.Time
+	err := s.db.QueryRow(ctx, `
+		WITH old AS (SELECT id, reserved_at FROM sends WHERE id = $1 AND claim_token = $2 AND status = 'sending' FOR UPDATE)
+		UPDATE sends s SET `+set+`, reserved_at = NULL FROM old WHERE s.id = old.id
+		RETURNING old.reserved_at`, cl.ID, cl.Token, arg).Scan(&at)
+	if err = translate(err); errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	return at, err
+}
+
+// SetReserved records (at) or clears (nil) the reservation of claimed sends.
+func (s *Store) SetReserved(ctx context.Context, ids []int64, at *time.Time) error {
+	_, err := s.db.Exec(ctx, `UPDATE sends SET reserved_at = $2 WHERE id = ANY($1)`, ids, at)
 	return err
 }
 
-func (s *Store) MarkSendSkipped(ctx context.Context, cl SendClaim, reason string) error {
-	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'skipped', skip_reason = $3 WHERE id = $1 AND claim_token = $2 AND status = 'sending'`, cl.ID, cl.Token, reason)
-	return err
+// Reservation is room a send held in the warm-up allowance and frequency cap.
+type Reservation struct {
+	ContactID  uuid.UUID `db:"contact_id"`
+	ReservedAt time.Time `db:"reserved_at"`
 }
 
 // RequeueSend puts a send back in the queue for a later try.
@@ -477,9 +535,9 @@ func (s *Store) RequeueSend(ctx context.Context, cl SendClaim, after time.Time, 
 	return err
 }
 
-// ReleaseSends puts sends of one claim back untouched (the campaign was
+// ReleaseClaimedSends puts sends of one claim back untouched (the campaign was
 // paused between claiming and sending). The attempt isn't counted.
-func (s *Store) ReleaseSends(ctx context.Context, token uuid.UUID, ids []int64) error {
+func (s *Store) ReleaseClaimedSends(ctx context.Context, token uuid.UUID, ids []int64) error {
 	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'queued', attempts = attempts - 1, claim_token = NULL
 		WHERE id = ANY($1) AND claim_token = $2 AND status = 'sending'`, ids, token)
 	return err
@@ -625,10 +683,20 @@ func (s *Store) CampaignsWithWork(ctx context.Context, stuckAfter time.Duration)
 	return out, rows.Err()
 }
 
-// SkipQueuedSends marks every not-yet-sent send of a campaign as skipped.
-func (s *Store) SkipQueuedSends(ctx context.Context, campaignID uuid.UUID, reason string) error {
-	_, err := s.db.Exec(ctx, `UPDATE sends SET status = 'skipped', skip_reason = $2 WHERE campaign_id = $1 AND status = 'queued'`, campaignID, reason)
-	return err
+// SkipQueuedSends marks every not-yet-sent send of a campaign as skipped,
+// returning the reservations they still held, to give back.
+func (s *Store) SkipQueuedSends(ctx context.Context, campaignID uuid.UUID, reason string) ([]Reservation, error) {
+	rows, err := s.db.Query(ctx, `
+		WITH old AS (SELECT id, contact_id, reserved_at FROM sends WHERE campaign_id = $1 AND status = 'queued' FOR UPDATE)
+		UPDATE sends s SET status = 'skipped', skip_reason = $2, reserved_at = NULL FROM old
+		WHERE s.id = old.id AND old.reserved_at IS NOT NULL
+		RETURNING old.contact_id, old.reserved_at`, campaignID, reason)
+	res, err := all[Reservation](rows, err)
+	if err != nil {
+		return nil, err
+	}
+	_, err = s.db.Exec(ctx, `UPDATE sends SET status = 'skipped', skip_reason = $2 WHERE campaign_id = $1 AND status = 'queued'`, campaignID, reason)
+	return res, err
 }
 
 // RequeueSendUncounted is RequeueSend without counting the attempt (the

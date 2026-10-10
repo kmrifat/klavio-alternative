@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/kmrifat/klavio-alternative/api/internal/app"
+	"github.com/kmrifat/klavio-alternative/api/internal/freqcap"
 	"github.com/kmrifat/klavio-alternative/api/internal/ses"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
 )
@@ -89,6 +90,9 @@ func newCampaignWorld(t *testing.T) *campaignWorld {
 	if err := a.Store.ExecForTest(ctx, `UPDATE brands SET warmup_started_on = current_date - 60 WHERE id = $1`, b.ID); err != nil {
 		t.Fatal(err)
 	}
+	// No frequency cap: these tests send several campaigns to the same
+	// people in seconds (TestCampaignRealFreqCap runs M7's).
+	a.Campaigns.SetFreqCap(nil)
 
 	topics := owner.must(200, owner.do("GET", campaignBase+"/topics", nil)).body["topics"].([]any)
 	topic := topics[0].(map[string]any)["id"].(string)
@@ -219,6 +223,14 @@ func TestCampaignSendsEndToEnd(t *testing.T) {
 	breakdown := sched.body["breakdown"].(map[string]any)
 	if num(breakdown["included_test"]) != 1 || num(breakdown["included_rest"]) != 19 || num(breakdown["sunset"]) != 1 {
 		t.Fatalf("snapshot: %v", breakdown)
+	}
+	// The test slice is random; keep the leaver out of it, as they leave
+	// after it has gone.
+	cid := uuid.MustParse(id)
+	if err := w.a.Store.ExecForTest(ctx, `UPDATE campaign_audience SET stage = CASE WHEN contact_id = $2 THEN 'rest' ELSE 'test' END
+		WHERE campaign_id = $1 AND EXISTS (SELECT 1 FROM campaign_audience WHERE campaign_id = $1 AND contact_id = $2 AND stage = 'test')
+		  AND (contact_id = $2 OR contact_id = (SELECT min(contact_id::text)::uuid FROM campaign_audience WHERE campaign_id = $1 AND stage = 'rest'))`, cid, leaver); err != nil {
+		t.Fatal(err)
 	}
 	if r := owner.do("PUT", campaignBase+"/campaigns/"+id, map[string]any{"name": "x", "topic_id": w.topic, "version": 1}); r.errCode() != "not_editable" {
 		t.Fatalf("edit after scheduling: %d %s", r.status, r.raw)
@@ -384,6 +396,13 @@ func (f *fakeWarmup) Reserve(_ context.Context, _ *store.Store, brandID uuid.UUI
 	return granted, nil
 }
 
+func (f *fakeWarmup) Release(_ context.Context, _ *store.Store, brandID uuid.UUID, day time.Time, n int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.used[brandID.String()+day.UTC().Format("2006-01-02")] -= n
+	return nil
+}
+
 func (f *fakeWarmup) InWarmup(context.Context, uuid.UUID, time.Time) (bool, error) { return true, nil }
 
 func TestCampaignWarmupCap(t *testing.T) {
@@ -430,20 +449,30 @@ func TestCampaignWarmupCap(t *testing.T) {
 	}
 }
 
-// fakeFreqCap refuses the listed contacts.
+// fakeFreqCap refuses the listed contacts when sending, as if they had
+// reached the cap after the campaign was scheduled (TestCampaignRealFreqCap
+// covers the forecast at scheduling).
 type fakeFreqCap struct{ refuse map[uuid.UUID]bool }
 
-func (f fakeFreqCap) Reserve(_ context.Context, _ *store.Store, _ uuid.UUID, ids []uuid.UUID, _ time.Time) ([]uuid.UUID, map[uuid.UUID]string, error) {
+func (f fakeFreqCap) Filter(_ context.Context, _ *store.Store, _ uuid.UUID, ids []uuid.UUID, _ time.Time) ([]uuid.UUID, []freqcap.Excluded, error) {
+	return ids, nil, nil
+}
+
+func (f fakeFreqCap) Reserve(_ context.Context, _ *store.Store, _ uuid.UUID, ids []uuid.UUID, _ time.Time) ([]uuid.UUID, []freqcap.Excluded, error) {
 	var allowed []uuid.UUID
-	excluded := map[uuid.UUID]string{}
+	var excluded []freqcap.Excluded
 	for _, id := range ids {
 		if f.refuse[id] {
-			excluded[id] = "freq_cap_week"
+			excluded = append(excluded, freqcap.Excluded{ContactID: id, Reason: freqcap.ReasonWeek})
 		} else {
 			allowed = append(allowed, id)
 		}
 	}
 	return allowed, excluded, nil
+}
+
+func (fakeFreqCap) Release(context.Context, *store.Store, uuid.UUID, []uuid.UUID, time.Time) error {
+	return nil
 }
 
 func TestCampaignFrequencyCap(t *testing.T) {

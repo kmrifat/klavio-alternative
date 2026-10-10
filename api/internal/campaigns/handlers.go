@@ -283,7 +283,7 @@ func (s *Service) update(w http.ResponseWriter, r *http.Request) error {
 func (s *Service) writeCampaign(w http.ResponseWriter, r *http.Request, status int, b store.Brand, c store.Campaign) error {
 	out := map[string]any{"campaign": c}
 	if c.State.Editable() {
-		sum, err := s.store.AudienceSummary(r.Context(), b.ID, c.TopicID, c.IncludeAtRisk)
+		sum, err := s.audience(r.Context(), s.store, b.ID, c)
 		if err != nil {
 			return err
 		}
