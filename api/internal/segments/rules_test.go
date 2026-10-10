@@ -125,8 +125,9 @@ func TestSegmentsAgainstPostgres(t *testing.T) {
 		{"clicked within 30 days", one(cond("last_click_at", "within_days", 30)), 2},
 		{"no click in 90 days (incl. never)", one(cond("last_click_at", "older_than_days", 90)), 2},
 		{"never clicked", one(cond("last_click_at", "is_empty", nil)), 1},
-		{"added after yesterday", one(cond("created_at", "after", now.AddDate(0, 0, -1).Format("2006-01-02"))), 5},
-		{"opted in before", one(cond("consented_at", "before", now.Format("2006-01-02"))), 5},
+		// Rule dates are UTC days, like the database's.
+		{"added after yesterday", one(cond("created_at", "after", now.UTC().AddDate(0, 0, -1).Format("2006-01-02"))), 5},
+		{"opted in before", one(cond("consented_at", "before", now.UTC().Format("2006-01-02"))), 5},
 		{"status", one(cond("status", "is", "quarantined")), 1},
 		{"first name", one(cond("first_name", "starts_with", "A")), 1},
 		{"all of", one(cond("country", "is", "DE"), cond("tag", "has", "vip")), 1},
