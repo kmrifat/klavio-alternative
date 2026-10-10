@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"os"
 	"testing"
 	"time"
 
@@ -12,30 +11,22 @@ import (
 
 	"github.com/kmrifat/klavio-alternative/api/internal/db"
 	"github.com/kmrifat/klavio-alternative/api/internal/jobs"
+	"github.com/kmrifat/klavio-alternative/api/internal/testdb"
 )
 
 // TestMigrateAndWorkJob needs a real Postgres. It runs in CI and with
 // `make test-integration` locally; otherwise it is skipped.
 func TestMigrateAndWorkJob(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set")
-	}
+	// Its own schema, like every other DB test: River finds its tables via
+	// search_path, so migrating into public would leak into the test schemas.
+	pool := testdb.New(t) // migrates once
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	pool, err := db.Connect(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-
-	// Running migrations twice must be a no-op the second time.
-	for i := range 2 {
-		if err := db.Migrate(ctx, pool, log); err != nil {
-			t.Fatalf("migrate run %d: %v", i+1, err)
-		}
+	// Running migrations again must be a no-op.
+	if err := db.Migrate(ctx, pool, log); err != nil {
+		t.Fatalf("second migrate: %v", err)
 	}
 
 	var hasCitext bool
