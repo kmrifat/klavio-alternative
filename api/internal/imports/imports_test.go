@@ -292,14 +292,19 @@ func TestTruncateKeepsWholeCharacters(t *testing.T) {
 
 func TestResolveTracking(t *testing.T) {
 	rows := func() []Row {
-		return []Row{{Country: "DE", TrackingRaw: "yes"}, {Country: "US", TrackingRaw: ""}, {Country: "GB", TrackingRaw: "Granted"}}
+		return []Row{
+			{Country: "DE", TrackingRaw: "yes"}, {Country: "US", TrackingRaw: ""}, {Country: "GB", TrackingRaw: "Granted"},
+			{Country: ""}, {Country: "ZZ"}, {Country: "EU"}, {Country: "BD"}, {Country: "UK"},
+		}
 	}
+	// By country is fail-safe: blank, unknown or non-country codes mean no tracking.
+	byCountry := []bool{false, true, false, false, false, false, true, false}
 	cases := map[string][]bool{
-		"":              {false, true, false}, // default: by country
-		"eu_by_country": {false, true, false},
-		"all":           {true, true, true},
-		"none":          {false, false, false},
-		"column":        {true, false, true},
+		"":              byCountry,
+		"eu_by_country": byCountry,
+		"all":           {true, true, true, true, true, true, true, true},
+		"none":          {false, false, false, false, false, false, false, false},
+		"column":        {true, false, true, false, false, false, false, false},
 	}
 	for mode, want := range cases {
 		rs := rows()

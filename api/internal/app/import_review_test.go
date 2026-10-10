@@ -79,6 +79,29 @@ func TestImportEURatedFiveIsNotActive(t *testing.T) {
 	}
 }
 
+// A file with no or blank country can't prove anyone is outside the EU:
+// by-country mode treats them as no tracking, so ★5 doesn't make them Active.
+func TestImportBlankCountryIsNotActive(t *testing.T) {
+	owner, run, base := importSetup(t)
+	recent := time.Now().AddDate(0, 0, -5).Format("2006-01-02")
+	checked := run(fmt.Sprintf("Email Address,MEMBER_RATING,CONFIRM_TIME,CC\nblank@example.com,5,%s,\nus@example.com,5,%s,US\n", recent, recent), nil)
+	if n := checked["check_result"].(map[string]any)["no_tracking"]; n != 1.0 {
+		t.Fatalf("no_tracking = %v, want 1", n)
+	}
+	if c := tierOf(t, owner, base, "blank@example.com"); c["tier"] != "warm" || c["tracking_allowed"] != false {
+		t.Fatalf("blank country ★5: tier %v tracking %v, want warm/false", c["tier"], c["tracking_allowed"])
+	}
+	if c := tierOf(t, owner, base, "us@example.com"); c["tier"] != "active" {
+		t.Fatalf("US ★5: tier %v, want active", c["tier"])
+	}
+
+	// No country column at all: same.
+	run(fmt.Sprintf("Email Address,MEMBER_RATING,CONFIRM_TIME\nnocol@example.com,5,%s\n", recent), nil)
+	if c := tierOf(t, owner, base, "nocol@example.com"); c["tier"] != "warm" {
+		t.Fatalf("no country column ★5: tier %v, want warm", c["tier"])
+	}
+}
+
 func TestImportTrackingModes(t *testing.T) {
 	owner, run, base := importSetup(t)
 	consent := time.Now().AddDate(0, 0, -5).Format("2006-01-02")

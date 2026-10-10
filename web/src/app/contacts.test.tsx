@@ -193,7 +193,8 @@ describe("import wizard (S4)", () => {
     expect(screen.getByLabelText("Column for Engagement rating")).toHaveValue("MEMBER_RATING");
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
 
-    // 3. Consent + check
+    // 3. Consent + check (this file has no Country column, so the default counts everyone as no tracking)
+    expect(screen.getByText(/No Country column is matched/)).toBeInTheDocument();
     await userEvent.selectOptions(screen.getByLabelText(/^Source/), "platform_migration");
     await userEvent.type(screen.getByLabelText("Which platform?"), "Mailchimp export");
     await userEvent.type(screen.getByLabelText("When were they collected?"), "2023–2026");

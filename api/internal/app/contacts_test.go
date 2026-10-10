@@ -115,6 +115,7 @@ func TestImportFlow(t *testing.T) {
 			"consent": map[string]any{
 				"source": "platform_migration", "source_detail": "Mailchimp export", "collected_period": "2023–2026",
 				"wording": "brightside.co/subscribe", "legal_basis": "consent", "attested": attested,
+				"tracking": "all", // no country column; the list is known to be outside the EU
 			},
 		}
 	}

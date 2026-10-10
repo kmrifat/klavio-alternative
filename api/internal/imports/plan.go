@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/text/language"
 
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
 )
@@ -22,9 +23,9 @@ type Consent struct {
 	LegalBasis      string `json:"legal_basis"` // consent | soft_opt_in
 	DoubleOptIn     bool   `json:"double_opt_in"`
 	// Tracking: who agreed to click tracking. "all", "none", "column" (per
-	// row, from Mapping.Tracking) or "eu_by_country" (default: nobody in the
-	// EU/EEA/UK, everyone else yes). Without it, people are tiered from their
-	// opt-in date only and are never Active.
+	// row, from Mapping.Tracking) or "eu_by_country" (default: yes only for a
+	// recognised country outside the EU/EEA/UK; EU or blank/unknown = no).
+	// Without it, people are tiered from their opt-in date only and are never Active.
 	Tracking string `json:"tracking"`
 
 	Attested        bool       `json:"attested"`
@@ -95,6 +96,16 @@ var euCountries = map[string]bool{
 	"SE": true, "IS": true, "LI": true, "NO": true, "GB": true, "UK": true,
 }
 
+// knownNonEU: an ISO 3166 country code outside the EU/EEA/UK. Blank, made-up
+// ("ZZ") or non-country codes ("EU") are not known.
+func knownNonEU(code string) bool {
+	if len(code) != 2 || euCountries[code] {
+		return false
+	}
+	r, err := language.ParseRegion(code)
+	return err == nil && r.IsCountry() && r.String() == code
+}
+
 func truthy(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "yes", "y", "true", "1", "granted", "agreed", "opted in", "opt-in", "optin", "subscribed":
@@ -114,8 +125,8 @@ func ResolveTracking(rows []Row, mode string) {
 			r.TrackingAllowed = false
 		case "column":
 			r.TrackingAllowed = truthy(r.TrackingRaw)
-		default: // eu_by_country
-			r.TrackingAllowed = !euCountries[r.Country]
+		default: // eu_by_country: fail safe, an unknown country might be in the EU
+			r.TrackingAllowed = knownNonEU(r.Country)
 		}
 	}
 }

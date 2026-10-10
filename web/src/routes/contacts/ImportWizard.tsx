@@ -151,6 +151,7 @@ function ImportFlow({ slug, view }: { slug: string; view: ImportView }) {
         <div className="grid gap-5 lg:grid-cols-[1fr_minmax(0,26rem)]">
           <ConsentForm
             view={view}
+            countryMapped={!!mapping.country}
             consent={consent}
             setConsent={setConsent}
             topics={topics}
@@ -242,8 +243,9 @@ function MappingStep({ view, mapping, setMapping, onNext }: {
   );
 }
 
-function ConsentForm({ view, consent, setConsent, topics, topicIds, setTopicIds }: {
+function ConsentForm({ view, countryMapped, consent, setConsent, topics, topicIds, setTopicIds }: {
   view: ImportView;
+  countryMapped: boolean;
   consent: ImportConsent;
   setConsent: (c: ImportConsent) => void;
   topics: { id: string; name: string }[];
@@ -300,11 +302,17 @@ function ConsentForm({ view, consent, setConsent, topics, topicIds, setTopicIds 
         </fieldset>
         <Field
           label="Who agreed to click tracking?"
-          hint="People without it are tiered from their signup date only and are never Active (GDPR / ePrivacy)."
+          hint={
+            consent.tracking === "eu_by_country"
+              ? countryMapped
+                ? "Rows without a recognised country count as no tracking. People without tracking consent are tiered from their signup date only and are never Active."
+                : "No Country column is matched, so nobody can be shown to be outside the EU: everyone counts as no tracking. Choose “Everyone in this file” if the list is known to be outside the EU."
+              : "People without tracking consent are tiered from their signup date only and are never Active (GDPR / ePrivacy)."
+          }
         >
           {(id) => (
             <select id={id} className={inputClass} value={consent.tracking} onChange={(e) => set("tracking", e.target.value as ImportConsent["tracking"])}>
-              <option value="eu_by_country">Everyone outside the EU, EEA and UK (uses the Country column)</option>
+              <option value="eu_by_country">People with a known country outside the EU, EEA and UK</option>
               <option value="all">Everyone in this file</option>
               <option value="none">Nobody in this file</option>
               <option value="column">It's in a column of the file (yes/no per person)</option>
