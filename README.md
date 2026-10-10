@@ -121,7 +121,7 @@ per IP and per token; logs show `/u/[token]`.
 | `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD` | — | required in production |
 | `SES_MODE` | `fake` (dev), `aws` (prod) | `aws` also needs `SES_REGION`, `SES_EVENT_BUS_ARN` |
 | `DNS_RESOLVER` | `1.1.1.1:53` | DNS server for brand checks |
-| `UNSUBSCRIBE_SECRET` | dev-only default | required in production, 32+ random characters; signs unsubscribe links |
+| `UNSUBSCRIBE_SECRET` | dev-only default | required in production, 32+ random characters; signs unsubscribe and double opt-in confirmation links |
 | `UNSUBSCRIBE_SECRET_OLD` | — | previous secret during rotation (old links keep working) |
 | `BLOCKLIST_RESOLVER` | system resolver | `host:port` of your own recursive DNS resolver for blocklist lookups (public resolvers are refused); `off` disables them |
 | `BLOCKLIST_CHECK_INTERVAL` | `6h` | how often blocklists are re-checked (at least `1h`) |

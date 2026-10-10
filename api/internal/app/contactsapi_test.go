@@ -394,6 +394,11 @@ func TestSegmentsAPI(t *testing.T) {
 	val := newBrowser(t, f.srv)
 	val.must(200, val.acceptInvite(inv.body["invite_url"].(string)))
 	val.must(200, val.do("GET", "/admin/v1/brands/brightside/segments/"+id, nil))
+	// Viewers see counts, not people.
+	vp := val.must(200, val.do("POST", "/admin/v1/brands/brightside/segments/preview", map[string]any{"rules": rules}))
+	if len(vp.body["sample"].([]any)) != 0 || vp.body["counts"].(map[string]any)["matching"].(float64) != 1 {
+		t.Fatalf("viewer preview: %s", vp.raw)
+	}
 	val.must(403, val.do("DELETE", "/admin/v1/brands/brightside/segments/"+id, nil))
 	f.owner.must(204, f.owner.do("DELETE", "/admin/v1/brands/brightside/segments/"+id, nil))
 }

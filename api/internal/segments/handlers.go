@@ -232,9 +232,10 @@ func (h *Handlers) delete(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// preview is the live count while editing (S12), plus a few matching people.
+// preview is the live count while editing (S12), plus a few matching people
+// for those allowed to see people (editors and up, like the contact list).
 func (h *Handlers) preview(w http.ResponseWriter, r *http.Request) error {
-	b, _, err := brands.WithRole(r, h.Store, store.RoleViewer)
+	b, p, err := brands.WithRole(r, h.Store, store.RoleViewer)
 	if err != nil {
 		return err
 	}
@@ -252,12 +253,14 @@ func (h *Handlers) preview(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	sample, err := h.Store.SegmentSample(r.Context(), b.ID, c.SQL, c.Args, 10)
-	if err != nil {
-		return err
-	}
-	if sample == nil {
-		sample = []store.Contact{}
+	sample := []store.Contact{}
+	if p.HasBrandRole(b.ID, store.RoleEditor) {
+		if sample, err = h.Store.SegmentSample(r.Context(), b.ID, c.SQL, c.Args, 10); err != nil {
+			return err
+		}
+		if sample == nil {
+			sample = []store.Contact{}
+		}
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"counts": counts, "sample": sample})
 	return nil
