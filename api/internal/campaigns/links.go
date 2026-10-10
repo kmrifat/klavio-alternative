@@ -37,8 +37,10 @@ func (s *Service) trackLinks(body string, b store.Brand, cs store.ClaimedSend, b
 	if !cs.TrackingAllowed {
 		flags = tracking.NoTrack
 	}
-	// First pass: how many links (to spot "clicked everything").
+	// First pass: how many links (to spot "clicked everything"), and each
+	// destination's first link number, for Outlook's copies below.
 	count := 0
+	nums := map[string]int{}
 	z := nethtml.NewTokenizer(strings.NewReader(body))
 	for {
 		tt := z.Next()
@@ -49,6 +51,9 @@ func (s *Service) trackLinks(body string, b store.Brand, cs store.ClaimedSend, b
 			if t := z.Token(); t.Data == "a" {
 				if href, ok := attr(t, "href"); ok && trackable(href, skip) {
 					count++
+					if u := strings.TrimSpace(href); nums[u] == 0 {
+						nums[u] = count
+					}
 				}
 			}
 		}
@@ -69,6 +74,10 @@ func (s *Service) trackLinks(body string, b store.Brand, cs store.ClaimedSend, b
 			break
 		}
 		raw := append([]byte(nil), z.Raw()...) // later calls may reuse the buffer
+		if tt == nethtml.CommentToken {
+			out.Write(s.trackMSO(raw, b, cs, base, skip, nums, count, flags))
+			continue
+		}
 		if tt != nethtml.StartTagToken {
 			if tt == nethtml.EndTagToken && cs.TrackingAllowed && !closed {
 				if name, _ := z.TagName(); string(name) == "body" {
@@ -103,6 +112,131 @@ func (s *Service) trackLinks(body string, b store.Brand, cs store.ClaimedSend, b
 		out.WriteString(s.extras(b, cs, base, count))
 	}
 	return out.String()
+}
+
+// trackMSO tracks the links inside an Outlook conditional comment
+// (<!--[if mso]> … <![endif]-->): Outlook renders that markup, so a VML
+// button (<v:roundrect href=…>) there is the link Outlook users click. Each
+// trackable href whose destination also has an <a> in the email gets that
+// link's number, so the two count as one link in reports; one without is
+// left alone. Only the href values change: every other byte of the comment
+// is copied as it was.
+func (s *Service) trackMSO(raw []byte, b store.Brand, cs store.ClaimedSend, base string, skip map[string]bool, nums map[string]int, count int, flags byte) []byte {
+	inner, ok := msoComment(raw)
+	if !ok || len(nums) == 0 {
+		return raw
+	}
+	var out []byte
+	done, pos := 0, 4 // offsets in raw; inner starts after "<!--"
+	z := nethtml.NewTokenizer(bytes.NewReader(inner))
+	for {
+		tt := z.Next()
+		if tt == nethtml.ErrorToken {
+			break
+		}
+		tag := z.Raw()
+		start := pos
+		pos += len(tag)
+		if tt != nethtml.StartTagToken && tt != nethtml.SelfClosingTagToken {
+			continue
+		}
+		vs, ve, quoted, ok := attrValue(tag, "href")
+		if !ok {
+			continue
+		}
+		href := html.UnescapeString(string(tag[vs:ve]))
+		if parsed, _ := attr(z.Token(), "href"); parsed != href || !trackable(href, skip) {
+			continue // not the href the parser reads, or not a web link
+		}
+		no := nums[strings.TrimSpace(href)]
+		if no == 0 {
+			continue
+		}
+		link, err := s.tracking.ClickURL(base, tracking.Link{BrandID: b.ID, ContactID: cs.ContactID, SendID: cs.ID,
+			LinkNo: no, LinkCount: count, URL: strings.TrimSpace(href), Flags: flags})
+		if err != nil || (!quoted && strings.ContainsAny(link, " \t\n\f\r>\"'=<`")) {
+			continue
+		}
+		out = append(out, raw[done:start+vs]...)
+		out = append(out, html.EscapeString(link)...)
+		done = start + ve
+	}
+	if out == nil {
+		return raw
+	}
+	return append(out, raw[done:]...)
+}
+
+// msoComment returns the inside of an Outlook conditional comment: one
+// whose condition ([if mso], [if mso | IE], [if gte mso 9] …) names mso.
+func msoComment(raw []byte) ([]byte, bool) {
+	if len(raw) < 7 || !bytes.HasPrefix(raw, []byte("<!--")) || !bytes.HasSuffix(raw, []byte("-->")) {
+		return nil, false
+	}
+	inner := raw[4 : len(raw)-3]
+	cond := bytes.TrimLeft(inner, " \t\r\n")
+	end := bytes.IndexByte(cond, ']')
+	if !bytes.HasPrefix(cond, []byte("[if")) || end < 0 || !bytes.Contains(bytes.ToLower(cond[:end]), []byte("mso")) {
+		return nil, false
+	}
+	return inner, true
+}
+
+// attrValue finds the first attribute called name in one raw start tag, the
+// way the HTML tokenizer reads it, and returns where its value is (without
+// quotes) and whether it was quoted.
+func attrValue(tag []byte, name string) (vs, ve int, quoted, ok bool) {
+	space := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\f' || c == '\r' }
+	i := 1
+	for i < len(tag) && !space(tag[i]) && tag[i] != '/' && tag[i] != '>' {
+		i++
+	}
+	for i < len(tag) {
+		for i < len(tag) && (space(tag[i]) || tag[i] == '/') {
+			i++
+		}
+		if i >= len(tag) || tag[i] == '>' {
+			break
+		}
+		ks := i
+		i++ // a name may start with '='
+		for i < len(tag) && !space(tag[i]) && tag[i] != '/' && tag[i] != '>' && tag[i] != '=' {
+			i++
+		}
+		key := tag[ks:i]
+		for i < len(tag) && space(tag[i]) {
+			i++
+		}
+		if i >= len(tag) || tag[i] != '=' {
+			continue // no value
+		}
+		i++
+		for i < len(tag) && space(tag[i]) {
+			i++
+		}
+		if i < len(tag) && (tag[i] == '"' || tag[i] == '\'') {
+			q := tag[i]
+			i++
+			vs = i
+			for i < len(tag) && tag[i] != q {
+				i++
+			}
+			ve, quoted = i, true
+			if i < len(tag) {
+				i++
+			}
+		} else {
+			vs = i
+			for i < len(tag) && !space(tag[i]) && tag[i] != '>' {
+				i++
+			}
+			ve, quoted = i, false
+		}
+		if strings.EqualFold(string(key), name) {
+			return vs, ve, quoted, true
+		}
+	}
+	return 0, 0, false, false
 }
 
 // extras: the open pixel, and the honeypot link if turned on, placed just
