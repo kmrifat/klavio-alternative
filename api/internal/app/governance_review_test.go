@@ -254,12 +254,13 @@ func TestCantDecideRequestAboutYourself(t *testing.T) {
 	}
 	f.ownerB.must(200, f.ownerB.do("POST", "/admin/v1/approvals/"+id+"/approve", map[string]any{}))
 
-	// Admin invite for an address that already has an account: its owner can't approve it.
-	inv2 := f.ownerB.must(201, f.ownerB.do("POST", "/admin/v1/team/invites", map[string]any{"email": "alice@acme.test", "name": "Alice again", "company_role": "approver"}))
-	if inv2.status == 201 && inv2.body["approval"] != nil {
-		if r := f.ownerA.do("POST", "/admin/v1/approvals/"+inv2.body["approval"].(map[string]any)["id"].(string)+"/approve", map[string]any{}); r.errCode() != "about_you" {
-			t.Fatalf("approving an invite for your own email: %d %s", r.status, r.raw)
-		}
+	// Admin invite for an address that already has an account: refused up
+	// front, so no approval exists for its owner to decide.
+	if r := f.ownerB.do("POST", "/admin/v1/team/invites", map[string]any{"email": "alice@acme.test", "name": "Alice again", "company_role": "approver"}); r.status != 409 || r.errCode() != "already_member" {
+		t.Fatalf("admin invite for an existing account: %d %s", r.status, r.raw)
+	}
+	if list := f.ownerA.must(200, f.ownerA.do("GET", "/admin/v1/approvals?view=decide", nil)).body["approvals"].([]any); len(list) != 0 {
+		t.Fatalf("refused invite left an approval behind: %v", list)
 	}
 }
 

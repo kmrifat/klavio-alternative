@@ -56,6 +56,12 @@ func newCampaignWorld(t *testing.T) *campaignWorld {
 		t.Fatalf("brand not ready: %v %v", b.Status, err)
 	}
 
+	// An established brand: its warm-up finished long ago, so sends need no
+	// warm-up approval and have no daily cap (TestCampaignWarmupCap covers those).
+	if err := a.Store.ExecForTest(ctx, `UPDATE brands SET warmup_started_on = current_date - 60 WHERE id = $1`, b.ID); err != nil {
+		t.Fatal(err)
+	}
+
 	topics := owner.must(200, owner.do("GET", campaignBase+"/topics", nil)).body["topics"].([]any)
 	topic := topics[0].(map[string]any)["id"].(string)
 
@@ -393,6 +399,56 @@ func TestCampaignWarmupCap(t *testing.T) {
 	got, _ = w.a.Store.CampaignByID(ctx, w.brand.ID, cid)
 	if got.WaitingReason != "" {
 		t.Errorf("waiting reason not cleared: %q", got.WaitingReason)
+	}
+}
+
+// fakeFreqCap refuses the listed contacts.
+type fakeFreqCap struct{ refuse map[uuid.UUID]bool }
+
+func (f fakeFreqCap) Reserve(_ context.Context, _ *store.Store, _ uuid.UUID, ids []uuid.UUID, _ time.Time) ([]uuid.UUID, map[uuid.UUID]string, error) {
+	var allowed []uuid.UUID
+	excluded := map[uuid.UUID]string{}
+	for _, id := range ids {
+		if f.refuse[id] {
+			excluded[id] = "freq_cap_week"
+		} else {
+			allowed = append(allowed, id)
+		}
+	}
+	return allowed, excluded, nil
+}
+
+func TestCampaignFrequencyCap(t *testing.T) {
+	w := newCampaignWorld(t)
+	ctx := context.Background()
+	refuse := map[uuid.UUID]bool{}
+	for i := range 6 {
+		id := w.contact(fmt.Sprintf("f%d@example.com", i), store.ContactSubscribed, 24*time.Hour, true)
+		if i < 2 {
+			refuse[id] = true
+		}
+	}
+	w.a.Campaigns.SetFreqCap(fakeFreqCap{refuse: refuse})
+	c := w.draft(nil)
+	id := c["id"].(string)
+	w.owner.must(200, w.owner.do("POST", campaignBase+"/campaigns/"+id+"/schedule", map[string]any{"version": 1, "confirm": "6"}))
+	done := w.runUntil(id, store.CampaignDone)
+	if n := len(w.sender.Messages()); n != 4 {
+		t.Fatalf("sent %d, want 4 (2 over the frequency cap)", n)
+	}
+	progress, err := w.a.Store.SendProgress(ctx, done.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skipped := progress["test"]["skipped"] + progress["rest"]["skipped"]; skipped != 2 {
+		t.Fatalf("skipped %d, want 2: %v", skipped, progress)
+	}
+	var reason string
+	if err := w.a.Store.QueryRowForTest(ctx, `SELECT skip_reason FROM sends WHERE campaign_id = $1 AND status = 'skipped' LIMIT 1`, &reason, done.ID); err != nil {
+		t.Fatal(err)
+	}
+	if reason != "freq_cap_week" {
+		t.Fatalf("skip reason %q", reason)
 	}
 }
 

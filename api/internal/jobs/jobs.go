@@ -42,6 +42,11 @@ type Deps struct {
 		Step(ctx context.Context, campaignID uuid.UUID) error
 		Sweep(ctx context.Context) error
 	}
+	Health interface {
+		RecomputeAll(ctx context.Context) error
+		CheckAllBlocklists(ctx context.Context) error
+		PullPostmaster(ctx context.Context) error
+	}
 }
 
 // HeartbeatArgs is a periodic no-op job that shows the worker is alive.
@@ -252,6 +257,50 @@ func (w *CampaignSweepWorker) Timeout(*river.Job[CampaignSweepArgs]) time.Durati
 	return 10 * time.Minute
 }
 
+// HealthScoreArgs recomputes every brand's health score (hourly, S1/S2).
+type HealthScoreArgs struct{}
+
+func (HealthScoreArgs) Kind() string { return "health.recompute" }
+
+type HealthScoreWorker struct {
+	river.WorkerDefaults[HealthScoreArgs]
+	Deps Deps
+}
+
+func (w *HealthScoreWorker) Work(ctx context.Context, _ *river.Job[HealthScoreArgs]) error {
+	return w.Deps.Health.RecomputeAll(ctx)
+}
+
+// BlocklistArgs re-checks sending and link domains against the blocklists.
+// It runs hourly but each brand is only looked up again once its results
+// are older than BLOCKLIST_CHECK_INTERVAL.
+type BlocklistArgs struct{}
+
+func (BlocklistArgs) Kind() string { return "health.blocklists" }
+
+type BlocklistWorker struct {
+	river.WorkerDefaults[BlocklistArgs]
+	Deps Deps
+}
+
+func (w *BlocklistWorker) Work(ctx context.Context, _ *river.Job[BlocklistArgs]) error {
+	return w.Deps.Health.CheckAllBlocklists(ctx)
+}
+
+// PostmasterArgs pulls Gmail Postmaster Tools stats (daily).
+type PostmasterArgs struct{}
+
+func (PostmasterArgs) Kind() string { return "health.postmaster" }
+
+type PostmasterWorker struct {
+	river.WorkerDefaults[PostmasterArgs]
+	Deps Deps
+}
+
+func (w *PostmasterWorker) Work(ctx context.Context, _ *river.Job[PostmasterArgs]) error {
+	return w.Deps.Health.PullPostmaster(ctx)
+}
+
 // Runner queues import jobs, template rebuilds and campaign steps; it
 // satisfies imports.Runner, templates.Rebuilder and campaigns.Runner.
 type Runner struct{ Client *Client }
@@ -320,6 +369,15 @@ func NewWorker(pool *pgxpool.Pool, log *slog.Logger, deps Deps) (*Client, error)
 		river.AddWorker(workers, &CampaignStepWorker{Deps: deps})
 		river.AddWorker(workers, &CampaignSweepWorker{Deps: deps})
 		jobs = append(jobs, periodic(time.Minute, CampaignSweepArgs{}, true))
+	}
+	if deps.Health != nil {
+		river.AddWorker(workers, &HealthScoreWorker{Deps: deps})
+		river.AddWorker(workers, &BlocklistWorker{Deps: deps})
+		river.AddWorker(workers, &PostmasterWorker{Deps: deps})
+		jobs = append(jobs,
+			periodic(time.Hour, HealthScoreArgs{}, true),
+			periodic(time.Hour, BlocklistArgs{}, true),
+			periodic(24*time.Hour, PostmasterArgs{}, true))
 	}
 	if deps.Sessions != nil {
 		river.AddWorker(workers, &SessionCleanupWorker{Deps: deps, Log: log})

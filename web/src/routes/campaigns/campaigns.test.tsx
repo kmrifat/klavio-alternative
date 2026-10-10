@@ -140,11 +140,19 @@ describe("campaigns (S10)", () => {
 
 describe("confirmation (S6)", () => {
   it("schedules only after the number of people is typed", async () => {
+    // Like the real API: once scheduled, the campaign reads back as scheduled.
+    const scheduled: CampaignResponse = {
+      campaign: { ...draft, state: "scheduled", start_at: new Date(Date.now() + 600_000).toISOString() },
+      breakdown: {},
+      progress: { test: {}, rest: {} },
+    };
+    let done = false;
     const calls = api(ownerMe, {
-      [`POST ${base}/campaigns/c1/schedule`]: {
-        status: 200,
-        body: { campaign: { ...draft, state: "scheduled", start_at: new Date(Date.now() + 600_000).toISOString() }, breakdown: {}, progress: { test: {}, rest: {} } },
+      [`POST ${base}/campaigns/c1/schedule`]: () => {
+        done = true;
+        return { status: 200, body: scheduled };
       },
+      [`GET ${base}/campaigns/c1`]: () => ({ status: 200, body: done ? scheduled : draftResponse }),
     }).calls;
     const router = renderAt("/b/brightside/campaigns/c1/review");
     const send = await screen.findByRole("button", { name: "Send to 2,431 people" });

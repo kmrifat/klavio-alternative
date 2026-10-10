@@ -9,7 +9,9 @@ import { brandScreens, companyScreens, settingsScreen, type Screen } from "../li
 import { lastBrand, rememberBrand } from "../lib/brands";
 import { brandRoleLabel, companyRoleLabel, initials } from "../lib/format";
 import { BrandSwitcher } from "./BrandSwitcher";
+import { seesCompany } from "../routes/Home";
 import { ApiStatus } from "./ApiStatus";
+import { HealthPill } from "./HealthPill";
 
 export function AppLayout() {
   const params = useParams();
@@ -17,6 +19,7 @@ export function AppLayout() {
   const brand = brands.find((b) => b.slug === params.brand);
   const linkBrand = brand ?? lastBrand(brands);
   const waitingCount = useApprovals("decide").data?.length;
+  const role = useMe().data?.user.company_role;
 
   useEffect(() => {
     if (brand) rememberBrand(brand.slug);
@@ -41,9 +44,11 @@ export function AppLayout() {
         </NavSection>
 
         <NavSection label="Company">
-          {companyScreens.map((s) => (
-            <NavItem key={s.id} screen={s} to={`/${s.path}`} count={s.path === "approvals" ? waitingCount : undefined} />
-          ))}
+          {companyScreens
+            .filter((s) => s.path !== "safety" || seesCompany(role))
+            .map((s) => (
+              <NavItem key={s.id} screen={s} to={`/${s.path}`} count={s.path === "approvals" ? waitingCount : undefined} />
+            ))}
         </NavSection>
 
         <div className="mt-auto border-t border-zinc-200 pt-2">
@@ -56,7 +61,7 @@ export function AppLayout() {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="h-1 shrink-0" style={{ background: brand?.color ?? "#18181b" }} />
-        <TopBar brandName={brand?.name ?? "Acme Group"} />
+        <TopBar brandName={brand?.name ?? "Acme Group"} brandSlug={brand?.slug} />
         <main className="min-h-0 flex-1 overflow-y-auto px-8 py-7">
           <Outlet />
         </main>
@@ -147,7 +152,7 @@ function UserFooter({ brand }: { brand: BrandListItem | undefined }) {
   );
 }
 
-function TopBar({ brandName }: { brandName: string }) {
+function TopBar({ brandName, brandSlug }: { brandName: string; brandSlug?: string }) {
   const { pathname } = useLocation();
   const segments = pathname.split("/");
   // Brand pages live at /b/<slug>/<screen>/…, company pages at /<screen>/…
@@ -166,7 +171,7 @@ function TopBar({ brandName }: { brandName: string }) {
           <Search className="size-4" />
           <input disabled placeholder="Search…" aria-label="Search (coming later)" className="w-full bg-transparent outline-none" />
         </label>
-        <ApiStatus />
+        {brandSlug ? <HealthPill slug={brandSlug} /> : <ApiStatus />}
         <AlertsBell />
       </div>
     </header>

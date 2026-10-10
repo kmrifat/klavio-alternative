@@ -70,6 +70,15 @@ type Brakes interface {
 	AfterTestSlice(ctx context.Context, c store.Campaign) (pause bool, reason string, err error)
 }
 
+// FreqCap keeps one person from getting too much email across brands (M7).
+// Until it is wired in, there is no cap.
+type FreqCap interface {
+	// Reserve checks and records sends for these contacts inside tx and
+	// returns who may get one now; the rest map to a reason
+	// ("freq_cap_day", "freq_cap_week", "same_brand_gap" …).
+	Reserve(ctx context.Context, tx *store.Store, brandID uuid.UUID, contactIDs []uuid.UUID, now time.Time) (allowed []uuid.UUID, excluded map[uuid.UUID]string, err error)
+}
+
 // Runner queues the worker's next step (river jobs in production).
 type Runner interface {
 	QueueCampaignStep(ctx context.Context, campaignID uuid.UUID, at time.Time) error
@@ -84,6 +93,7 @@ type Service struct {
 	limits    Limits
 	approvals *approvals.Service
 	warmup    Warmup
+	freqcap   FreqCap
 	brakes    Brakes
 	runner    Runner
 	pacer     *sending.Pacer
@@ -104,10 +114,11 @@ func NewService(st *store.Store, cfg Config, log *slog.Logger) *Service {
 	}
 }
 
-func (s *Service) SetRunner(r Runner) { s.runner = r }
-func (s *Service) SetLimits(l Limits) { s.limits = l }
-func (s *Service) SetWarmup(w Warmup) { s.warmup = w }
-func (s *Service) SetBrakes(b Brakes) { s.brakes = b }
+func (s *Service) SetRunner(r Runner)   { s.runner = r }
+func (s *Service) SetLimits(l Limits)   { s.limits = l }
+func (s *Service) SetWarmup(w Warmup)   { s.warmup = w }
+func (s *Service) SetFreqCap(f FreqCap) { s.freqcap = f }
+func (s *Service) SetBrakes(b Brakes)   { s.brakes = b }
 
 func (s *Service) queue(ctx context.Context, id uuid.UUID, at time.Time) {
 	if s.runner == nil {
@@ -667,27 +678,59 @@ func (s *Service) claim(ctx context.Context, c store.Campaign, stage string) ([]
 	var claimed []store.ClaimedSend
 	err := s.store.InTx(ctx, func(tx *store.Store) error {
 		var err error
-		if claimed, err = tx.ClaimSends(ctx, c, stage, Batch); err != nil || len(claimed) == 0 || s.warmup == nil {
+		if claimed, err = tx.ClaimSends(ctx, c, stage, Batch); err != nil || len(claimed) == 0 {
 			return err
 		}
 		now := s.now()
-		granted, err := s.warmup.Reserve(ctx, tx, c.BrandID, now, len(claimed))
+		if s.warmup != nil {
+			granted, err := s.warmup.Reserve(ctx, tx, c.BrandID, now, len(claimed))
+			if err != nil {
+				return err
+			}
+			waiting := ""
+			if granted < len(claimed) {
+				later := make([]int64, 0, len(claimed)-granted)
+				for _, cs := range claimed[granted:] {
+					later = append(later, cs.ID)
+				}
+				tomorrow := now.UTC().Truncate(24 * time.Hour).Add(24 * time.Hour)
+				if err := tx.DeferSends(ctx, later, tomorrow); err != nil {
+					return err
+				}
+				claimed = claimed[:granted]
+				waiting = "the brand's warm-up allowance for today is used up; sending continues tomorrow (UTC)"
+			}
+			if err := tx.SetCampaignWaiting(ctx, c.ID, waiting); err != nil {
+				return err
+			}
+		}
+		// The frequency cap runs on what the warm-up granted. Someone over
+		// it is skipped for this campaign, not deferred: a later send would
+		// be just as unwelcome. (The warm-up counted them anyway, which is
+		// conservative.)
+		if s.freqcap == nil || len(claimed) == 0 {
+			return nil
+		}
+		ids := make([]uuid.UUID, len(claimed))
+		for i, cs := range claimed {
+			ids[i] = cs.ContactID
+		}
+		_, excluded, err := s.freqcap.Reserve(ctx, tx, c.BrandID, ids, now)
 		if err != nil {
 			return err
 		}
-		if granted >= len(claimed) {
-			return tx.SetCampaignWaiting(ctx, c.ID, "")
+		kept := claimed[:0]
+		for _, cs := range claimed {
+			if reason, out := excluded[cs.ContactID]; out {
+				if err := tx.MarkSendSkipped(ctx, cs.ID, reason); err != nil {
+					return err
+				}
+				continue
+			}
+			kept = append(kept, cs)
 		}
-		later := make([]int64, 0, len(claimed)-granted)
-		for _, cs := range claimed[granted:] {
-			later = append(later, cs.ID)
-		}
-		tomorrow := now.UTC().Truncate(24 * time.Hour).Add(24 * time.Hour)
-		if err := tx.DeferSends(ctx, later, tomorrow); err != nil {
-			return err
-		}
-		claimed = claimed[:granted]
-		return tx.SetCampaignWaiting(ctx, c.ID, "the brand's warm-up allowance for today is used up; sending continues tomorrow (UTC)")
+		claimed = kept
+		return nil
 	})
 	return claimed, err
 }
