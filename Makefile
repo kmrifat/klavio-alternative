@@ -9,10 +9,13 @@ TEST_REDIS_URL ?= redis://localhost:6379/15
 export DATABASE_URL = $(DB_URL)
 export REDIS_URL
 
-.PHONY: migrate run test test-integration docker-deps docker-deps-down web-install web-dev web-test check
+.PHONY: migrate seed run test test-integration docker-deps docker-deps-down web-install web-dev web-test check
 
 migrate:           ## apply migrations
 	cd api && go run ./cmd/app -mode=migrate
+
+seed:              ## demo brands, contacts and campaigns (development only; RESET=1 replaces them)
+	cd api && go run ./cmd/app -mode=seed $(if $(RESET),-reset)
 
 run:               ## run api + worker on :8080
 	cd api && go run ./cmd/app -mode=all

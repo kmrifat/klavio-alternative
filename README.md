@@ -41,6 +41,13 @@ Open the printed link and create a passkey (Touch ID, Windows Hello or your phon
 Running bootstrap again before anyone has joined cancels the earlier link. After that,
 owners invite people from **Team & access**.
 
+**Demo data.** Once you've signed in, `make seed` adds three brands (Northwind
+Outdoors, Lumen Skincare, Harbor Books), about 20,000 contacts and half a year of sent
+campaigns with their bounces, opens, clicks and unsubscribes, so every screen has
+something to show. Restart `make run` afterwards so health scores fill in. Demo
+addresses and domains end in `.test`, which can never receive email, and it refuses to
+run unless `APP_ENV=development` and `SES_MODE=fake`. `make seed RESET=1` replaces it.
+
 **Postgres/Redis in Docker instead** (kept for other machines and CI-like runs):
 `make docker-deps` starts them on ports `55432` / `56379`, then pass the URLs it prints.
 `docker compose up --build` runs the backend itself in Docker against your local DBs.

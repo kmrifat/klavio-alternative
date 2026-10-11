@@ -6,10 +6,13 @@
 //	app -mode=all       api + worker in one process (smallest deployments, local dev)
 //	app -mode=bootstrap -email you@company.com -name "Your Name"
 //	                    print a one-time invite link for the first owner
+//	app -mode=seed [-reset]
+//	                    add demo brands, contacts and campaigns (development only)
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -23,6 +26,7 @@ import (
 	"github.com/kmrifat/klavio-alternative/api/internal/cache"
 	"github.com/kmrifat/klavio-alternative/api/internal/config"
 	"github.com/kmrifat/klavio-alternative/api/internal/db"
+	"github.com/kmrifat/klavio-alternative/api/internal/seed"
 )
 
 // version is set at build time: -ldflags "-X main.version=..."
@@ -30,13 +34,15 @@ var version = "dev"
 
 type flags struct {
 	mode, email, name string
+	reset             bool
 }
 
 func main() {
 	var f flags
-	flag.StringVar(&f.mode, "mode", "all", "migrate | api | worker | all | bootstrap")
+	flag.StringVar(&f.mode, "mode", "all", "migrate | api | worker | all | bootstrap | seed")
 	flag.StringVar(&f.email, "email", "", "bootstrap: email of the first owner")
 	flag.StringVar(&f.name, "name", "", "bootstrap: name of the first owner")
+	flag.BoolVar(&f.reset, "reset", false, "seed: delete the demo data first")
 	flag.Parse()
 
 	cfg, err := config.Load(os.Getenv)
@@ -58,9 +64,13 @@ func main() {
 
 func run(ctx context.Context, f flags, cfg config.Config, log *slog.Logger) error {
 	switch f.mode {
-	case "migrate", "api", "worker", "all", "bootstrap":
+	case "migrate", "api", "worker", "all", "bootstrap", "seed":
 	default:
 		return fmt.Errorf("unknown mode %q", f.mode)
+	}
+	// Demo data never goes near real sending.
+	if f.mode == "seed" && (cfg.Env != config.EnvDevelopment || cfg.SESMode != "fake") {
+		return errors.New("seed only runs in development with SES_MODE=fake")
 	}
 
 	pool, err := db.Connect(ctx, cfg.DatabaseURL)
@@ -71,6 +81,13 @@ func run(ctx context.Context, f flags, cfg config.Config, log *slog.Logger) erro
 
 	if f.mode == "migrate" {
 		return db.Migrate(ctx, pool, log)
+	}
+	if f.mode == "seed" {
+		if err := seed.Run(ctx, pool, log, seed.Options{Reset: f.reset}); err != nil {
+			return err
+		}
+		fmt.Println("\nDemo data added: brands Northwind Outdoors, Lumen Skincare and Harbor Books. Health scores fill in within a minute of the app starting.")
+		return nil
 	}
 
 	rdb, err := cache.Connect(ctx, cfg.RedisURL)
