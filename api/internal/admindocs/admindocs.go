@@ -24,7 +24,7 @@ var specFiles embed.FS
 
 // Areas in the order they appear in the reference. Each has spec/<area>.json.
 var Areas = []string{"meta", "auth", "brands", "team", "templates", "campaigns",
-	"contacts", "imports", "segments", "apikeys", "governance", "health", "brakes"}
+	"contacts", "imports", "segments", "apikeys", "governance", "privacy", "health", "brakes"}
 
 // Prefix is where the spec's paths live (its servers entry).
 const Prefix = "/admin/v1"

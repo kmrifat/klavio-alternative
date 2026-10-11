@@ -24,6 +24,7 @@ import { ApprovalsPage } from "../routes/approvals/ApprovalsPage";
 import { AuditPage } from "../routes/audit/AuditPage";
 import { SafetyLimits } from "../routes/settings/SafetyLimits";
 import { SendingProviders } from "../routes/settings/SendingProviders";
+import { DataPrivacy } from "../routes/settings/DataPrivacy";
 import { ImportWizard } from "../routes/contacts/ImportWizard";
 import { SafetyCenter } from "../routes/safety/SafetyCenter";
 import { Home } from "../routes/Home";
@@ -116,8 +117,9 @@ export const routes: RouteObject[] = [
               { path: "brands/:slug", element: <BrandSettings /> },
               { path: "limits", element: <SafetyLimits /> },
               { path: "providers", element: <SendingProviders /> },
+              { path: "privacy", element: <DataPrivacy /> },
               ...settingsTabs
-                .filter((t) => !["brands", "limits", "providers"].includes(t.path))
+                .filter((t) => !["brands", "limits", "providers", "privacy"].includes(t.path))
                 .map((t) => ({ path: t.path, element: <SettingsPlaceholder tab={t} /> })),
             ],
           },

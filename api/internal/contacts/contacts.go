@@ -182,7 +182,7 @@ func (h *Handlers) add(w http.ResponseWriter, r *http.Request) error {
 		}); err != nil {
 			return err
 		}
-		return tx.Audit(ctx, auth.AuditEntry(r, "contact.added", "contact", email, &b.ID), nil,
+		return tx.Audit(ctx, auth.AuditEntry(r, "contact.added", "contact", store.ContactRef(email), &b.ID), nil,
 			map[string]any{"consent_basis": in.Consent.Basis, "source": in.Consent.Source})
 	})
 	if err != nil {
@@ -291,7 +291,7 @@ func (h *Handlers) unsubscribe(w http.ResponseWriter, r *http.Request) error {
 		}); err != nil {
 			return err
 		}
-		return tx.Audit(ctx, auth.AuditEntry(r, "contact.unsubscribed", "contact", c.Email, &b.ID),
+		return tx.Audit(ctx, auth.AuditEntry(r, "contact.unsubscribed", "contact", store.ContactRef(c.Email), &b.ID),
 			map[string]any{"topics": current}, map[string]any{"topics": left, "note": in.Note})
 	})
 	if err != nil {
@@ -321,7 +321,7 @@ func (h *Handlers) suppress(w http.ResponseWriter, r *http.Request) error {
 		if err := tx.Suppress(ctx, c.Email, store.SuppressManual, &b.ID, in.Note, &p.User.ID); err != nil {
 			return err
 		}
-		return tx.Audit(ctx, auth.AuditEntry(r, "contact.suppressed", "contact", c.Email, &b.ID), nil,
+		return tx.Audit(ctx, auth.AuditEntry(r, "contact.suppressed", "contact", store.ContactRef(c.Email), &b.ID), nil,
 			map[string]string{"reason": "manual", "note": in.Note})
 	})
 	if err != nil {
