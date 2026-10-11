@@ -39,6 +39,7 @@ import (
 	"github.com/kmrifat/klavio-alternative/api/internal/limits"
 	"github.com/kmrifat/klavio-alternative/api/internal/mailer"
 	"github.com/kmrifat/klavio-alternative/api/internal/mcpserver"
+	"github.com/kmrifat/klavio-alternative/api/internal/oauth"
 	"github.com/kmrifat/klavio-alternative/api/internal/postmaster"
 	"github.com/kmrifat/klavio-alternative/api/internal/privacy"
 	"github.com/kmrifat/klavio-alternative/api/internal/segments"
@@ -329,6 +330,10 @@ func (a *App) serverOptions() server.Options {
 		Installation: company.Installation{Version: a.deps.Version, Env: string(cfg.Env), Debug: cfg.Debug,
 			AppURL: cfg.AppURL, PasskeyDomain: cfg.WebAuthnRPID, CloudflareAccess: a.deps.Access != nil}}
 	agentsSvc := &agents.Service{Store: a.Store, Auth: a.Auth, Log: a.deps.Log}
+	// Claude connectors' sign-in. Its public endpoints need the API's public
+	// address; without one no request can start, so the approval routes idle.
+	oauthSvc := &oauth.Service{Store: a.Store, Agents: agentsSvc, Auth: a.Auth, Limiter: a.deps.Limiter, Log: a.deps.Log,
+		APIURL: cfg.PublicAPIURL, AppURL: cfg.AppURL}
 	o := server.Options{
 		Log:             a.deps.Log,
 		DB:              a.deps.Pool,
@@ -357,6 +362,7 @@ func (a *App) serverOptions() server.Options {
 			(&privacy.Handlers{Store: a.Store, Auth: a.Auth, Log: a.deps.Log}).Routes(mux)
 			companyH.Routes(mux)
 			agentsSvc.Routes(mux)
+			oauthSvc.AdminRoutes(mux)
 			a.recovery.Routes(mux)
 			if a.adminDocs != nil {
 				admindocs.Routes(mux, *a.adminDocs, a.deps.Log)
@@ -374,8 +380,12 @@ func (a *App) serverOptions() server.Options {
 	public := o.RegisterPublic
 	o.RegisterPublic = func(mux *http.ServeMux) {
 		public(mux)
-		mux.Handle(mcpserver.Path, mcpserver.New(mcpserver.Config{Agents: agentsSvc, Admin: server.AdminMux(o),
-			Limiter: a.deps.Limiter, Log: a.deps.Log, Version: a.deps.Version}))
+		mcpCfg := mcpserver.Config{Agents: agentsSvc, Admin: server.AdminMux(o), Limiter: a.deps.Limiter, Log: a.deps.Log, Version: a.deps.Version}
+		if cfg.PublicAPIURL != "" {
+			oauthSvc.PublicRoutes(mux)
+			mcpCfg.ResourceMetadataURL = oauthSvc.ResourceMetadataURL()
+		}
+		mux.Handle(mcpserver.Path, mcpserver.New(mcpCfg))
 	}
 	return o
 }

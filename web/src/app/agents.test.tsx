@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { routes } from "./routes";
 import { brightside, fakeApi, meta, ownerMe } from "../test/fakeApi";
 import type { AgentToken } from "../api/agents";
+import type { OAuthGrant } from "../api/oauth";
 
 vi.mock("@simplewebauthn/browser", () => ({
   startAuthentication: vi.fn(async () => ({ id: "cred" })),
@@ -35,7 +36,7 @@ const signedIn = {
 
 const token = (id: string, name: string, extra: Partial<AgentToken> = {}): AgentToken => ({
   id, name, prefix: `kag_${id}`, created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 30 * 86_400_000).toISOString(),
-  revoked_at: null, last_used_at: null, state: "active", ...extra,
+  revoked_at: null, last_used_at: null, state: "active", oauth_client_id: null, ...extra,
 });
 
 describe("Settings → AI agents", () => {
@@ -88,5 +89,34 @@ describe("Settings → AI agents", () => {
     });
     renderAt("/audit");
     expect(await screen.findByText("via AI agent Claude Code (kag_abc)")).toBeInTheDocument();
+  });
+});
+
+describe("Connecting Claude (/connect/:id)", () => {
+  const grant: OAuthGrant = { id: "g1", client_name: "Claude", redirect_host: "claude.ai", expires_at: new Date(Date.now() + 600_000).toISOString(), status: "pending", token_days: 90 };
+
+  it("says who asks and where you'll go back to, and approves with a passkey", async () => {
+    const assign = vi.fn();
+    vi.stubGlobal("location", { ...window.location, assign });
+    const { calls } = fakeApi({
+      ...signedIn,
+      "GET /admin/v1/oauth/grants/g1": { status: 200, body: grant },
+      "POST /admin/v1/oauth/grants/g1/approve": { status: 200, body: { redirect_to: "https://claude.ai/api/mcp/auth_callback?code=abc&state=xyz" } },
+    });
+    const user = userEvent.setup();
+    renderAt("/connect/g1");
+    expect(await screen.findByText("Connect Claude to Acme Group?")).toBeInTheDocument();
+    expect(screen.getByText("claude.ai")).toBeInTheDocument();
+    expect(screen.getByText(/for 90 days/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Allow with passkey" }));
+    expect(await screen.findByText("Sending you back to claude.ai…")).toBeInTheDocument();
+    expect(calls.some((c) => c.method === "POST" && c.path === "/admin/v1/oauth/grants/g1/approve")).toBe(true);
+    expect(assign).toHaveBeenCalledWith("https://claude.ai/api/mcp/auth_callback?code=abc&state=xyz");
+  });
+
+  it("explains an expired request", async () => {
+    fakeApi({ ...signedIn, "GET /admin/v1/oauth/grants/g1": { status: 200, body: { ...grant, status: "expired" } } });
+    renderAt("/connect/g1");
+    expect(await screen.findByText(/This request expired/)).toBeInTheDocument();
   });
 });

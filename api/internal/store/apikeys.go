@@ -146,15 +146,27 @@ func (s *Store) RecentAPICalls(ctx context.Context, brandID uuid.UUID, limit int
 	return all[APICall](rows, err)
 }
 
-// PurgeAPIHousekeeping deletes call logs older than 30 days and idempotency
-// records older than a day.
+// PurgeAPIHousekeeping deletes call logs older than 30 days, idempotency
+// records older than a day, and stale MCP sign-ins.
 func (s *Store) PurgeAPIHousekeeping(ctx context.Context) (int64, error) {
 	a, err := s.db.Exec(ctx, `DELETE FROM api_calls WHERE at < now() - interval '30 days'`)
 	if err != nil {
 		return 0, err
 	}
 	b, err := s.db.Exec(ctx, `DELETE FROM api_idempotency WHERE created_at < now() - interval '24 hours'`)
-	return a.RowsAffected() + b.RowsAffected(), err
+	if err != nil {
+		return 0, err
+	}
+	// MCP sign-ins (OAuth): anyone can start one, so old requests go after
+	// a day, and clients nobody connected with in 30 days go too.
+	c, err := s.db.Exec(ctx, `DELETE FROM oauth_grants WHERE created_at < now() - interval '1 day'`)
+	if err != nil {
+		return 0, err
+	}
+	d, err := s.db.Exec(ctx, `DELETE FROM oauth_clients c WHERE created_at < now() - interval '30 days'
+		AND NOT EXISTS (SELECT 1 FROM agent_tokens t WHERE t.oauth_client_id = c.id AND t.revoked_at IS NULL AND t.expires_at > now())
+		AND NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_id = c.id)`)
+	return a.RowsAffected() + b.RowsAffected() + c.RowsAffected() + d.RowsAffected(), err
 }
 
 // --- idempotency ---

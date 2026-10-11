@@ -51,6 +51,9 @@ type Config struct {
 	Limiter Limiter
 	Log     *slog.Logger
 	Version string
+	// ResourceMetadataURL, when set, is sent with 401s so OAuth clients
+	// (claude.ai, Claude Desktop) can find where to sign in.
+	ResourceMetadataURL string
 }
 
 const instructions = `This is the email marketing console. You act as the person whose agent token you use, with at most their role.
@@ -69,7 +72,7 @@ func New(cfg Config) http.Handler {
 	h.register(s)
 	streamable := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s },
 		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, Logger: cfg.Log})
-	return sdkauth.RequireBearerToken(h.verify, &sdkauth.RequireBearerTokenOptions{})(h.rateLimit(streamable))
+	return sdkauth.RequireBearerToken(h.verify, &sdkauth.RequireBearerTokenOptions{ResourceMetadataURL: cfg.ResourceMetadataURL})(h.rateLimit(streamable))
 }
 
 type handler struct{ cfg Config }

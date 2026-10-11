@@ -26,6 +26,7 @@ export function AiAgents() {
           in the audit log, marked as done by your agent.
         </span>
       </p>
+      <ClaudeCard />
       {created ? <NewToken created={created} onDone={() => setCreated(null)} /> : <CreateCard onCreated={setCreated} />}
       <Card title="Your agent tokens" description="Each lasts at most 90 days. Revoke one the moment you stop using it.">
         {tokens.isPending ? (
@@ -74,6 +75,23 @@ export function AiAgents() {
   );
 }
 
+// Claude (claude.ai and Desktop) signs in by itself: no token to copy.
+function ClaudeCard() {
+  const url = mcpURL();
+  return (
+    <Card title="Claude (claude.ai or Desktop)" description="No token needed: Claude signs in, and you approve with your passkey">
+      <ol className="list-decimal space-y-1 border-t border-zinc-200 py-4 pr-5 pl-10 text-sm text-zinc-700">
+        <li>In Claude, open Settings → Connectors and add a custom connector.</li>
+        <li>
+          Paste this address: <code className="rounded bg-zinc-100 px-1 font-mono text-xs">{url}</code> <CopyButton text={url} label="Copy address" />
+        </li>
+        <li>Claude sends you here to approve. Its connection then shows below, where you can revoke it.</li>
+      </ol>
+      <p className="px-5 pb-4 text-xs text-zinc-500">Claude connects from the internet, so this works once the console is online, not on your own computer.</p>
+    </Card>
+  );
+}
+
 function CreateCard({ onCreated }: { onCreated: (c: { token: AgentToken; secret: string }) => void }) {
   const create = useCreateAgentToken();
   const [name, setName] = useState("");
@@ -83,7 +101,7 @@ function CreateCard({ onCreated }: { onCreated: (c: { token: AgentToken; secret:
     create.mutate({ name: name.trim(), expires_in_days: days }, { onSuccess: (c) => (setName(""), onCreated(c)) });
   };
   return (
-    <Card title="Connect an agent" description="Make a token for one agent on one computer, so you can revoke it on its own">
+    <Card title="Claude Code, Codex, OpenCode and others" description="Make a token for one agent on one computer, so you can revoke it on its own">
       <form onSubmit={submit} className="space-y-3 border-t border-zinc-200 px-5 py-4">
         <Field label="Name">
           {(id) => (
@@ -196,6 +214,7 @@ function TokenTable({ tokens }: { tokens: AgentToken[] }) {
               <td className="px-5 py-2.5">
                 <p className="font-medium">{t.name}</p>
                 <p className="font-mono text-xs text-zinc-500">{t.prefix}…</p>
+                {t.oauth_client_id && <p className="text-xs text-violet-700">Connected by signing in</p>}
               </td>
               <td className="px-3 py-2.5 text-zinc-600">{t.last_used_at ? timeAgo(t.last_used_at) : "Never"}</td>
               <td className="px-3 py-2.5 text-zinc-600">{shortDate(t.expires_at)}</td>

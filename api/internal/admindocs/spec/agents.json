@@ -1,7 +1,7 @@
 {
   "tag": {
     "name": "Agents",
-    "description": "Tokens for AI agents (Claude Code, Codex, OpenCode…) that use the console through MCP at `/mcp`. A token acts as the person who made it, with at most their role and never a passkey confirmation."
+    "description": "Tokens for AI agents (Claude Code, Codex, OpenCode…) that use the console through MCP at `/mcp`. A token acts as the person who made it, with at most their role and never a passkey confirmation. AI clients that sign in with OAuth (claude.ai and Claude Desktop connectors) get the same kind of token after the person approves here; the OAuth endpoints themselves (`/.well-known/…`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`) live on the API's public address, outside this API, and are on only when `PUBLIC_API_URL` is set."
   },
   "x-todo": [],
   "paths": {
@@ -180,6 +180,166 @@
           }
         }
       }
+    },
+    "/oauth/grants/{id}": {
+      "get": {
+        "operationId": "getOAuthGrant",
+        "summary": "An AI client's sign-in request",
+        "description": "For the console's \"Connect\" screen: which client asks, where the person will be sent back to, how long the token would last, and whether it's still waiting (10 minutes to decide).",
+        "x-role": "signed_in",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "not_found"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthGrant"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/oauth/grants/{id}/approve": {
+      "post": {
+        "operationId": "approveOAuthGrant",
+        "summary": "Let the AI client connect as you",
+        "description": "Approves a waiting request with a passkey confirmation (so never by an agent). Issues a one-time code, valid 5 minutes, that the client swaps at `/oauth/token` (with PKCE) for an agent token acting as you for 90 days. Recorded in the audit log (`oauth.approved`, then `agent_token.created` when the code is swapped).",
+        "x-role": "signed_in",
+        "x-step-up": true,
+        "x-error-codes": [
+          "unauthenticated",
+          "step_up_required",
+          "agent_not_allowed",
+          "not_found",
+          "not_pending"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Where to send the person back to: the client's redirect address, with the code (approve) or `error=access_denied` (deny), `state` and `iss`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "redirect_to"
+                  ],
+                  "properties": {
+                    "redirect_to": {
+                      "type": "string",
+                      "format": "uri"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "description": "`step_up_required`: confirm with a passkey first. `agent_not_allowed`: an agent tried.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "`not_pending`: already answered, or the 10 minutes ran out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/oauth/grants/{id}/deny": {
+      "post": {
+        "operationId": "denyOAuthGrant",
+        "summary": "Turn the AI client away",
+        "description": "Declines a waiting request; the client is told `access_denied`.",
+        "x-role": "signed_in",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "not_found",
+          "not_pending"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Where to send the person back to: the client's redirect address, with the code (approve) or `error=access_denied` (deny), `state` and `iss`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "redirect_to"
+                  ],
+                  "properties": {
+                    "redirect_to": {
+                      "type": "string",
+                      "format": "uri"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "`not_pending`: already answered, or the 10 minutes ran out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -194,7 +354,8 @@
           "expires_at",
           "revoked_at",
           "last_used_at",
-          "state"
+          "state",
+          "oauth_client_id"
         ],
         "properties": {
           "id": {
@@ -240,6 +401,64 @@
               "active",
               "expired",
               "revoked"
+            ]
+          },
+          "oauth_client_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The AI client a sign-in (claude.ai, Claude Desktop) made this token for; null for tokens made by hand."
+          }
+        }
+      },
+      "OAuthGrant": {
+        "type": "object",
+        "required": [
+          "id",
+          "client_name",
+          "redirect_host",
+          "expires_at",
+          "status",
+          "token_days"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "client_name": {
+            "type": "string",
+            "description": "As the client registered itself; not verified.",
+            "examples": [
+              "Claude"
+            ]
+          },
+          "redirect_host": {
+            "type": "string",
+            "description": "Where the person goes back to after deciding.",
+            "examples": [
+              "claude.ai"
+            ]
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "denied",
+              "expired"
+            ]
+          },
+          "token_days": {
+            "type": "integer",
+            "description": "How long the connection's token lasts.",
+            "examples": [
+              90
             ]
           }
         }

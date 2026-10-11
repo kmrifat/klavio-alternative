@@ -28,6 +28,7 @@ import { DataPrivacy } from "../routes/settings/DataPrivacy";
 import { General } from "../routes/settings/General";
 import { ApiKeysOverview } from "../routes/settings/ApiKeysOverview";
 import { AiAgents } from "../routes/settings/AiAgents";
+import { ConnectAgent } from "../routes/agents/ConnectAgent";
 import { ImportWizard } from "../routes/contacts/ImportWizard";
 import { SafetyCenter } from "../routes/safety/SafetyCenter";
 import { Home } from "../routes/Home";
@@ -103,6 +104,8 @@ export const routes: RouteObject[] = [
     path: "/",
     element: <RequireAuth />,
     children: [
+      // An AI client's sign-in: outside the app's layout, like the login page.
+      { path: "connect/:id", element: <ConnectAgent /> },
       {
         element: <AppLayout />,
         children: [
