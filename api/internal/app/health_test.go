@@ -148,6 +148,20 @@ func TestHealthAndSafetyCenter(t *testing.T) {
 		t.Fatalf("today's sends: %s", sc.raw)
 	}
 
+	// Settings → Sending providers: the SES setup, read-only.
+	sp := owner.must(200, owner.do("GET", "/admin/v1/sending-provider", nil))
+	if sp.body["provider"] != "amazon_ses" || sp.body["mode"] != "fake" || sp.body["app_max_send_rate"] != 1000.0 ||
+		sp.body["account"].(map[string]any)["available"] != true {
+		t.Fatalf("sending provider: %s", sp.raw)
+	}
+	spBrands := sp.body["brands"].([]any)
+	if len(spBrands) != 1 {
+		t.Fatalf("want 1 brand: %s", sp.raw)
+	}
+	if b := spBrands[0].(map[string]any); b["slug"] != "brightside" || b["sending_domain"] == "" || b["ses_configuration_set"] == "" {
+		t.Fatalf("brand's SES setup missing: %s", sp.raw)
+	}
+
 	// S1 is company-level: brand members get 403, whatever their brand roles.
 	// A member without a role on the brand doesn't see its health either.
 	inv := owner.must(201, owner.do("POST", "/admin/v1/team/invites", map[string]any{
@@ -156,6 +170,7 @@ func TestHealthAndSafetyCenter(t *testing.T) {
 	mel := newBrowser(t, srv.URL)
 	mel.must(200, mel.acceptInvite(inv.body["invite_url"].(string)))
 	mel.must(403, mel.do("GET", "/admin/v1/safety-center", nil))
+	mel.must(403, mel.do("GET", "/admin/v1/sending-provider", nil))
 	mel.must(404, mel.do("GET", "/admin/v1/brands/brightside/health", nil))
 	mel.must(404, mel.do("POST", "/admin/v1/brands/brightside/health/recheck", nil))
 
@@ -167,6 +182,7 @@ func TestHealthAndSafetyCenter(t *testing.T) {
 	vic := newBrowser(t, srv.URL)
 	vic.must(200, vic.acceptInvite(inv.body["invite_url"].(string)))
 	vic.must(403, vic.do("GET", "/admin/v1/safety-center", nil))
+	vic.must(403, vic.do("GET", "/admin/v1/sending-provider", nil))
 	vic.must(200, vic.do("GET", "/admin/v1/brands/brightside/health", nil))
 	vic.must(403, vic.do("POST", "/admin/v1/brands/brightside/health/recheck", nil))
 

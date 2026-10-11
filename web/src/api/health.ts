@@ -79,6 +79,29 @@ export type SafetyCenterData = {
   protections: Protection[];
 };
 
+// Settings → Sending providers: how the app reaches Amazon SES (read-only).
+export type ProviderBrand = {
+  slug: string;
+  name: string;
+  color: string;
+  status: Brand["status"];
+  sending_domain: string;
+  mail_from_domain: string;
+  ses_configuration_set: string;
+  ses_identity_status: string;
+};
+
+export type SendingProvider = {
+  provider: "amazon_ses";
+  mode: "aws" | "fake";
+  region: string;
+  app_max_send_rate: number;
+  event_bus_arn: string;
+  events_queue_url: string;
+  account: AccountMeters;
+  brands: ProviderBrand[];
+};
+
 export type BlocklistResult = { zone: string; domain: string; status: "clean" | "listed" | "unknown"; detail: string; checked_at: string };
 
 export type PostmasterDay = { day: string; spam_ratio: number | null; domain_reputation: string; fetched_at: string };
@@ -106,6 +129,14 @@ export function useSafetyCenter() {
     queryKey: ["safety-center"],
     queryFn: () => apiFetch<SafetyCenterData>("/admin/v1/safety-center"),
     refetchInterval: 60_000,
+  });
+}
+
+export function useSendingProvider(enabled = true) {
+  return useQuery({
+    queryKey: ["sending-provider"],
+    queryFn: () => apiFetch<SendingProvider>("/admin/v1/sending-provider"),
+    enabled,
   });
 }
 

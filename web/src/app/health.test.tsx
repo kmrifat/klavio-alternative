@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { routes } from "./routes";
 import { brightside, fakeApi, meta, ownerMe } from "../test/fakeApi";
-import type { BrandHealth, HealthResult, SafetyCenterData } from "../api/health";
+import type { BrandHealth, HealthResult, SafetyCenterData, SendingProvider } from "../api/health";
 
 vi.mock("@simplewebauthn/browser", () => ({
   startAuthentication: vi.fn(async () => ({ id: "cred" })),
@@ -222,5 +222,41 @@ describe("brand health (S2)", () => {
     expect(screen.getByText("0.21%")).toBeInTheDocument();
     expect(screen.getByText("LOW")).toBeInTheDocument();
     expect(screen.getByText("Complete")).toBeInTheDocument();
+  });
+});
+
+const provider: SendingProvider = {
+  provider: "amazon_ses",
+  mode: "aws",
+  region: "eu-west-1",
+  app_max_send_rate: 20,
+  event_bus_arn: "arn:aws:events:eu-west-1:123456789012:event-bus/mail",
+  events_queue_url: "",
+  account: safety.account,
+  brands: [
+    {
+      slug: "brightside", name: "Brightside", color: "#f97316", status: "ready", sending_domain: "news.brightside.co",
+      mail_from_domain: "bounce.news.brightside.co", ses_configuration_set: "brand-brightside", ses_identity_status: "SUCCESS",
+    },
+  ],
+};
+
+describe("Settings → Sending providers", () => {
+  it("shows the SES setup, warns about what's missing, and lists each brand's identity", async () => {
+    fakeApi({ ...signedIn, "GET /admin/v1/sending-provider": { status: 200, body: provider } });
+    renderAt("/settings/providers");
+    expect(await screen.findByText("Sending for real")).toBeInTheDocument();
+    expect(screen.getByText("eu-west-1")).toBeInTheDocument();
+    expect(screen.getByText(/Faster than the account allows \(14\/second\)/)).toBeInTheDocument();
+    expect(screen.getByText(/bounces and complaints aren't recorded/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Brightside" })).toHaveAttribute("href", "/settings/brands/brightside");
+    expect(screen.getByText("Verified")).toBeInTheDocument();
+  });
+
+  it("says when nothing is really sent", async () => {
+    fakeApi({ ...signedIn, "GET /admin/v1/sending-provider": { status: 200, body: { ...provider, mode: "fake" } } });
+    renderAt("/settings/providers");
+    expect(await screen.findByText("Test mode: no email leaves this server.")).toBeInTheDocument();
+    expect(screen.queryByText(/bounces and complaints aren't recorded/)).not.toBeInTheDocument();
   });
 });

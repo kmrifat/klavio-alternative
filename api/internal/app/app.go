@@ -199,11 +199,17 @@ func New(d Deps) (*App, error) {
 	// Health (M6): warm-up, health score, Safety center.
 	a.Warmup = warmup.NewService(st)
 	a.Campaigns.SetWarmup(a.Warmup)
+	sesMode := "fake" // FromConfig plugs in real SES only for SES_MODE=aws
+	if d.Config.SESMode == "aws" {
+		sesMode = "aws"
+	}
 	a.Health = health.NewService(st, d.SES, a.Brands, a.Warmup, health.Config{
 		Blocklists:     d.Blocklists,
 		BlocklistEvery: d.Config.BlocklistEvery,
 		Postmaster:     d.Postmaster,
 		AccessOn:       d.Access != nil,
+		Sending: health.SendingConfig{Mode: sesMode, MaxSendRate: d.Config.SESMaxSendRate,
+			EventBusARN: d.Config.SESEventBusARN, EventsQueueURL: d.Config.SESEventsQueueURL},
 	}, d.Log)
 
 	// Segments, Contacts API, frequency cap, double opt-in (M7).

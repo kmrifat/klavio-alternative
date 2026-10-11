@@ -1,7 +1,7 @@
 {
   "tag": {
     "name": "Health",
-    "description": "Brand health and the safety center."
+    "description": "Brand health, the safety center and the sending provider."
   },
   "x-todo": [],
   "paths": {
@@ -17,6 +17,24 @@
           "200": {
             "description": "The overview.",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HealthSafetyCenter" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/sending-provider": {
+      "get": {
+        "operationId": "getSendingProvider",
+        "summary": "Sending provider",
+        "description": "How the app sends email, read-only: the provider (Amazon SES), whether it sends for real (`aws`) or not at all (`fake`, development), the region, the sending worker's own rate cap, where SES events arrive, the shared SES account (as on the safety center) and what SES holds for each brand (sending and MAIL FROM domains, configuration set, identity status). Changed with environment variables on the server (`SES_MODE`, `SES_REGION`, `SES_EVENT_BUS_ARN`, `SES_EVENTS_QUEUE_URL`, `SES_MAX_SEND_RATE`), not through the API.",
+        "x-role": "company:approver",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated", "forbidden"],
+        "responses": {
+          "200": {
+            "description": "The sending setup.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HealthSendingProvider" } } }
           },
           "401": { "$ref": "#/components/responses/Unauthenticated" },
           "403": { "$ref": "#/components/responses/Forbidden" }
@@ -198,6 +216,36 @@
           "postmaster": { "$ref": "#/components/schemas/HealthPostmaster" },
           "events": { "type": "array", "maxItems": 10, "items": { "$ref": "#/components/schemas/Alert" }, "description": "The brand's most recent alerts, newest first." },
           "safety_events": { "type": "array", "maxItems": 20, "items": { "$ref": "#/components/schemas/BrakesSafetyEvent" }, "description": "What the brakes did to this brand (and the account), newest first." }
+        }
+      },
+      "HealthSendingProvider": {
+        "type": "object",
+        "description": "How the app sends email.",
+        "required": ["provider", "mode", "region", "app_max_send_rate", "event_bus_arn", "events_queue_url", "account", "brands"],
+        "properties": {
+          "provider": { "type": "string", "enum": ["amazon_ses"] },
+          "mode": { "type": "string", "enum": ["aws", "fake"], "description": "`aws` sends real email; `fake` sends nothing (development), and the account numbers are made up." },
+          "region": { "type": "string", "examples": ["eu-west-1"] },
+          "app_max_send_rate": { "type": "number", "description": "The sending worker's own cap, emails per second (`SES_MAX_SEND_RATE`). Above the account's rate, SES throttles." },
+          "event_bus_arn": { "type": "string", "description": "EventBridge bus SES publishes events to; empty when not set." },
+          "events_queue_url": { "type": "string", "description": "SQS queue the app reads SES events from (bounces, complaints, deliveries); empty when not set." },
+          "account": { "$ref": "#/components/schemas/HealthAccountMeters" },
+          "brands": { "type": "array", "items": { "$ref": "#/components/schemas/HealthProviderBrand" } }
+        }
+      },
+      "HealthProviderBrand": {
+        "type": "object",
+        "description": "What SES holds for one brand.",
+        "required": ["slug", "name", "color", "status", "sending_domain", "mail_from_domain", "ses_configuration_set", "ses_identity_status"],
+        "properties": {
+          "slug": { "type": "string" },
+          "name": { "type": "string" },
+          "color": { "type": "string" },
+          "status": { "type": "string", "enum": ["setup", "ready", "paused"] },
+          "sending_domain": { "type": "string", "examples": ["news.brightside.co"] },
+          "mail_from_domain": { "type": "string", "examples": ["bounce.news.brightside.co"] },
+          "ses_configuration_set": { "type": "string" },
+          "ses_identity_status": { "type": "string", "description": "`PENDING`, `SUCCESS` or `FAILED`, as SES reports it.", "examples": ["SUCCESS"] }
         }
       },
       "HealthBrandCard": {
