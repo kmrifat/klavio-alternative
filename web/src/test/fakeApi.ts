@@ -70,4 +70,4 @@ export const team: Team = {
   invites: [],
 };
 
-export const meta = { status: 200, body: { version: "v-test", env: "development" } };
+export const meta = { status: 200, body: { version: "v-test", env: "development", company_name: "Acme Group" } };

@@ -1,5 +1,5 @@
 {
-  "tag": { "name": "Meta", "description": "The server, the signed-in member, company alerts, and this reference." },
+  "tag": { "name": "Meta", "description": "The server, the company, the signed-in member, company alerts, and this reference." },
   "x-todo": [],
   "paths": {
     "/meta": {
@@ -15,6 +15,51 @@
             "description": "The server.",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Meta" } } }
           }
+        }
+      }
+    },
+    "/company": {
+      "get": {
+        "operationId": "getCompany",
+        "summary": "Company name and installation",
+        "description": "Settings → General: the company's name and how this server is set up (read from its environment; not editable here).",
+        "x-role": "signed_in",
+        "x-step-up": false,
+        "x-error-codes": ["unauthenticated"],
+        "responses": {
+          "200": {
+            "description": "The company.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Company" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" }
+        }
+      },
+      "put": {
+        "operationId": "renameCompany",
+        "summary": "Rename the company",
+        "description": "Sets the name shown in the sidebar and on the sign-in page. Spaces are tidied; at most 80 characters. Owners only. Recorded in the audit log (`company.renamed`, with the old and new name).",
+        "x-role": "company:owner",
+        "x-step-up": true,
+        "x-error-codes": ["unauthenticated", "step_up_required", "forbidden", "bad_json", "name_required", "name_too_long"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string", "maxLength": 80, "examples": ["Acme Group"] } } }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The company after the change.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Company" } } }
+          },
+          "400": {
+            "description": "`bad_json`, `name_required` or `name_too_long`.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/ForbiddenOrStepUp" }
         }
       }
     },
@@ -114,11 +159,37 @@
     "schemas": {
       "Meta": {
         "type": "object",
-        "required": ["version", "env", "debug"],
+        "required": ["version", "env", "debug", "company_name"],
         "properties": {
           "version": { "type": "string", "examples": ["1.4.0"] },
           "env": { "type": "string", "enum": ["development", "production"] },
-          "debug": { "type": "boolean", "description": "Whether debug aids (this reference) are on." }
+          "debug": { "type": "boolean", "description": "Whether debug aids (this reference) are on." },
+          "company_name": {
+            "type": "string",
+            "description": "The company's name as Settings → General sets it, or `WEBAUTHN_RP_NAME` until it's set. Shown in the sidebar and on the sign-in page.",
+            "examples": ["Acme Group"]
+          }
+        }
+      },
+      "Company": {
+        "type": "object",
+        "required": ["name", "display_name", "installation"],
+        "properties": {
+          "name": { "type": "string", "description": "The name set in Settings → General; empty until one is." },
+          "display_name": { "type": "string", "description": "What the app shows: `name`, or `WEBAUTHN_RP_NAME` while it's empty." },
+          "installation": {
+            "type": "object",
+            "description": "How this server is set up, from its environment.",
+            "required": ["version", "env", "debug", "app_url", "passkey_domain", "cloudflare_access"],
+            "properties": {
+              "version": { "type": "string" },
+              "env": { "type": "string", "enum": ["development", "production"] },
+              "debug": { "type": "boolean" },
+              "app_url": { "type": "string", "description": "`APP_URL`: where the web app lives (used in invite links).", "examples": ["https://mail.acme.com"] },
+              "passkey_domain": { "type": "string", "description": "`WEBAUTHN_RP_ID`: passkeys only work on this domain and its subdomains.", "examples": ["acme.com"] },
+              "cloudflare_access": { "type": "boolean", "description": "Every admin request also needs a Cloudflare Access login." }
+            }
+          }
         }
       },
       "Me": {

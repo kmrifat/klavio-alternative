@@ -37,6 +37,8 @@ type Options struct {
 	AdminMiddleware func(http.Handler) http.Handler
 	// RegisterPublic adds unauthenticated routes at the root (unsubscribe pages).
 	RegisterPublic func(mux *http.ServeMux)
+	// CompanyName is shown in /admin/v1/meta, so the sign-in page can show it.
+	CompanyName func(ctx context.Context) string
 }
 
 // New returns the root handler with all routes and middleware.
@@ -79,7 +81,11 @@ func New(o Options) http.Handler {
 func AdminMux(o Options) *http.ServeMux {
 	admin := http.NewServeMux()
 	admin.HandleFunc("GET /admin/v1/meta", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"version": o.Version, "env": o.Env, "debug": o.Debug})
+		meta := map[string]any{"version": o.Version, "env": o.Env, "debug": o.Debug, "company_name": ""}
+		if o.CompanyName != nil {
+			meta["company_name"] = o.CompanyName(r.Context())
+		}
+		writeJSON(w, http.StatusOK, meta)
 	})
 	if o.RegisterAdmin != nil {
 		o.RegisterAdmin(admin)

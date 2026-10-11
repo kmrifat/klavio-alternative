@@ -270,80 +270,86 @@ volume + approval.
 
 Estimates assume **one full-time developer** who knows Go and React. Adjust for your team.
 
+**Status (2026-10-11):** M0–M7 are built and merged. What's left is going live: the
+open items in M0 and the SES simulator run in M3. Since M7 the app also has Settings →
+Sending providers, General and API keys; GDPR erasure (Settings → Data & privacy);
+13-month retention of raw SES events with campaign totals kept; email masking in logs;
+and demo data (`make seed`). See §8.
+
 ### M0 — Foundations (≈ 1 week)
-- [ ] AWS: request **SES production access** (do this on day 1, it can take days)
-- [ ] Pick SES region (e.g. `us-east-1`), set sending quota target
-- [ ] OpenTofu: SQS + DLQ, EventBridge rule, IAM role for the app
-- [ ] Repo skeleton: `api/`, `web/`, `infra/`, docker-compose Postgres, CI (lint, test, build)
-- [ ] Go: config, logging (`slog`), health endpoint, migrations, `river` set up
-- [ ] React: Vite + router + layout shell (sidebar, brand switcher, top bar)
-- [ ] Deploy: container + Postgres + Cloudflare Tunnel + Cloudflare Pages for `web`
+- [ ] AWS: request **SES production access** (do this on day 1, it can take days) — *not yet*
+- [ ] Pick SES region (e.g. `us-east-1`), set sending quota target — *not yet; `us-east-1` is only the default*
+- [ ] OpenTofu: SQS + DLQ, EventBridge rule, IAM role for the app — *written in `infra/aws` (with an IAM policy; the role comes with hosting), not applied yet*
+- [x] Repo skeleton: `api/`, `web/`, `infra/`, docker-compose Postgres, CI (lint, test, build)
+- [x] Go: config, logging (`slog`), health endpoint, migrations, `river` set up
+- [x] React: Vite + router + layout shell (sidebar, brand switcher, top bar)
+- [ ] Deploy: container + Postgres + Cloudflare Tunnel + Cloudflare Pages for `web` — *not yet: `api/Dockerfile` and `web/wrangler.jsonc` exist; waiting on the hosting decision (§9)*
 
 **Done when:** an empty app shell is live behind Cloudflare Access and the API answers `/healthz`.
 
 ### M1 — Brands, auth, roles (≈ 2 weeks) · screens S9, S17 (Brands & domains)
-- [ ] Passkey sign-up/sign-in, sessions, step-up re-confirm for sensitive actions
-- [ ] Verify Cloudflare Access JWT on admin-api
-- [ ] Brands CRUD; per brand: create SES identity, Easy DKIM, custom MAIL FROM,
+- [x] Passkey sign-up/sign-in, sessions, step-up re-confirm for sensitive actions
+- [x] Verify Cloudflare Access JWT on admin-api
+- [x] Brands CRUD; per brand: create SES identity, Easy DKIM, custom MAIL FROM,
       configuration set, event destination (via API or OpenTofu)
-- [ ] DNS checker job: DKIM, SPF, DMARC, MAIL FROM, link domain → "Sending blocked until DNS is right"
-- [ ] Memberships + role checks on every endpoint
-- [ ] Audit log (append-only) — wire it in from day one
+- [x] DNS checker job: DKIM, SPF, DMARC, MAIL FROM, link domain → "Sending blocked until DNS is right"
+- [x] Memberships + role checks on every endpoint
+- [x] Audit log (append-only) — wire it in from day one
 
 **Done when:** you can add "Brightside", see its DNS records turn green, invite a teammate with a role.
 
 ### M2 — Contacts and consent (≈ 2 weeks) · S3, S4
-- [ ] Contacts, topics, tags, consent records, consent wordings
-- [ ] Company-wide hashed suppression list
-- [ ] CSV import with all checks, attestation, quarantine
-- [ ] Engagement tier calculation
-- [ ] Contacts list with filters (tier, consent, tag)
+- [x] Contacts, topics, tags, consent records, consent wordings
+- [x] Company-wide hashed suppression list
+- [x] CSV import with all checks, attestation, quarantine
+- [x] Engagement tier calculation
+- [x] Contacts list with filters (tier, consent, tag)
 
 **Done when:** a Mailchimp export can be imported and you see correct Active/Warm/… counts.
 
 ### M3 — First real send (≈ 3 weeks) · S10, S13, S5, S6, P3, P4
-- [ ] Brand layouts (locked) + templates (MJML editor, compiled on save)
-- [ ] Template checks: link allowlist, no shorteners, alt text, unsubscribe + address present
-- [ ] Campaign editor, audience snapshot with exclusion reasons
-- [ ] Send test to seed list
-- [ ] Sending worker: batches, rate limit, retries, quiet hours, test slice + hold
-- [ ] `List-Unsubscribe` + one-click POST, unsubscribe page (P4), preference center (P3)
-- [ ] Type-to-confirm screen (S6) and 10-min cancel window
-- [ ] Test with the **SES mailbox simulator** (`success@`, `bounce@`, `complaint@simulator.amazonses.com`)
+- [x] Brand layouts (locked) + templates (MJML editor, compiled on save)
+- [x] Template checks: link allowlist, no shorteners, alt text, unsubscribe + address present
+- [x] Campaign editor, audience snapshot with exclusion reasons
+- [x] Send test to seed list
+- [x] Sending worker: batches, rate limit, retries, quiet hours, test slice + hold
+- [x] `List-Unsubscribe` + one-click POST, unsubscribe page (P4), preference center (P3)
+- [x] Type-to-confirm screen (S6) and 10-min cancel window
+- [ ] Test with the **SES mailbox simulator** (`success@`, `bounce@`, `complaint@simulator.amazonses.com`) — *test written (`SES_SIMULATOR_TEST`), not run yet: needs AWS credentials*
 
 **Done when:** a real campaign goes to an internal list, unsubscribe works from Gmail's button.
 
 ### M4 — Feedback loop and brakes (≈ 2 weeks) · S7, S11, S8
-- [ ] SQS event reader, event → send mapping, auto-suppression
-- [ ] Click redirect + bot filter, open pixel
-- [ ] Brake evaluator (campaign, brand, account levels) + `safety_events`
-- [ ] Live send monitor (S7) — poll every 5–10 s
-- [ ] Campaign report (S11): delivered, human clicks, bots filtered, top links, by provider
-- [ ] Brand paused → guided recovery (S8)
+- [x] SQS event reader, event → send mapping, auto-suppression
+- [x] Click redirect + bot filter, open pixel
+- [x] Brake evaluator (campaign, brand, account levels) + `safety_events`
+- [x] Live send monitor (S7) — poll every 5–10 s
+- [x] Campaign report (S11): delivered, human clicks, bots filtered, top links, by provider
+- [x] Brand paused → guided recovery (S8)
 
 **Done when:** sending to `complaint@simulator…` addresses pauses the campaign automatically.
 
 ### M5 — Governance (≈ 2 weeks) · S15, S16, S17, S9
-- [ ] Approvals engine (all types from S9), no self-approval
-- [ ] Safety limits settings: tighten instantly, loosen with approval, hard limits
-- [ ] Audit log screen with filters
-- [ ] Exports: approval, 24 h expiring link, watermark
-- [ ] Anomaly alerts (new country/device, volume spike, mass export → freeze + alert)
+- [x] Approvals engine (all types from S9), no self-approval
+- [x] Safety limits settings: tighten instantly, loosen with approval, hard limits
+- [x] Audit log screen with filters
+- [x] Exports: approval, 24 h expiring link, watermark
+- [x] Anomaly alerts (new country/device, volume spike, mass export → freeze + alert)
 
 ### M6 — Health and overview (≈ 2 weeks) · S1, S2
-- [ ] Brand health score (auth, reputation, list quality, engagement) recomputed hourly
-- [ ] Blocklist checks (Spamhaus DBL, SURBL, URIBL) for sending + link domains
-- [ ] Google Postmaster Tools API (Gmail spam rate per domain)
-- [ ] Warm-up schedule per new brand (daily caps rising over ~21 days)
-- [ ] Safety center (S1): all brands, shared SES account meters, "Needs attention"
+- [x] Brand health score (auth, reputation, list quality, engagement) recomputed hourly
+- [x] Blocklist checks (Spamhaus DBL, SURBL, URIBL) for sending + link domains
+- [x] Google Postmaster Tools API (Gmail spam rate per domain)
+- [x] Warm-up schedule per new brand (daily caps rising over ~21 days)
+- [x] Safety center (S1): all brands, shared SES account meters, "Needs attention"
 
 ### M7 — Segments, Contacts API, frequency cap (≈ 3 weeks) · S12, S14, P1, P2
-- [ ] Segment builder: rule JSON → SQL (ALL / ANY groups), live count
-- [ ] Contacts API: keys (hashed, scopes, IP allowlist, 90-day expiry), rate limits,
+- [x] Segment builder: rule JSON → SQL (ALL / ANY groups), live count
+- [x] Contacts API: keys (hashed, scopes, IP allowlist, 90-day expiry), rate limits,
       double opt-in, idempotency, OpenAPI spec page
-- [ ] Confirmation email (P2) + confirm page (P1)
-- [ ] Cross-brand frequency cap (2/day, 6/week, 16 h same brand)
-- [ ] Re-permission emails for quarantined imports (200/day)
+- [x] Confirmation email (P2) + confirm page (P1)
+- [x] Cross-brand frequency cap (2/day, 6/week, 16 h same brand)
+- [x] Re-permission emails for quarantined imports (200/day)
 
 ### Later (only if needed)
 - Order data (Shopify or your store) → LTV, "Bought in last 90 days", cart abandoners,

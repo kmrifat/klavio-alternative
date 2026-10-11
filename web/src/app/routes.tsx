@@ -7,7 +7,7 @@ import { NotFound } from "../routes/NotFound";
 import { Login } from "../routes/auth/Login";
 import { AcceptInvite } from "../routes/auth/AcceptInvite";
 import { TeamPage } from "../routes/team/TeamPage";
-import { SettingsLayout, SettingsPlaceholder, settingsTabs } from "../routes/settings/SettingsLayout";
+import { SettingsLayout } from "../routes/settings/SettingsLayout";
 import { BrandsList } from "../routes/settings/BrandsList";
 import { NewBrand } from "../routes/settings/NewBrand";
 import { BrandSettings } from "../routes/settings/BrandSettings";
@@ -25,6 +25,8 @@ import { AuditPage } from "../routes/audit/AuditPage";
 import { SafetyLimits } from "../routes/settings/SafetyLimits";
 import { SendingProviders } from "../routes/settings/SendingProviders";
 import { DataPrivacy } from "../routes/settings/DataPrivacy";
+import { General } from "../routes/settings/General";
+import { ApiKeysOverview } from "../routes/settings/ApiKeysOverview";
 import { ImportWizard } from "../routes/contacts/ImportWizard";
 import { SafetyCenter } from "../routes/safety/SafetyCenter";
 import { Home } from "../routes/Home";
@@ -118,9 +120,8 @@ export const routes: RouteObject[] = [
               { path: "limits", element: <SafetyLimits /> },
               { path: "providers", element: <SendingProviders /> },
               { path: "privacy", element: <DataPrivacy /> },
-              ...settingsTabs
-                .filter((t) => !["brands", "limits", "providers", "privacy"].includes(t.path))
-                .map((t) => ({ path: t.path, element: <SettingsPlaceholder tab={t} /> })),
+              { path: "general", element: <General /> },
+              { path: "api-keys", element: <ApiKeysOverview /> },
             ],
           },
           {
