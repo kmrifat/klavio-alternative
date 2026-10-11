@@ -10,7 +10,7 @@ export const settingsTabs = [
   { path: "providers", label: "Sending providers", icon: Server, milestone: "M6" }, // built
   { path: "limits", label: "Safety limits", icon: Gauge, milestone: "M5" }, // built
   { path: "api-keys", label: "API keys", icon: KeyRound, milestone: "M7" },
-  { path: "privacy", label: "Data & privacy", icon: Lock, milestone: "M5" },
+  { path: "privacy", label: "Data & privacy", icon: Lock, milestone: "M5" }, // built
 ];
 
 export function SettingsLayout() {

@@ -1,0 +1,405 @@
+{
+  "tag": {
+    "name": "Privacy",
+    "description": "GDPR erasure: removing a person's data from every brand when they ask."
+  },
+  "x-todo": [],
+  "paths": {
+    "/erasures": {
+      "get": {
+        "operationId": "listErasures",
+        "summary": "Erasures done",
+        "description": "The 50 most recent erasures, newest first: who carried each out, when, the reference they gave, and what was removed. Addresses appear only masked (`contact_ref`).",
+        "x-role": "company:approver",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden"
+        ],
+        "responses": {
+          "200": {
+            "description": "Recent erasures.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "erasures"
+                  ],
+                  "properties": {
+                    "erasures": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/PrivacyErasure"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      },
+      "post": {
+        "operationId": "erase",
+        "summary": "Erase a person",
+        "description": "Carries out a GDPR erasure of an address across every brand, in one transaction. The person's contacts are deleted (with their topics). The address is blocked for good with reason `erasure`, keeping only its hash, so nothing can add it again (imports, the Contacts API, manual adds). Clicks and opens lose their IP address and browser and sends their error text, but the rows stay so campaign reports keep their totals. Amazon's raw reports about the person are emptied. Stored Contacts API replies that mention them are deleted, their rows are taken out of import previews and samples, and export files containing the address are deleted. Audit log entries that mention the address get its masked form plus a short hash instead (the only change the audit log allows). Consent records are kept: they're filed under the hash and prove consent if it's disputed. Works even when no contact exists, to block the address and clean the logs. Recorded in the audit log (`contact.erased`).",
+        "x-role": "company:approver",
+        "x-step-up": true,
+        "x-error-codes": [
+          "unauthenticated",
+          "step_up_required",
+          "forbidden",
+          "bad_json",
+          "invalid_email",
+          "confirmation_mismatch",
+          "reference_required",
+          "reference_too_long",
+          "reference_names_person"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "email",
+                  "confirm_email",
+                  "reference"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email"
+                  },
+                  "confirm_email": {
+                    "type": "string",
+                    "format": "email",
+                    "description": "The same address, typed again."
+                  },
+                  "reference": {
+                    "type": "string",
+                    "maxLength": 500,
+                    "description": "Where the request came from, e.g. \"Email to privacy@, 3 Oct\". Kept for good, so it must not contain the address.",
+                    "examples": [
+                      "Email to privacy@, 3 Oct"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Erased.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "erasure"
+                  ],
+                  "properties": {
+                    "erasure": {
+                      "$ref": "#/components/schemas/PrivacyErasure"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_json`, `invalid_email`, `confirmation_mismatch` (the two addresses differ), `reference_required`, `reference_too_long`, `reference_names_person` (the reference contains the address).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/ForbiddenOrStepUp"
+          }
+        }
+      }
+    },
+    "/erasures/lookup": {
+      "post": {
+        "operationId": "lookupPerson",
+        "summary": "What's held about an address",
+        "description": "Before an erasure: which brands have the address as a contact, whether it's blocked and why, earlier erasures of it, and how many sends, clicks, opens, Amazon reports, consent records and audit log entries concern it. Changes nothing. A POST so the address stays out of URLs and logs.",
+        "x-role": "company:approver",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "bad_json",
+          "invalid_email"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "email"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "What's held.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrivacyPersonData"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_json` or `invalid_email`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "PrivacyErasure": {
+        "type": "object",
+        "description": "One erasure carried out.",
+        "required": [
+          "id",
+          "contact_ref",
+          "reference",
+          "summary",
+          "erased_by_name",
+          "erased_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "contact_ref": {
+            "type": "string",
+            "description": "The masked address and the start of its hash, as the audit log shows it.",
+            "examples": [
+              "j•••@example.com #3f2a9c1d07"
+            ]
+          },
+          "reference": {
+            "type": "string"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/PrivacyErasureSummary"
+          },
+          "erased_by_name": {
+            "type": "string"
+          },
+          "erased_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "PrivacyErasureSummary": {
+        "type": "object",
+        "description": "What the erasure removed, blanked and kept.",
+        "required": [
+          "brands",
+          "contacts_deleted",
+          "clicks_blanked",
+          "opens_blanked",
+          "events_blanked",
+          "send_errors_blanked",
+          "api_replies_deleted",
+          "imports_scrubbed",
+          "exports_deleted",
+          "audit_entries_redacted",
+          "consent_records_kept"
+        ],
+        "properties": {
+          "brands": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Names of the brands that had the person."
+          },
+          "contacts_deleted": {
+            "type": "integer"
+          },
+          "clicks_blanked": {
+            "type": "integer",
+            "description": "IP address and browser removed; the click still counts in reports."
+          },
+          "opens_blanked": {
+            "type": "integer"
+          },
+          "events_blanked": {
+            "type": "integer",
+            "description": "Amazon's raw reports about the person, emptied."
+          },
+          "send_errors_blanked": {
+            "type": "integer"
+          },
+          "api_replies_deleted": {
+            "type": "integer",
+            "description": "Stored Contacts API replies (idempotency) that mentioned the person."
+          },
+          "imports_scrubbed": {
+            "type": "integer"
+          },
+          "exports_deleted": {
+            "type": "integer"
+          },
+          "audit_entries_redacted": {
+            "type": "integer"
+          },
+          "consent_records_kept": {
+            "type": "integer"
+          },
+          "previous_suppression": {
+            "type": "string",
+            "description": "Why the address was already blocked, if it was.",
+            "examples": [
+              "complaint"
+            ]
+          }
+        }
+      },
+      "PrivacyPersonContact": {
+        "type": "object",
+        "required": [
+          "brand_slug",
+          "brand_name",
+          "brand_color",
+          "status",
+          "created_at"
+        ],
+        "properties": {
+          "brand_slug": {
+            "type": "string"
+          },
+          "brand_name": {
+            "type": "string"
+          },
+          "brand_color": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending_confirmation",
+              "subscribed",
+              "quarantined",
+              "unsubscribed"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "PrivacyPersonData": {
+        "type": "object",
+        "description": "Everything held about one address.",
+        "required": [
+          "contact_ref",
+          "contacts",
+          "suppression",
+          "erasures",
+          "sends",
+          "clicks",
+          "opens",
+          "events",
+          "consent_records",
+          "audit_entries"
+        ],
+        "properties": {
+          "contact_ref": {
+            "type": "string"
+          },
+          "contacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PrivacyPersonContact"
+            },
+            "description": "One per brand that has the address."
+          },
+          "suppression": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the address is blocked (`hard_bounce`, `soft_bounce`, `complaint`, `manual`, `erasure`), or null."
+          },
+          "erasures": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PrivacyErasure"
+            },
+            "description": "Earlier erasures of this address."
+          },
+          "sends": {
+            "type": "integer"
+          },
+          "clicks": {
+            "type": "integer"
+          },
+          "opens": {
+            "type": "integer"
+          },
+          "events": {
+            "type": "integer",
+            "description": "Amazon reports (deliveries, bounces, complaints…) about the address."
+          },
+          "consent_records": {
+            "type": "integer"
+          },
+          "audit_entries": {
+            "type": "integer",
+            "description": "Audit log entries that contain the address."
+          }
+        }
+      }
+    }
+  }
+}

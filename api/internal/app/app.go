@@ -37,6 +37,7 @@ import (
 	"github.com/kmrifat/klavio-alternative/api/internal/limits"
 	"github.com/kmrifat/klavio-alternative/api/internal/mailer"
 	"github.com/kmrifat/klavio-alternative/api/internal/postmaster"
+	"github.com/kmrifat/klavio-alternative/api/internal/privacy"
 	"github.com/kmrifat/klavio-alternative/api/internal/segments"
 	"github.com/kmrifat/klavio-alternative/api/internal/server"
 	"github.com/kmrifat/klavio-alternative/api/internal/ses"
@@ -344,6 +345,7 @@ func (a *App) serverOptions() server.Options {
 			(&health.Handlers{Service: a.Health, Store: a.Store, Approvals: a.Approvals}).Routes(mux)
 			(&segments.Handlers{Store: a.Store, Limiter: a.deps.Limiter, Log: a.deps.Log}).Routes(mux)
 			a.contactsAdm.Routes(mux)
+			(&privacy.Handlers{Store: a.Store, Auth: a.Auth, Log: a.deps.Log}).Routes(mux)
 			a.recovery.Routes(mux)
 			if a.adminDocs != nil {
 				admindocs.Routes(mux, *a.adminDocs, a.deps.Log)
