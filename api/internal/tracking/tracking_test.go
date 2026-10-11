@@ -185,7 +185,7 @@ func (f fixture) link(t *testing.T, no int, flags byte) string {
 
 func (f fixture) clicks(t *testing.T) (humans, bots int) {
 	t.Helper()
-	rows, err := f.st.ClicksSince(context.Background(), f.send, time.Time{})
+	rows, err := f.st.ClicksSince(context.Background(), f.send, time.Time{}, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,5 +406,28 @@ func TestSettledClickUnmaskedLater(t *testing.T) {
 	}
 	if h, b := f.clicks(t); h != 0 || b != 2 {
 		t.Fatalf("%d humans %d bots", h, b)
+	}
+}
+
+// A replayed link stops being stored once the email has had more clicks in
+// the window than any person makes; a huge User-Agent is cut before it's queued.
+func TestReplayedLinkStopsRecording(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	for i := range MaxRecentClicks + 1 {
+		if _, err := f.st.InsertClick(ctx, store.Click{SendID: f.send, BrandID: f.brand.ID, ContactID: f.contact, LinkNo: 1,
+			URL: "https://acme.test/p/b", At: time.Now().Add(-time.Duration(i) * time.Millisecond), Method: "GET"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.get(t, "GET", f.link(t, 1, 0), chrome)
+	if h, b := f.clicks(t); h+b != MaxRecentClicks+1 {
+		t.Fatalf("replayed click recorded: %d clicks", h+b)
+	}
+
+	r := httptest.NewRequest("GET", "/c/x", nil)
+	r.Header.Set("User-Agent", strings.Repeat("A", 100_000))
+	if h := (&Handlers{}).hit(r); len(h.UserAgent) != 500 {
+		t.Fatalf("user agent kept at %d bytes", len(h.UserAgent))
 	}
 }

@@ -29,12 +29,20 @@ type View struct {
 	Subscribed []uuid.UUID    // topics the contact is subscribed to
 	Topic      *store.Topic   // the topic the link was about, if any
 	Suppressed bool           // blocked company-wide (bounce, complaint, removal)
+	// LongAgo: they unsubscribed more than UndoWindow ago. A link from an
+	// old or forwarded email mustn't sign them up again: only a new sign-up
+	// (with a confirmation) does.
+	LongAgo bool
 }
+
+// UndoWindow: how long after unsubscribing someone can pick topics again
+// from an email's link ("unsubscribed by mistake?").
+const UndoWindow = 30 * 24 * time.Hour
 
 func (v View) IsSubscribed(topicID uuid.UUID) bool { return slices.Contains(v.Subscribed, topicID) }
 
 // CanAdd: may this person pick topics here? Only if they're properly
-// subscribed, or were before they unsubscribed. People awaiting double opt-in
+// subscribed, or were before they unsubscribed (within UndoWindow). People awaiting double opt-in
 // or quarantined must confirm first; suppressed addresses never can.
 func (v View) CanAdd() bool {
 	if v.Contact == nil || v.Suppressed {
@@ -44,7 +52,7 @@ func (v View) CanAdd() bool {
 	case store.ContactSubscribed:
 		return true
 	case store.ContactUnsubscribed:
-		return v.Contact.StatusBeforeUnsubscribe != nil && *v.Contact.StatusBeforeUnsubscribe == store.ContactSubscribed
+		return !v.LongAgo && v.Contact.StatusBeforeUnsubscribe != nil && *v.Contact.StatusBeforeUnsubscribe == store.ContactSubscribed
 	}
 	return false
 }
@@ -89,6 +97,13 @@ func (s *Service) load(ctx context.Context, tx *store.Store, c Claims, lock bool
 	}
 	v.Contact = &contact
 	v.Suppressed = contact.SuppressionReason != nil
+	if contact.Status == store.ContactUnsubscribed {
+		at, err := tx.LastUnsubscribedAt(ctx, contact.ID)
+		if err != nil {
+			return v, err
+		}
+		v.LongAgo = at == nil || s.now().Sub(*at) > UndoWindow
+	}
 	v.Subscribed, err = tx.ContactTopicIDs(ctx, contact.ID)
 	return v, err
 }

@@ -37,6 +37,10 @@ type Config struct {
 	// PublicAPIURL is this API's public address (for MCP sign-in: the
 	// resource and issuer AI clients see). "" = Claude connectors can't sign in.
 	PublicAPIURL string
+	// OAuthRedirectHosts: where AI clients signing in may send people back
+	// to (besides this computer). Anything else is refused, so a lookalike
+	// client can't collect a token.
+	OAuthRedirectHosts []string
 
 	// Cloudflare Access. Both set = every admin request must carry a valid Access token.
 	AccessTeamDomain string // e.g. acme.cloudflareaccess.com
@@ -146,6 +150,11 @@ func Load(getenv func(string) string) (Config, error) {
 
 	cfg.AppURL = get("APP_URL", "http://localhost:5173")
 	cfg.PublicAPIURL = strings.TrimSuffix(get("PUBLIC_API_URL", map[Env]string{EnvDevelopment: "http://localhost:8080"}[cfg.Env]), "/")
+	for _, h := range strings.Split(get("OAUTH_REDIRECT_HOSTS", "claude.ai,claude.com"), ",") {
+		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
+			cfg.OAuthRedirectHosts = append(cfg.OAuthRedirectHosts, h)
+		}
+	}
 	cfg.WebAuthnRPID = get("WEBAUTHN_RP_ID", "localhost")
 	cfg.WebAuthnRPName = get("WEBAUTHN_RP_NAME", "Mail Console")
 	cfg.AccessTeamDomain = get("CF_ACCESS_TEAM_DOMAIN", "")
@@ -240,7 +249,21 @@ func Load(getenv func(string) string) (Config, error) {
 	default:
 		errs = append(errs, fmt.Errorf("SES_MODE must be aws or fake, got %q", cfg.SESMode))
 	}
+	if cfg.Env == EnvDevelopment && !localName(cfg.WebAuthnRPID) {
+		// Development turns off Cloudflare Access, secure cookies and the
+		// secret check: never on a real domain.
+		errs = append(errs, fmt.Errorf("WEBAUTHN_RP_ID is %q but APP_ENV is development: set APP_ENV=production to run on a real domain", cfg.WebAuthnRPID))
+	}
 	if cfg.Env == EnvProduction {
+		if getenv("ALLOWED_ORIGINS") == "" || getenv("APP_URL") == "" {
+			errs = append(errs, errors.New("ALLOWED_ORIGINS and APP_URL are required in production (the console's https address)"))
+		}
+		for _, u := range append([]string{cfg.AppURL}, cfg.AllowedOrigins...) {
+			if !strings.HasPrefix(u, "https://") {
+				errs = append(errs, fmt.Errorf("APP_URL and ALLOWED_ORIGINS must be https in production, got %q", u))
+				break
+			}
+		}
 		if cfg.AccessTeamDomain == "" {
 			errs = append(errs, errors.New("CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD are required in production"))
 		}
@@ -265,6 +288,11 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 
 	return cfg, errors.Join(errs...)
+}
+
+// localName: a host name that only means this computer (or a test domain).
+func localName(h string) bool {
+	return h == "localhost" || h == "127.0.0.1" || h == "::1" || strings.HasSuffix(h, ".localhost") || strings.HasSuffix(h, ".test")
 }
 
 // parsePrefix accepts a CIDR or a single address (a /32 or /128).

@@ -61,7 +61,9 @@ func (c *oauthClient) postForm(path string, f url.Values) (int, map[string]any) 
 func TestOAuthConnector(t *testing.T) {
 	const api = "https://api.acme.test"
 	const callback = "https://claude.ai/api/mcp/auth_callback"
-	a, srv, _ := setupWith(t, func(c *config.Config) { c.PublicAPIURL = api })
+	a, srv, _ := setupWith(t, func(c *config.Config) {
+		c.PublicAPIURL, c.OAuthRedirectHosts = api, []string{"claude.ai", "claude.com"}
+	})
 	ctx := context.Background()
 	owner := newBrowser(t, srv.URL)
 	link, _ := a.Bootstrap(ctx, "owner@acme.test", "Olivia Owner")
@@ -86,9 +88,15 @@ func TestOAuthConnector(t *testing.T) {
 		t.Fatalf("server metadata: %s", body)
 	}
 
-	// Registration: https (or localhost) redirects only.
-	if res, out := claude.postJSON("/oauth/register", map[string]any{"client_name": "Evil", "redirect_uris": []string{"http://evil.example/cb"}}); res.StatusCode != 400 || out["error"] != "invalid_redirect_uri" {
-		t.Fatalf("http redirect registered: %d %v", res.StatusCode, out)
+	// Registration: known clients' sites (claude.ai) or localhost only, so a
+	// lookalike "Claude" can't collect a token from someone sent its link.
+	for _, bad := range []string{"http://evil.example/cb", "https://evil.example/cb", "https://claude.ai.evil.example/cb", "http://claude.ai/cb", "https://сlaude.ai/cb"} {
+		if res, out := claude.postJSON("/oauth/register", map[string]any{"client_name": "Claude", "redirect_uris": []string{bad}}); res.StatusCode != 400 || out["error"] != "invalid_redirect_uri" {
+			t.Fatalf("%s registered: %d %v", bad, res.StatusCode, out)
+		}
+	}
+	if res, _ := claude.postJSON("/oauth/register", map[string]any{"client_name": "Claude Code", "redirect_uris": []string{"http://localhost:33418/callback"}}); res.StatusCode != 201 {
+		t.Fatalf("loopback refused: %d", res.StatusCode)
 	}
 	res, reg := claude.postJSON("/oauth/register", map[string]any{"client_name": "Claude", "redirect_uris": []string{callback}})
 	if res.StatusCode != 201 {

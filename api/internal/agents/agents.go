@@ -128,10 +128,32 @@ func (s *Service) view(t store.AgentToken) tokenView {
 }
 
 // list: your own tokens. An agent can see the tokens of its person too.
+// ?everyone=true (owners, not agents): every working token, with whose it
+// is, so an owner can switch off the agents of someone who left.
 func (s *Service) list(w http.ResponseWriter, r *http.Request) error {
 	p, err := auth.Require(r)
 	if err != nil {
 		return err
+	}
+	if r.URL.Query().Get("everyone") == "true" {
+		if !isOwner(p) {
+			return httpx.Errorf(http.StatusForbidden, "forbidden", "only owners see everyone's agent tokens")
+		}
+		ts, err := s.Store.UsableAgentTokens(r.Context())
+		if err != nil {
+			return err
+		}
+		type someones struct {
+			tokenView
+			UserEmail string `json:"user_email"`
+			UserName  string `json:"user_name"`
+		}
+		out := []someones{}
+		for _, t := range ts {
+			out = append(out, someones{s.view(t.AgentToken), t.UserEmail, t.UserName})
+		}
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"tokens": out})
+		return nil
 	}
 	ts, err := s.Store.AgentTokensForUser(r.Context(), p.User.ID)
 	if err != nil {
@@ -204,8 +226,15 @@ func (s *Service) Mint(ctx context.Context, tx *store.Store, userID uuid.UUID, n
 	return t, secret, tx.Audit(ctx, audit, nil, after)
 }
 
+// isOwner: a company owner in person (an owner's agent doesn't count).
+func isOwner(p *auth.Principal) bool {
+	return p.Agent == nil && p.User.CompanyRole == store.CompanyOwner
+}
+
 // revoke: any of your tokens, at once. No passkey needed to switch one off,
 // and an agent may revoke its own person's tokens (including itself).
+// Owners may revoke anyone's, e.g. when someone leaves: Cloudflare Access
+// doesn't stand in front of /mcp, so removing them there isn't enough.
 func (s *Service) revoke(w http.ResponseWriter, r *http.Request) error {
 	p, err := auth.Require(r)
 	if err != nil {
@@ -219,12 +248,24 @@ func (s *Service) revoke(w http.ResponseWriter, r *http.Request) error {
 	var t store.AgentToken
 	err = s.Store.InTx(ctx, func(tx *store.Store) error {
 		var err error
-		if t, err = tx.RevokeAgentToken(ctx, p.User.ID, id); errors.Is(err, store.ErrNotFound) {
+		t, err = tx.RevokeAgentToken(ctx, p.User.ID, id)
+		if errors.Is(err, store.ErrNotFound) && isOwner(p) {
+			t, err = tx.RevokeAnyAgentToken(ctx, id)
+		}
+		if errors.Is(err, store.ErrNotFound) {
 			return httpx.ErrNotFound
 		} else if err != nil {
 			return err
 		}
-		return tx.Audit(ctx, auth.AuditEntry(r, "agent_token.revoked", "agent_token", t.Prefix, nil), nil, map[string]any{"name": t.Name})
+		after := map[string]any{"name": t.Name}
+		if t.UserID != p.User.ID {
+			u, err := tx.UserByID(ctx, t.UserID)
+			if err != nil {
+				return err
+			}
+			after["of"] = u.Email
+		}
+		return tx.Audit(ctx, auth.AuditEntry(r, "agent_token.revoked", "agent_token", t.Prefix, nil), nil, after)
 	})
 	if err != nil {
 		return err

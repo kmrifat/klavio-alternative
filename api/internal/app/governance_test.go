@@ -234,6 +234,14 @@ func TestExports(t *testing.T) {
 	// Only the requester can download.
 	f.ownerB.must(404, f.ownerB.do("GET", "/admin/v1/exports/"+expID+"/download", nil))
 
+	// Taking the file away needs a fresh passkey confirmation.
+	if err := f.a.Store.ExecForTest(ctx, `UPDATE sessions SET stepped_up_at = NULL`); err != nil {
+		t.Fatal(err)
+	}
+	if r := f.ownerA.do("GET", "/admin/v1/exports/"+expID+"/download", nil); r.errCode() != "step_up_required" {
+		t.Fatalf("download without a passkey: %s", r.raw)
+	}
+	f.ownerA.must(200, f.ownerA.stepUp())
 	req, _ := http.NewRequest("GET", f.srv+"/admin/v1/exports/"+expID+"/download", nil)
 	res, err := f.ownerA.http.Do(req)
 	if err != nil {

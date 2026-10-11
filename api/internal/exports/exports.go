@@ -36,12 +36,17 @@ type Service struct {
 	store     *store.Store
 	approvals *approvals.Service
 	anomaly   *anomaly.Service
+	auth      stepUpper
 	log       *slog.Logger
 	now       func() time.Time
 }
 
-func NewService(st *store.Store, ap *approvals.Service, an *anomaly.Service, log *slog.Logger) *Service {
-	s := &Service{store: st, approvals: ap, anomaly: an, log: log, now: time.Now}
+type stepUpper interface {
+	RequireStepUp(r *http.Request) (*auth.Principal, error)
+}
+
+func NewService(st *store.Store, ap *approvals.Service, an *anomaly.Service, au stepUpper, log *slog.Logger) *Service {
+	s := &Service{store: st, approvals: ap, anomaly: an, auth: au, log: log, now: time.Now}
 	ap.Register(approvals.KindExport, approvals.Definition{
 		Label: "Export with personal data", Execute: s.execute, Describe: s.describeLive,
 	})
@@ -205,11 +210,19 @@ var oneLine = strings.NewReplacer("\r", " ", "\n", " ")
 
 // csvSafe stops spreadsheet formula injection: a cell starting with = + - @
 // (or a tab/CR) is prefixed with ' so Excel and Sheets treat it as text.
+// So is each part after a ; , | or tab: Excel in many European locales
+// splits a CSV on ;, so "x;=cmd" would start a new cell with a formula.
 func csvSafe(v string) string {
-	if v != "" && strings.ContainsRune("=+-@\t\r", rune(v[0])) {
-		return "'" + v
+	var b strings.Builder
+	start := true
+	for _, r := range v {
+		if start && strings.ContainsRune("=+-@\t\r", r) {
+			b.WriteByte('\'')
+		}
+		b.WriteRune(r)
+		start = strings.ContainsRune(";,|\t", r)
 	}
-	return v
+	return b.String()
 }
 
 // execute builds the watermarked CSV when the export is approved.
@@ -322,8 +335,10 @@ func (s *Service) mine(w http.ResponseWriter, r *http.Request) error {
 
 // download: only the person who asked, within 24 hours of approval. Every
 // download is audited.
+// download hands over the file, with a passkey confirmation: a stolen
+// session alone mustn't be enough to take personal data away.
 func (s *Service) download(w http.ResponseWriter, r *http.Request) error {
-	p, err := auth.Require(r)
+	p, err := s.auth.RequireStepUp(r)
 	if err != nil {
 		return err
 	}

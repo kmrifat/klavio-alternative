@@ -506,6 +506,13 @@ func (a *Admin) setRepermission(w http.ResponseWriter, r *http.Request) error {
 		return httpx.Errorf(http.StatusConflict, "sending_not_configured",
 			"email sending isn't set up yet, so re-permission emails can't go out")
 	}
+	// Turning it on starts email, like any send: confirm with a passkey.
+	// Turning it off stops email, so it never waits for one.
+	if in.On {
+		if _, err := a.Auth.RequireStepUp(r); err != nil {
+			return err
+		}
+	}
 	ctx := r.Context()
 	err = a.Store.InTx(ctx, func(tx *store.Store) error {
 		if err := tx.SetRepermission(ctx, b.ID, in.On); err != nil {

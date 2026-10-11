@@ -110,7 +110,10 @@ export function useRepermission(slug: string) {
 export function useSetRepermission(slug: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (on: boolean) => apiFetch<Repermission>(`/admin/v1/brands/${slug}/repermission`, { method: "PUT", body: { on } }),
+    mutationFn: (on: boolean) => {
+      const call = () => apiFetch<Repermission>(`/admin/v1/brands/${slug}/repermission`, { method: "PUT", body: { on } });
+      return on ? withStepUp(call) : call(); // turning it on starts email
+    },
     onSuccess: (d) => qc.setQueryData(["repermission", slug], d),
   });
 }

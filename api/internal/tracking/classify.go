@@ -43,6 +43,9 @@ const (
 	SettleWindow = time.Minute
 	// TaintWindow: how far back a honeypot hit marks the same network's clicks.
 	TaintWindow = 10 * time.Minute
+	// MaxRecentClicks: past this many clicks on one email within the
+	// TaintWindow, further clicks aren't recorded (a replayed link).
+	MaxRecentClicks = 200
 )
 
 // scannerAgents are user-agent fragments of mail security scanners, link

@@ -29,6 +29,7 @@ func (t AgentToken) Label() string { return t.Name + " (" + t.Prefix + ")" }
 func (t AgentToken) Usable(now time.Time) bool { return t.RevokedAt == nil && now.Before(t.ExpiresAt) }
 
 const agentTokenCols = `id, user_id, name, prefix, token_hash, created_at, expires_at, revoked_at, last_used_at, oauth_client_id`
+const agentTokenColsT = `t.id, t.user_id, t.name, t.prefix, t.token_hash, t.created_at, t.expires_at, t.revoked_at, t.last_used_at, t.oauth_client_id`
 
 func (s *Store) CreateAgentToken(ctx context.Context, t AgentToken) (AgentToken, error) {
 	// Capped by the database's clock: a full 90 days from the app's clock
@@ -46,6 +47,26 @@ func (s *Store) AgentTokenByHash(ctx context.Context, hash []byte) (AgentToken, 
 func (s *Store) AgentTokensForUser(ctx context.Context, userID uuid.UUID) ([]AgentToken, error) {
 	return all[AgentToken](s.db.Query(ctx, `SELECT `+agentTokenCols+` FROM agent_tokens WHERE user_id = $1
 		ORDER BY created_at DESC`, userID))
+}
+
+// AgentTokenOfSomeone is a token with the person it acts as (owners' view).
+type AgentTokenOfSomeone struct {
+	AgentToken
+	UserEmail string `db:"user_email" json:"user_email"`
+	UserName  string `db:"user_name" json:"user_name"`
+}
+
+// UsableAgentTokens: everyone's tokens that still work, newest first.
+func (s *Store) UsableAgentTokens(ctx context.Context) ([]AgentTokenOfSomeone, error) {
+	return all[AgentTokenOfSomeone](s.db.Query(ctx, `SELECT `+agentTokenColsT+`, u.email AS user_email, u.name AS user_name
+		FROM agent_tokens t JOIN users u ON u.id = t.user_id
+		WHERE t.revoked_at IS NULL AND t.expires_at > now() ORDER BY t.created_at DESC`))
+}
+
+// RevokeAnyAgentToken revokes anyone's token (owners offboarding someone).
+func (s *Store) RevokeAnyAgentToken(ctx context.Context, id uuid.UUID) (AgentToken, error) {
+	return one[AgentToken](s.db.Query(ctx, `UPDATE agent_tokens SET revoked_at = COALESCE(revoked_at, now())
+		WHERE id = $1 RETURNING `+agentTokenCols, id))
 }
 
 // RevokeAgentToken revokes one of the user's tokens; ErrNotFound if it isn't theirs.

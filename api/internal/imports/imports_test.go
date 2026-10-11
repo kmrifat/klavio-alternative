@@ -3,6 +3,7 @@ package imports
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"slices"
 	"strings"
@@ -61,10 +62,21 @@ func TestParseSemicolonsAndErrors(t *testing.T) {
 		"header only": "email\n",
 		"not utf-8":   "email\n\xff\xfe@x.com\n",
 		"dup columns": "email,email\na@x.com,b@x.com\n",
+		"too wide":    "email" + strings.Repeat(",", MaxColumns) + "\na@x.com\n",
 	} {
 		if _, err := Parse([]byte(data)); err == nil {
 			t.Errorf("%s: expected an error", name)
 		}
+	}
+}
+
+func TestParseTagsCapped(t *testing.T) {
+	var many []string
+	for i := range 500 {
+		many = append(many, fmt.Sprint("tag", i))
+	}
+	if got := ParseTags(strings.Join(many, ";")); len(got) != MaxTags {
+		t.Fatalf("%d tags kept", len(got))
 	}
 }
 

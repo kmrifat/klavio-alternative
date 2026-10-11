@@ -432,6 +432,14 @@ func TestRepermissionEmails(t *testing.T) {
 	if err := f.a.Confirm.SendRepermissions(ctx); err != nil || len(outbox(f.a)) != 0 {
 		t.Fatalf("re-permission while off: %v %d", err, len(outbox(f.a)))
 	}
+	// Turning it on starts email: it needs a passkey confirmation.
+	if err := f.a.Store.ExecForTest(ctx, `UPDATE sessions SET stepped_up_at = NULL`); err != nil {
+		t.Fatal(err)
+	}
+	if r := f.owner.do("PUT", "/admin/v1/brands/brightside/repermission", map[string]any{"on": true}); r.errCode() != "step_up_required" {
+		t.Fatalf("re-permission on without a passkey: %s", r.raw)
+	}
+	f.owner.must(200, f.owner.stepUp())
 	on := f.owner.must(200, f.owner.do("PUT", "/admin/v1/brands/brightside/repermission", map[string]any{"on": true}))
 	// q3 is suppressed: counted there, not as quarantined.
 	if on.body["on"] != true || on.body["quarantined"].(float64) != 2 || on.body["per_day"].(float64) != 200 {

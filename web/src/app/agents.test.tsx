@@ -44,7 +44,7 @@ describe("Settings → AI agents", () => {
     let tokens: AgentToken[] = [token("old1", "Codex at work", { state: "revoked", revoked_at: new Date().toISOString() })];
     const { calls } = fakeApi({
       ...signedIn,
-      "GET /admin/v1/agent-tokens": () => ({ status: 200, body: { tokens } }),
+      "GET /admin/v1/agent-tokens": (_, url) => ({ status: 200, body: { tokens: url.searchParams.has("everyone") ? [] : tokens } }),
       "POST /admin/v1/agent-tokens": (body) => {
         const t = token("new1", (body as { name: string }).name);
         tokens = [t, ...tokens];
@@ -74,6 +74,24 @@ describe("Settings → AI agents", () => {
     const row = (await screen.findByText("Claude Code on my laptop")).closest("tr")!;
     await user.click(within(row).getByRole("button", { name: "Revoke Claude Code on my laptop" }));
     expect(await within((await screen.findByText("Claude Code on my laptop")).closest("tr")!).findByText("Revoked")).toBeInTheDocument();
+  });
+
+  it("lets an owner switch off a leaver's agent", async () => {
+    let everyone = [{ ...token("vic1", "Codex"), user_email: "vic@acme.test", user_name: "Vic Viewer" }];
+    const { calls } = fakeApi({
+      ...signedIn,
+      "GET /admin/v1/agent-tokens": (_, url) => ({ status: 200, body: { tokens: url.searchParams.has("everyone") ? everyone : [] } }),
+      "POST /admin/v1/agent-tokens/vic1/revoke": () => {
+        everyone = [];
+        return { status: 200, body: { token: token("vic1", "Codex", { state: "revoked" }) } };
+      },
+    });
+    const user = userEvent.setup();
+    renderAt("/settings/agents");
+    expect(await screen.findByText(/Vic Viewer · vic@acme.test/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Revoke Codex of vic@acme.test" }));
+    expect(await screen.findByText("No working agent tokens.")).toBeInTheDocument();
+    expect(calls.some((c) => c.method === "POST" && c.path === "/admin/v1/agent-tokens/vic1/revoke")).toBe(true);
   });
 
   it("marks what an agent did in the audit log", async () => {

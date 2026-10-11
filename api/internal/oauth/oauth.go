@@ -65,7 +65,10 @@ type Service struct {
 	APIURL string
 	// AppURL is the web app, where people approve.
 	AppURL string
-	Now    func() time.Time
+	// RedirectHosts: the hosts clients may register redirects on, besides
+	// loopback (e.g. claude.ai).
+	RedirectHosts []string
+	Now           func() time.Time
 }
 
 func (s *Service) now() time.Time {
@@ -168,21 +171,20 @@ func (s *Service) limited(w http.ResponseWriter, r *http.Request, what string, n
 
 // --- registration (RFC 7591) ---
 
-// validRedirect: https anywhere, or http on this computer (loopback), with
-// no fragment.
-func validRedirect(raw string) bool {
+// validRedirect: https on a known client's host (RedirectHosts), or this
+// computer (loopback, for apps like Claude Code), with no fragment. Open
+// registration plus any https host would let a lookalike "Claude" collect
+// a token from a person who approves a link they were sent.
+func (s *Service) validRedirect(raw string) bool {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || u.Fragment != "" || u.User != nil {
 		return false
 	}
-	switch u.Scheme {
-	case "https":
-		return true
-	case "http":
-		h := u.Hostname()
-		return h == "localhost" || h == "127.0.0.1" || h == "::1"
+	h := u.Hostname()
+	if h == "localhost" || h == "127.0.0.1" || h == "::1" {
+		return u.Scheme == "http" || u.Scheme == "https"
 	}
-	return false
+	return u.Scheme == "https" && slices.Contains(s.RedirectHosts, h)
 }
 
 func randomID(n int) (string, error) {
@@ -217,8 +219,8 @@ func (s *Service) register(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = "An AI client"
 	}
-	if len([]rune(name)) > 100 {
-		name = string([]rune(name)[:100])
+	if len([]rune(name)) > 60 { // it becomes the agent token's name
+		name = string([]rune(name)[:60])
 	}
 	switch {
 	case len(in.RedirectURIs) == 0 || len(in.RedirectURIs) > 5:
@@ -229,8 +231,9 @@ func (s *Service) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, u := range in.RedirectURIs {
-		if !validRedirect(u) {
-			oauthError(w, http.StatusBadRequest, "invalid_redirect_uri", "redirect_uris must be https, or http on localhost: "+u)
+		if !s.validRedirect(u) {
+			oauthError(w, http.StatusBadRequest, "invalid_redirect_uri",
+				"redirect_uris must be on a known AI client's site ("+strings.Join(s.RedirectHosts, ", ")+") or on localhost: "+u)
 			return
 		}
 	}
@@ -289,7 +292,8 @@ func (s *Service) authorize(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	c, err := s.Store.OAuthClientByID(r.Context(), q.Get("client_id"))
 	redirect := q.Get("redirect_uri")
-	if errors.Is(err, store.ErrNotFound) || (err == nil && !slices.Contains(c.RedirectURIs, redirect)) {
+	// The host is checked again: the allowed list may have shrunk since the client registered.
+	if errors.Is(err, store.ErrNotFound) || (err == nil && (!slices.Contains(c.RedirectURIs, redirect) || !s.validRedirect(redirect))) {
 		// Never redirect to an address we can't vouch for.
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusBadRequest)

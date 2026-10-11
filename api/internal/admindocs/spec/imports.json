@@ -35,7 +35,7 @@
       "post": {
         "operationId": "uploadImport",
         "summary": "Upload a CSV",
-        "description": "Starts an import from a CSV file (`multipart/form-data`, field `file`): at most 20 MB and 200,000 rows, UTF-8 (a BOM is fine), comma, semicolon or tab separated, with a header row and unique column names. Blank rows are skipped. The file is stored with the import, with the first 5 rows as a preview and a suggested column mapping (from common Mailchimp, Klaviyo and Shopify header names); nothing is imported yet. Brand admins only.\n\nThis is the one write that isn't JSON: browsers must send their `Origin` (one of the app's), as they always do with uploads.\n\nAn upload of more than 5,000 rows and over 3× the brand's current contacts raises an `import_spike` alert for the company.",
+        "description": "Starts an import from a CSV file (`multipart/form-data`, field `file`): at most 20 MB and 200,000 rows, UTF-8 (a BOM is fine), comma, semicolon or tab separated, with a header row and unique column names (at most 200 columns; at most 50 tags a row are kept). Blank rows are skipped. The file is stored with the import, with the first 5 rows as a preview and a suggested column mapping (from common Mailchimp, Klaviyo and Shopify header names); nothing is imported yet. Brand admins only.\n\nThis is the one write that isn't JSON: browsers must send their `Origin` (one of the app's), as they always do with uploads.\n\nAn upload of more than 5,000 rows and over 3× the brand's current contacts raises an `import_spike` alert for the company.",
         "x-role": "brand:brand_admin",
         "x-step-up": false,
         "x-error-codes": ["unauthenticated", "forbidden", "not_found", "bad_file"],

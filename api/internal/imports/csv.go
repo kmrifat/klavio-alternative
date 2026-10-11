@@ -20,6 +20,13 @@ const (
 	MaxRows      = 200_000
 )
 
+// A crafted file mustn't make each row cost much: columns and tags per row
+// are capped too.
+const (
+	MaxColumns = 200
+	MaxTags    = 50
+)
+
 // Mapping says which CSV column feeds each field ("" = not in the file).
 type Mapping struct {
 	Email         string `json:"email"`
@@ -74,6 +81,9 @@ func Parse(data []byte) (Table, error) {
 	headers, err := r.Read()
 	if err != nil {
 		return Table{}, fmt.Errorf("reading the header row: %w", err)
+	}
+	if len(headers) > MaxColumns {
+		return Table{}, fmt.Errorf("the file has %d columns; at most %d are read, so remove the ones you don't need", len(headers), MaxColumns)
 	}
 	for i, h := range headers {
 		headers[i] = strings.TrimSpace(h)
@@ -245,7 +255,8 @@ func ParseDate(s string) *time.Time {
 	return nil
 }
 
-// ParseTags splits `"vip","customer"` or `vip, customer` into clean, unique tags.
+// ParseTags splits `"vip","customer"` or `vip, customer` into clean, unique
+// tags, at most MaxTags of them.
 func ParseTags(s string) []string {
 	out := []string{}
 	seen := map[string]bool{}
@@ -256,6 +267,9 @@ func ParseTags(s string) []string {
 		}
 		seen[strings.ToLower(p)] = true
 		out = append(out, p)
+		if len(out) == MaxTags {
+			break
+		}
 	}
 	return out
 }

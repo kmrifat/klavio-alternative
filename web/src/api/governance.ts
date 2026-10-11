@@ -89,8 +89,13 @@ export function useRequestExport(slug: string) {
   });
 }
 
-// downloadExport saves the CSV through the browser (the session cookie authenticates).
-export async function downloadExport(id: string): Promise<void> {
+// downloadExport saves the CSV through the browser (the session cookie
+// authenticates), after a passkey confirmation.
+export function downloadExport(id: string): Promise<void> {
+  return withStepUp(() => fetchExport(id));
+}
+
+async function fetchExport(id: string): Promise<void> {
   const res = await fetch(`${API_URL}/admin/v1/exports/${id}/download`, { credentials: "include" });
   if (!res.ok) {
     const data = (await res.json().catch(() => ({}))) as { error?: { code: string; message: string } };

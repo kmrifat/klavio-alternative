@@ -188,7 +188,7 @@ func New(d Deps) (*App, error) {
 	a.Limits = limits.NewService(st, a.Approvals, d.Log)
 	a.Anomaly = anomaly.NewService(st, d.Log)
 	a.Anomaly.ExpectCountry = d.Config.TrustCloudflareHeaders
-	a.exports = exports.NewService(st, a.Approvals, a.Anomaly, d.Log)
+	a.exports = exports.NewService(st, a.Approvals, a.Anomaly, authSvc, d.Log)
 	a.team = &team.Handlers{Store: st, Auth: authSvc, Approvals: a.Approvals, Log: d.Log}
 	a.team.RegisterApprovals()
 	authSvc.SetSignInGuard(a.Anomaly)
@@ -333,7 +333,7 @@ func (a *App) serverOptions() server.Options {
 	// Claude connectors' sign-in. Its public endpoints need the API's public
 	// address; without one no request can start, so the approval routes idle.
 	oauthSvc := &oauth.Service{Store: a.Store, Agents: agentsSvc, Auth: a.Auth, Limiter: a.deps.Limiter, Log: a.deps.Log,
-		APIURL: cfg.PublicAPIURL, AppURL: cfg.AppURL}
+		APIURL: cfg.PublicAPIURL, AppURL: cfg.AppURL, RedirectHosts: cfg.OAuthRedirectHosts}
 	o := server.Options{
 		Log:             a.deps.Log,
 		DB:              a.deps.Pool,
@@ -399,6 +399,7 @@ func (a *App) ServeHTTP(ctx context.Context) error {
 		Addr:              a.deps.Config.HTTPAddr,
 		Handler:           a.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
+		MaxHeaderBytes:    64 << 10, // no browser or SDK needs more; Go's default is 1 MB
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,

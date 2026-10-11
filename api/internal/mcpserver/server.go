@@ -38,6 +38,17 @@ const Path = "/mcp"
 // CallsPerMinute an agent token may make.
 const CallsPerMinute = 120
 
+// Personal data comes in small amounts: a contact export needs a second
+// admin, so an agent mustn't be a way round that. Contact reads (searches
+// and single contacts) per agent token per hour, and contacts per search.
+const (
+	ContactReadsPerHour = 60
+	MaxContactsPerPage  = 50
+)
+
+// personalData: the tools that read contacts, counted against ContactReadsPerHour.
+var personalData = map[string]bool{"search_contacts": true, "get_contact": true}
+
 // maxOutput keeps tool results small enough for a model's context.
 const maxOutput = 60_000
 
@@ -109,6 +120,23 @@ func (h *handler) rateLimit(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// contactQuota counts one contact read; it refuses past the hourly quota,
+// or when the count can't be checked.
+func (h *handler) contactQuota(ctx context.Context, c *caller) error {
+	if h.cfg.Limiter == nil {
+		return nil
+	}
+	ok, err := h.cfg.Limiter.Allow(ctx, "mcp-contacts:"+c.p.Agent.ID.String(), ContactReadsPerHour, time.Hour)
+	if err != nil {
+		h.cfg.Log.ErrorContext(ctx, "mcp: counting contact reads", "err", err)
+	}
+	if err != nil || !ok {
+		return &apiError{Status: http.StatusTooManyRequests, Code: "contact_quota",
+			Message: fmt.Sprintf("an agent may read contacts %d times an hour; for a whole list, a person can export it in the console", ContactReadsPerHour)}
+	}
+	return nil
 }
 
 func callerFrom(ti *sdkauth.TokenInfo) *caller {

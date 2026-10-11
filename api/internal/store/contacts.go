@@ -395,6 +395,13 @@ func (s *Store) AddConsentRecord(ctx context.Context, r NewConsentRecord) error 
 	return err
 }
 
+// LastUnsubscribedAt: when the contact last unsubscribed (nil: no record of it).
+func (s *Store) LastUnsubscribedAt(ctx context.Context, contactID uuid.UUID) (*time.Time, error) {
+	var at *time.Time
+	err := s.db.QueryRow(ctx, `SELECT max(occurred_at) FROM consent_records WHERE contact_id = $1 AND kind = 'unsubscribed'`, contactID).Scan(&at)
+	return at, err
+}
+
 func (s *Store) ConsentHistory(ctx context.Context, contactID uuid.UUID) ([]ConsentRecord, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT id, kind, method, source, wording, page_url, ip, occurred_at, recorded_by, import_id

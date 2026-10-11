@@ -20,14 +20,20 @@ import (
 // usual approvals for large or risky sends still follow.
 
 // agentSendPayload ties the request to the campaign version and audience
-// the agent saw, like a person's type-to-confirm.
+// the agent saw, like a person's type-to-confirm, and to the template's
+// version: the agent can edit templates, so it mustn't swap the content
+// after the person looked.
 type agentSendPayload struct {
-	CampaignID  uuid.UUID  `json:"campaign_id"`
-	Version     int        `json:"version"`
-	Audience    int        `json:"audience"`
-	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
-	Agent       string     `json:"agent"`
+	CampaignID      uuid.UUID  `json:"campaign_id"`
+	Version         int        `json:"version"`
+	Audience        int        `json:"audience"`
+	ScheduledAt     *time.Time `json:"scheduled_at,omitempty"`
+	Agent           string     `json:"agent"`
+	TemplateVersion int        `json:"template_version"`
 }
+
+// errTemplateChanged: the template was edited after the agent asked.
+var errTemplateChanged = approvals.Reject("the email's template changed after the agent asked; ask it to request the send again")
 
 // ErrAlreadyRequested: a send request for this campaign is waiting already.
 var ErrAlreadyRequested = errors.New("a send request for this campaign is already waiting for approval")
@@ -62,6 +68,10 @@ func (s *Service) RequestAgentSend(ctx context.Context, b store.Brand, c store.C
 		if waiting {
 			return ErrAlreadyRequested
 		}
+		tplVersion, err := tx.TemplateVersionForShare(ctx, b.ID, *c.TemplateID) // Review made sure there is one
+		if err != nil {
+			return err
+		}
 		when := "as soon as it's approved"
 		if scheduledAt != nil {
 			when = "at " + scheduledAt.UTC().Format("2 Jan 15:04 UTC")
@@ -69,7 +79,7 @@ func (s *Service) RequestAgentSend(ctx context.Context, b store.Brand, c store.C
 		out, err = s.approvals.Request(ctx, tx, approvals.Request{
 			Kind: approvals.KindAgentSend, BrandID: &b.ID, RequestedBy: p.User,
 			Summary: fmt.Sprintf("Send %q to %d people %s (prepared by %s)", c.Name, audience, when, agent),
-			Payload: agentSendPayload{CampaignID: c.ID, Version: c.Version, Audience: audience, ScheduledAt: scheduledAt, Agent: agent},
+			Payload: agentSendPayload{CampaignID: c.ID, Version: c.Version, Audience: audience, ScheduledAt: scheduledAt, Agent: agent, TemplateVersion: tplVersion},
 			Audit:   audit,
 		})
 		return err
@@ -110,6 +120,17 @@ func (s *Service) executeAgentSend(ctx context.Context, tx *store.Store, a store
 	if err != nil {
 		return nil, err
 	}
+	if c.TemplateID == nil {
+		return nil, errTemplateChanged
+	}
+	switch v, err := tx.TemplateVersionForShare(ctx, b.ID, *c.TemplateID); {
+	case errors.Is(err, store.ErrNotFound):
+		return nil, errTemplateChanged
+	case err != nil:
+		return nil, err
+	case v != p.TemplateVersion:
+		return nil, errTemplateChanged
+	}
 	audit := store.AuditEntry{ActorID: &decider.User.ID, ActorEmail: decider.User.Email, BrandID: &b.ID}
 	out, rv, err := s.scheduleIn(ctx, tx, b, c, ScheduleInput{Version: p.Version, Confirm: strconv.Itoa(p.Audience), ScheduledAt: p.ScheduledAt}, decider.User, audit)
 	var problems *ProblemsError
@@ -147,6 +168,12 @@ func (s *Service) describeAgentSend(ctx context.Context, a store.Approval) strin
 	}
 	if c.Version != p.Version || c.State != store.CampaignDraft {
 		return "The campaign was edited after the agent asked, so this can't be approved; ask the agent again."
+	}
+	if c.TemplateID == nil {
+		return "The campaign has no template any more; ask the agent again."
+	}
+	if t, err := s.store.TemplateByID(ctx, c.BrandID, *c.TemplateID); err != nil || t.Version != p.TemplateVersion {
+		return "The email's template was edited after the agent asked, so this can't be approved; ask the agent again."
 	}
 	b, err := s.store.BrandByID(ctx, c.BrandID)
 	if err != nil {
