@@ -623,3 +623,48 @@ func TestCampaignGuards(t *testing.T) {
 		t.Fatalf("from header: %v", rv.body["from_header"])
 	}
 }
+
+// A company approver holds no brand role but sees every brand read-only: they
+// can read campaigns (they approve the big ones) but never write or send them.
+func TestCampaignApproverReadsOnly(t *testing.T) {
+	w := newCampaignWorld(t)
+	for i := range 3 {
+		w.contact(fmt.Sprintf("a%d@example.com", i), store.ContactSubscribed, 24*time.Hour, true)
+	}
+	owner := w.owner
+	sent := w.draft(map[string]any{"name": "Sent"})
+	sid := sent["id"].(string)
+	owner.must(200, owner.do("POST", campaignBase+"/campaigns/"+sid+"/schedule", map[string]any{"version": 1, "confirm": "3"}))
+	w.runUntil(sid, store.CampaignDone)
+	draft := w.draft(map[string]any{"name": "Draft"})
+	did := draft["id"].(string)
+
+	inv := owner.must(201, owner.do("POST", "/admin/v1/team/invites", map[string]any{
+		"email": "ap@acme.test", "name": "Ada Approver", "company_role": "approver",
+	}))
+	approver := newBrowser(t, owner.base)
+	approver.must(200, approver.acceptInvite(inv.body["invite_url"].(string)))
+
+	list := approver.must(200, approver.do("GET", campaignBase+"/campaigns", nil))
+	if n := len(list.body["campaigns"].([]any)); n != 2 {
+		t.Fatalf("approver lists %d campaigns, want 2: %s", n, list.raw)
+	}
+	got := approver.must(200, approver.do("GET", campaignBase+"/campaigns/"+sid, nil))
+	if got.body["campaign"].(map[string]any)["id"] != sid {
+		t.Fatalf("get: %s", got.raw)
+	}
+	approver.must(200, approver.do("GET", campaignBase+"/campaigns/"+did+"/review", nil))
+	approver.must(200, approver.do("GET", campaignBase+"/campaigns/"+sid+"/monitor", nil))
+	rep := approver.must(200, approver.do("GET", campaignBase+"/campaigns/"+sid+"/report", nil))
+	if _, ok := rep.body["links"]; !ok {
+		t.Fatalf("report: %s", rep.raw)
+	}
+
+	approver.must(403, approver.do("POST", campaignBase+"/campaigns", map[string]any{
+		"name": "Ada's", "topic_id": w.topic, "template_id": w.tpl, "subject": "Hi"}))
+	approver.must(403, approver.do("PUT", campaignBase+"/campaigns/"+did, map[string]any{"version": 1, "name": "Renamed"}))
+	approver.must(403, approver.do("POST", campaignBase+"/campaigns/"+did+"/test", nil))
+	approver.must(403, approver.do("POST", campaignBase+"/campaigns/"+did+"/schedule", map[string]any{"version": 1, "confirm": "3"}))
+	approver.must(403, approver.do("POST", campaignBase+"/campaigns/"+did+"/cancel", nil))
+	approver.must(403, approver.do("PUT", campaignBase+"/sender", map[string]any{"from_local": "news"}))
+}

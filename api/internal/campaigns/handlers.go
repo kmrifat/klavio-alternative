@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/kmrifat/klavio-alternative/api/internal/auth"
+	"github.com/kmrifat/klavio-alternative/api/internal/brands"
 	"github.com/kmrifat/klavio-alternative/api/internal/httpx"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
 	"github.com/kmrifat/klavio-alternative/api/internal/templates"
@@ -54,26 +55,15 @@ func (s *Service) Routes(mux *http.ServeMux, az authorizer) {
 	mux.HandleFunc("PUT "+base+"/sender", withAZ(s.putSender))
 }
 
-// visibleBrand loads the {slug} brand, answering 404 (not 403) for brands the
-// user can't see so their existence isn't leaked.
+// visibleBrand loads the {slug} brand (404 for brands the user can't see).
 func (s *Service) visibleBrand(r *http.Request) (store.Brand, *auth.Principal, error) {
-	p, err := auth.Require(r)
-	if err != nil {
-		return store.Brand{}, nil, err
-	}
-	b, err := s.store.BrandBySlug(r.Context(), r.PathValue("slug"))
-	if errors.Is(err, store.ErrNotFound) || (err == nil && !p.CanViewBrand(b.ID)) {
-		return store.Brand{}, nil, httpx.ErrNotFound
-	}
-	return b, p, err
+	return brands.Visible(r, s.store)
 }
 
+// brandWithRole adds a minimum role. Company approvers see every brand and
+// count as viewers, so they can read the campaigns they're asked to approve.
 func (s *Service) brandWithRole(r *http.Request, min store.BrandRole) (store.Brand, *auth.Principal, error) {
-	b, p, err := s.visibleBrand(r)
-	if err == nil && !p.HasBrandRole(b.ID, min) {
-		err = httpx.ErrForbidden
-	}
-	return b, p, err
+	return brands.WithRole(r, s.store, min)
 }
 
 // campaign loads {id} of the brand, with a minimum role.
