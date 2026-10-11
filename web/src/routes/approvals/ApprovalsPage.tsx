@@ -27,7 +27,7 @@ export function ApprovalsPage() {
     <div className="max-w-5xl space-y-5">
       <PageHeader
         title="Approvals"
-        description="Requests waiting for a second person. Nobody approves their own; approving asks for your passkey; everything is logged."
+        description="Requests waiting for a second person. Nobody approves their own, except sends their AI agent prepared; approving asks for your passkey; everything is logged."
       />
       <div role="tablist" className="flex gap-1 border-b border-zinc-200">
         {tabs.map((t) => (
@@ -108,7 +108,11 @@ function ApprovalCard({ a }: { a: ApprovalItem }) {
         )}
         {a.mine && a.status === "pending" && (
           <div className="flex items-center gap-2 text-xs text-zinc-500">
-            <Hourglass className="size-3.5" /> Waiting for someone else
+            {!a.can_decide && (
+              <>
+                <Hourglass className="size-3.5" /> Waiting for someone else
+              </>
+            )}
             <Button size="sm" variant="ghost" disabled={cancel.isPending} onClick={() => cancel.mutate(a.id)}>
               Cancel request
             </Button>
