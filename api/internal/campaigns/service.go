@@ -330,6 +330,12 @@ func (e *ProblemsError) Unwrap() error { return ErrProblems }
 // Schedule freezes the campaign (content, sender, audience snapshot) and
 // either schedules it, after the cancel window, or asks for approval.
 func (s *Service) Schedule(ctx context.Context, b store.Brand, c store.Campaign, in ScheduleInput, by store.User, audit store.AuditEntry) (store.Campaign, Review, error) {
+	return s.scheduleIn(ctx, s.store, b, c, in, by, audit)
+}
+
+// scheduleIn is Schedule inside st's transaction, when st is one (an
+// approval being carried out).
+func (s *Service) scheduleIn(ctx context.Context, st *store.Store, b store.Brand, c store.Campaign, in ScheduleInput, by store.User, audit store.AuditEntry) (store.Campaign, Review, error) {
 	rv, tpl, err := s.Review(ctx, b, c)
 	if err != nil {
 		return c, rv, err
@@ -355,7 +361,7 @@ func (s *Service) Schedule(ctx context.Context, b store.Brand, c store.Campaign,
 	htmlBody := withPreheader(tpl.HTML, c.Preheader)
 
 	var out store.Campaign
-	err = s.store.InTx(ctx, func(tx *store.Store) error {
+	err = st.InTx(ctx, func(tx *store.Store) error {
 		locked, err := tx.LockCampaign(ctx, c.ID)
 		if err != nil {
 			return err

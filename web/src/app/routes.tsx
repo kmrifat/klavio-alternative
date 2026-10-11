@@ -27,6 +27,7 @@ import { SendingProviders } from "../routes/settings/SendingProviders";
 import { DataPrivacy } from "../routes/settings/DataPrivacy";
 import { General } from "../routes/settings/General";
 import { ApiKeysOverview } from "../routes/settings/ApiKeysOverview";
+import { AiAgents } from "../routes/settings/AiAgents";
 import { ImportWizard } from "../routes/contacts/ImportWizard";
 import { SafetyCenter } from "../routes/safety/SafetyCenter";
 import { Home } from "../routes/Home";
@@ -122,6 +123,7 @@ export const routes: RouteObject[] = [
               { path: "privacy", element: <DataPrivacy /> },
               { path: "general", element: <General /> },
               { path: "api-keys", element: <ApiKeysOverview /> },
+              { path: "agents", element: <AiAgents /> },
             ],
           },
           {

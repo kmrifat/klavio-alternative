@@ -23,6 +23,8 @@ type AuditEntry struct {
 	After      json.RawMessage `db:"after" json:"after,omitempty"`
 	IP         string          `db:"ip" json:"ip"`
 	UserAgent  string          `db:"user_agent" json:"user_agent"`
+	// ViaAgent names the agent token, for entries made through an AI agent.
+	ViaAgent string `db:"via_agent" json:"via_agent"`
 }
 
 // Audit appends an entry. before/after are marshalled to JSON (nil stays NULL).
@@ -36,9 +38,9 @@ func (s *Store) Audit(ctx context.Context, e AuditEntry, before, after any) erro
 		return err
 	}
 	_, err = s.db.Exec(ctx, `
-		INSERT INTO audit_log (actor_id, actor_email, brand_id, action, target_type, target_id, before, after, ip, user_agent)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		e.ActorID, e.ActorEmail, e.BrandID, e.Action, e.TargetType, e.TargetID, b, a, e.IP, e.UserAgent)
+		INSERT INTO audit_log (actor_id, actor_email, brand_id, action, target_type, target_id, before, after, ip, user_agent, via_agent)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		e.ActorID, e.ActorEmail, e.BrandID, e.Action, e.TargetType, e.TargetID, b, a, e.IP, e.UserAgent, e.ViaAgent)
 	return err
 }
 
@@ -51,7 +53,7 @@ func jsonOrNil(v any) ([]byte, error) {
 
 func (s *Store) RecentAudit(ctx context.Context, limit int) ([]AuditEntry, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, at, actor_id, actor_email, brand_id, action, target_type, target_id, before, after, ip, user_agent
+		SELECT id, at, actor_id, actor_email, brand_id, action, target_type, target_id, before, after, ip, user_agent, via_agent
 		FROM audit_log ORDER BY at DESC, id DESC LIMIT $1`, limit)
 	return all[AuditEntry](rows, err)
 }
@@ -92,7 +94,7 @@ func (s *Store) QueryAudit(ctx context.Context, f AuditFilter) ([]AuditEntry, er
 		f.Limit = 50
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT id, at, actor_id, actor_email, brand_id, action, target_type, target_id, before, after, ip, user_agent
+		SELECT id, at, actor_id, actor_email, brand_id, action, target_type, target_id, before, after, ip, user_agent, via_agent
 		FROM audit_log WHERE `+strings.Join(where, " AND ")+` ORDER BY id DESC LIMIT `+arg(f.Limit), args...)
 	return all[AuditEntry](rows, err)
 }

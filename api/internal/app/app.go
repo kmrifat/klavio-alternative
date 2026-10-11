@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kmrifat/klavio-alternative/api/internal/admindocs"
+	"github.com/kmrifat/klavio-alternative/api/internal/agents"
 	"github.com/kmrifat/klavio-alternative/api/internal/anomaly"
 	"github.com/kmrifat/klavio-alternative/api/internal/approvals"
 	"github.com/kmrifat/klavio-alternative/api/internal/auth"
@@ -37,6 +38,7 @@ import (
 	"github.com/kmrifat/klavio-alternative/api/internal/jobs"
 	"github.com/kmrifat/klavio-alternative/api/internal/limits"
 	"github.com/kmrifat/klavio-alternative/api/internal/mailer"
+	"github.com/kmrifat/klavio-alternative/api/internal/mcpserver"
 	"github.com/kmrifat/klavio-alternative/api/internal/postmaster"
 	"github.com/kmrifat/klavio-alternative/api/internal/privacy"
 	"github.com/kmrifat/klavio-alternative/api/internal/segments"
@@ -326,7 +328,8 @@ func (a *App) serverOptions() server.Options {
 	companyH := &company.Handlers{Store: a.Store, Auth: a.Auth, Log: a.deps.Log, DefaultName: cfg.WebAuthnRPName,
 		Installation: company.Installation{Version: a.deps.Version, Env: string(cfg.Env), Debug: cfg.Debug,
 			AppURL: cfg.AppURL, PasskeyDomain: cfg.WebAuthnRPID, CloudflareAccess: a.deps.Access != nil}}
-	return server.Options{
+	agentsSvc := &agents.Service{Store: a.Store, Auth: a.Auth, Log: a.deps.Log}
+	o := server.Options{
 		Log:             a.deps.Log,
 		DB:              a.deps.Pool,
 		Redis:           a.deps.Redis,
@@ -353,6 +356,7 @@ func (a *App) serverOptions() server.Options {
 			a.contactsAdm.Routes(mux)
 			(&privacy.Handlers{Store: a.Store, Auth: a.Auth, Log: a.deps.Log}).Routes(mux)
 			companyH.Routes(mux)
+			agentsSvc.Routes(mux)
 			a.recovery.Routes(mux)
 			if a.adminDocs != nil {
 				admindocs.Routes(mux, *a.adminDocs, a.deps.Log)
@@ -365,6 +369,15 @@ func (a *App) serverOptions() server.Options {
 			(&tracking.Handlers{Signer: a.Tracking, Recorder: a.recorder, Log: a.deps.Log}).Routes(mux)
 		},
 	}
+	// AI agents (MCP): each tool runs an admin route in-process, as the
+	// agent token's person, behind its own bearer-token check.
+	public := o.RegisterPublic
+	o.RegisterPublic = func(mux *http.ServeMux) {
+		public(mux)
+		mux.Handle(mcpserver.Path, mcpserver.New(mcpserver.Config{Agents: agentsSvc, Admin: server.AdminMux(o),
+			Limiter: a.deps.Limiter, Log: a.deps.Log, Version: a.deps.Version}))
+	}
+	return o
 }
 
 // ServeHTTP runs the HTTP server until ctx is cancelled, then shuts down gracefully.

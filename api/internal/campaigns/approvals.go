@@ -64,6 +64,7 @@ func (s *Service) RegisterApprovals(ap *approvals.Service) {
 		d.Label = label
 		ap.Register(kind, d)
 	}
+	s.registerAgentSend(ap)
 }
 
 func (s *Service) executeSend(ctx context.Context, tx *store.Store, a store.Approval) (any, error) {

@@ -329,7 +329,7 @@
       "GovernanceApprovalKind": {
         "type": "string",
         "description": "What needs a second person: a large or risky send, every send while a brand warms up, an export with personal data, giving someone admin rights, inviting an admin, loosening a safety limit, resuming sending, creating an API key, changing a brand's locked layout.",
-        "enum": ["large_send", "risky_audience", "warmup_send", "export", "role_change", "admin_invite", "safety_limit", "brand_resume", "api_key", "layout_change"]
+        "enum": ["large_send", "risky_audience", "warmup_send", "export", "role_change", "admin_invite", "safety_limit", "brand_resume", "api_key", "layout_change", "agent_send"]
       },
       "GovernanceApprovalStatus": { "type": "string", "enum": ["pending", "approved", "rejected", "cancelled", "expired"] },
       "GovernanceApprovalRecord": {
@@ -385,7 +385,7 @@
       },
       "GovernanceAuditEntry": {
         "type": "object",
-        "required": ["id", "at", "actor_id", "actor_email", "brand_id", "action", "target_type", "target_id", "ip", "user_agent"],
+        "required": ["id", "at", "actor_id", "actor_email", "brand_id", "action", "target_type", "target_id", "ip", "user_agent", "via_agent"],
         "properties": {
           "id": { "type": "integer", "format": "int64" },
           "at": { "type": "string", "format": "date-time" },
@@ -398,7 +398,8 @@
           "before": { "description": "The state before, when recorded (absent otherwise)." },
           "after": { "description": "The state after, or the action's details, when recorded (absent otherwise)." },
           "ip": { "type": "string" },
-          "user_agent": { "type": "string" }
+          "user_agent": { "type": "string" },
+          "via_agent": { "type": "string", "description": "The AI agent token it was done through, e.g. `Claude Code (kag_k5qw3ra)`; empty for people." }
         }
       },
       "GovernanceExportFilter": {

@@ -45,6 +45,7 @@ const (
 	KindBrandResume   Kind = "brand_resume"   // M4: resuming a paused brand
 	KindAPIKey        Kind = "api_key"        // M7: creating an API key
 	KindLayoutChange  Kind = "layout_change"  // M3: changing a brand's locked layout
+	KindAgentSend     Kind = "agent_send"     // a send an AI agent prepared (MCP)
 )
 
 // TTL: requests nobody decided on expire.
@@ -55,6 +56,11 @@ type Definition struct {
 	// CompanyLevel: only owners and company approvers may decide. Otherwise
 	// the brand's admins can decide too (for requests with a brand).
 	CompanyLevel bool
+	// RequesterMayDecide: the requester may decide too, if they hold
+	// RequesterRole on the request's brand. For work an agent prepared on
+	// someone's behalf: the agent and the person are already two parties.
+	RequesterMayDecide bool
+	RequesterRole      store.BrandRole
 	// Execute performs the approved action inside the decision's transaction.
 	// Its result is stored on the approval (shown to the requester). An error
 	// rolls everything back and the request stays pending.
@@ -137,12 +143,14 @@ func (s *Service) Request(ctx context.Context, tx *store.Store, r Request) (stor
 	if !ok {
 		return store.Approval{}, fmt.Errorf("%w: %s", ErrUnknown, r.Kind)
 	}
-	ok, err := s.SomeoneElseCanApprove(ctx, tx, r.RequestedBy.ID, r.BrandID, d.CompanyLevel)
-	if err != nil {
-		return store.Approval{}, err
-	}
-	if !ok {
-		return store.Approval{}, ErrNoApprover
+	if !d.RequesterMayDecide {
+		ok, err := s.SomeoneElseCanApprove(ctx, tx, r.RequestedBy.ID, r.BrandID, d.CompanyLevel)
+		if err != nil {
+			return store.Approval{}, err
+		}
+		if !ok {
+			return store.Approval{}, ErrNoApprover
+		}
 	}
 	payload, err := json.Marshal(r.Payload)
 	if err != nil {
@@ -191,16 +199,28 @@ func isSubject(p *auth.Principal, a store.Approval) bool {
 		(a.TargetEmail != nil && strings.EqualFold(*a.TargetEmail, p.User.Email))
 }
 
-// CanDecide: may this person approve or reject the request?
+// CanDecide: may this person approve or reject the request? Never an agent.
 func (s *Service) CanDecide(p *auth.Principal, a store.Approval) bool {
-	if p == nil || p.User.ID == a.RequestedBy || p.User.FrozenAt != nil || isSubject(p, a) {
+	if p == nil || p.Agent != nil || p.User.FrozenAt != nil || isSubject(p, a) {
 		return false
+	}
+	if p.User.ID == a.RequestedBy {
+		d, _ := s.def(a.Kind)
+		return d.RequesterMayDecide && a.BrandID != nil && p.HasBrandRole(*a.BrandID, d.RequesterRole)
 	}
 	if p.User.CompanyRole == store.CompanyOwner || p.User.CompanyRole == store.CompanyApprover {
 		return true
 	}
 	d, _ := s.def(a.Kind)
 	return !d.CompanyLevel && a.BrandID != nil && p.Roles[*a.BrandID] == store.RoleBrandAdmin
+}
+
+type deciderKey struct{}
+
+// Decider is who is approving, inside a Definition's Execute.
+func Decider(ctx context.Context) *auth.Principal {
+	p, _ := ctx.Value(deciderKey{}).(*auth.Principal)
+	return p
 }
 
 // CanSee: deciders, the requester, and admins of the request's brand.
@@ -240,7 +260,11 @@ func (s *Service) decide(ctx context.Context, p *auth.Principal, id uuid.UUID, s
 		if a.Status != store.ApprovalPending || !a.ExpiresAt.After(s.now()) {
 			return errNotPending
 		}
-		if a.RequestedBy == p.User.ID {
+		d, ok := s.def(a.Kind)
+		if !ok {
+			return fmt.Errorf("%w: %s", ErrUnknown, a.Kind)
+		}
+		if a.RequestedBy == p.User.ID && !d.RequesterMayDecide {
 			return errOwn
 		}
 		if isSubject(p, a) {
@@ -249,10 +273,7 @@ func (s *Service) decide(ctx context.Context, p *auth.Principal, id uuid.UUID, s
 		if !s.CanDecide(p, a) {
 			return httpx.ErrForbidden
 		}
-		d, ok := s.def(a.Kind)
-		if !ok {
-			return fmt.Errorf("%w: %s", ErrUnknown, a.Kind)
-		}
+		ctx := context.WithValue(ctx, deciderKey{}, p)
 
 		var result any
 		switch status {

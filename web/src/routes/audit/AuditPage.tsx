@@ -133,7 +133,10 @@ function Row({ e, brand }: { e: AuditEntry; brand: string }) {
         <td className="px-5 py-2.5 whitespace-nowrap text-zinc-600" title={e.at}>
           {new Date(e.at).toLocaleString()}
         </td>
-        <td className="px-3 py-2.5">{e.actor_email || "system"}</td>
+        <td className="px-3 py-2.5">
+          {e.actor_email || "system"}
+          {e.via_agent && <span className="block text-xs text-violet-700">via AI agent {e.via_agent}</span>}
+        </td>
         <td className="px-3 py-2.5">
           <span className="font-medium">{auditLabel[e.action] ?? e.action}</span> {targetText(e) && <span className="text-zinc-600">{targetText(e)}</span>}
           {hasDiff && (

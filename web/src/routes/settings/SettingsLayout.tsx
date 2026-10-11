@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from "react-router";
-import { BookOpen, ExternalLink, Gauge, Globe, KeyRound, Lock, Server, Settings } from "lucide-react";
+import { Bot, BookOpen, ExternalLink, Gauge, Globe, KeyRound, Lock, Server, Settings } from "lucide-react";
 import { API_URL } from "../../api/client";
 import { useMeta } from "../../api/hooks";
 import { PageHeader } from "../../components/ui";
@@ -10,6 +10,7 @@ export const settingsTabs = [
   { path: "providers", label: "Sending providers", icon: Server },
   { path: "limits", label: "Safety limits", icon: Gauge },
   { path: "api-keys", label: "API keys", icon: KeyRound },
+  { path: "agents", label: "AI agents", icon: Bot },
   { path: "privacy", label: "Data & privacy", icon: Lock },
 ];
 
