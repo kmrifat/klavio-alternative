@@ -80,6 +80,7 @@ func TestMCPAgent(t *testing.T) {
 	if r := w.owner.do("POST", "/admin/v1/agent-tokens", map[string]any{"name": "Claude Code", "expires_in_days": 91}); r.errCode() != "invalid_expiry" {
 		t.Fatalf("91 days: %s", r.raw)
 	}
+	w.owner.must(201, w.owner.do("POST", "/admin/v1/agent-tokens", map[string]any{"name": "Longest", "expires_in_days": 90}))
 	made := w.owner.must(201, w.owner.do("POST", "/admin/v1/agent-tokens", map[string]any{"name": "Claude Code", "expires_in_days": 30}))
 	secret := made.body["secret"].(string)
 	tok := made.body["token"].(map[string]any)
@@ -198,7 +199,7 @@ func TestMCPAgent(t *testing.T) {
 		"topic_id": w.topic, "subject": "x"}); !failed || !strings.Contains(text, "forbidden") {
 		t.Fatalf("viewer's agent drafted: %s", text)
 	}
-	// Vic's own tokens only; Olivia's aren't visible to Vic.
+	// Vic's own tokens only; Olivia's (2) aren't visible to Vic.
 	if ts := vic.must(200, vic.do("GET", "/admin/v1/agent-tokens", nil)).body["tokens"].([]any); len(ts) != 1 {
 		t.Fatalf("vic sees %d tokens", len(ts))
 	}

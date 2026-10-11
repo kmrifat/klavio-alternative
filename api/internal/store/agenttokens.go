@@ -29,8 +29,11 @@ func (t AgentToken) Usable(now time.Time) bool { return t.RevokedAt == nil && no
 const agentTokenCols = `id, user_id, name, prefix, token_hash, created_at, expires_at, revoked_at, last_used_at`
 
 func (s *Store) CreateAgentToken(ctx context.Context, t AgentToken) (AgentToken, error) {
+	// Capped by the database's clock: a full 90 days from the app's clock
+	// can land a few milliseconds past the table's limit.
 	return one[AgentToken](s.db.Query(ctx, `INSERT INTO agent_tokens (user_id, name, prefix, token_hash, expires_at)
-		VALUES ($1, $2, $3, $4, $5) RETURNING `+agentTokenCols, t.UserID, t.Name, t.Prefix, t.TokenHash, t.ExpiresAt))
+		VALUES ($1, $2, $3, $4, LEAST($5::timestamptz, now() + interval '90 days')) RETURNING `+agentTokenCols,
+		t.UserID, t.Name, t.Prefix, t.TokenHash, t.ExpiresAt))
 }
 
 func (s *Store) AgentTokenByHash(ctx context.Context, hash []byte) (AgentToken, error) {
