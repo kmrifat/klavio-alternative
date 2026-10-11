@@ -18,6 +18,9 @@ type Principal struct {
 	Roles       store.BrandRoles
 	SessionHash []byte
 	SteppedUpAt *time.Time
+	// Agent is the token an AI agent used to act as User (MCP); nil for a
+	// person. An agent never has a passkey confirmation.
+	Agent *store.AgentToken
 }
 
 func (p *Principal) IsOwner() bool { return p.User.CompanyRole == store.CompanyOwner }
@@ -55,6 +58,10 @@ func FromContext(ctx context.Context) *Principal {
 	p, _ := ctx.Value(ctxKey{}).(*Principal)
 	return p
 }
+
+// WithPrincipal puts p in ctx, for requests authenticated another way than
+// the session cookie (MCP agent tokens).
+func WithPrincipal(ctx context.Context, p *Principal) context.Context { return withPrincipal(ctx, p) }
 
 // WithPrincipalForTest lets other packages' tests act as a user.
 func WithPrincipalForTest(ctx context.Context, p *Principal) context.Context {

@@ -82,6 +82,7 @@ export type AuditEntry = {
   after?: unknown;
   ip: string;
   user_agent?: string;
+  via_agent?: string; // the AI agent token it was done through
 };
 
 export type Meta = { version: string; env: string; debug?: boolean; company_name?: string };

@@ -148,11 +148,19 @@ func Require(r *http.Request) (*Principal, error) {
 	return p, nil
 }
 
+// ErrAgentNotAllowed: what needs a passkey confirmation needs a person.
+var ErrAgentNotAllowed = httpx.Errorf(http.StatusForbidden, "agent_not_allowed",
+	"an AI agent can't do this: it needs a person to confirm with their passkey in the console")
+
 // RequireStepUp returns the principal if they confirmed their passkey recently.
+// Agents never qualify.
 func (s *Service) RequireStepUp(r *http.Request) (*Principal, error) {
 	p, err := Require(r)
 	if err != nil {
 		return nil, err
+	}
+	if p.Agent != nil {
+		return nil, ErrAgentNotAllowed
 	}
 	if !p.SteppedUp(s.now()) {
 		return nil, httpx.ErrStepUpRequired
@@ -168,6 +176,9 @@ func AuditEntry(r *http.Request, action, targetType, targetID string, brandID *u
 	}
 	if p := FromContext(r.Context()); p != nil {
 		e.ActorID, e.ActorEmail = &p.User.ID, p.User.Email
+		if p.Agent != nil {
+			e.ViaAgent = p.Agent.Label()
+		}
 	}
 	return e
 }

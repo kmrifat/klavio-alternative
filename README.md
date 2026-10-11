@@ -52,6 +52,27 @@ run unless `APP_ENV=development` and `SES_MODE=fake`. `make seed RESET=1` replac
 `make docker-deps` starts them on ports `55432` / `56379`, then pass the URLs it prints.
 `docker compose up --build` runs the backend itself in Docker against your local DBs.
 
+## AI agents (MCP)
+
+AI agents such as Claude Code, Codex and OpenCode can use the console through MCP at
+**`<API address>/mcp`** (locally `http://localhost:8080/mcp`). Each person makes a token for
+their agent in **Settings → AI agents**. The page shows the token once, with ready-to-paste
+setup for each agent. Tokens last at most 90 days and can be revoked there.
+
+- The agent acts as that person, with at most their role. It can read (brands, health,
+  campaigns and reports, templates, segments, contacts, approvals) and prepare (draft
+  campaigns, templates and segments, add a contact with proof of consent).
+- It never passes a passkey check, so it can't send, approve, delete, unsubscribe, block,
+  export or change settings. To send, it calls `request_send`, which files an approval. The
+  person whose agent it is may approve that themselves with their passkey; large or risky
+  sends still need a second admin, as for people.
+- Every action is in the audit log, marked "via AI agent <token>". There is a limit of 120
+  calls a minute per token.
+- In production, `/mcp` must be reachable on the public API address, not behind Cloudflare
+  Access: agents can't do the Access login. The token is the lock.
+
+Connecting Claude (claude.ai and Desktop) needs an OAuth sign-in, which is the next step.
+
 ## Tests
 
 ```bash

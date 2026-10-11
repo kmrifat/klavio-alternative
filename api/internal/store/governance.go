@@ -77,7 +77,8 @@ func (s *Store) DecideApproval(ctx context.Context, id uuid.UUID, status Approva
 type ApprovalFilter struct {
 	Status      ApprovalStatus // "" = any
 	RequestedBy *uuid.UUID
-	// Decidable narrows to live (pending, unexpired) requests by someone else;
+	// Decidable narrows to live (pending, unexpired) requests by someone else
+	// (or an agent send the person's own agent asked for);
 	// BrandIDs, when set, keeps only those brands' requests.
 	DecidableBy *uuid.UUID
 	BrandIDs    []uuid.UUID
@@ -94,7 +95,7 @@ func (s *Store) ListApprovals(ctx context.Context, f ApprovalFilter) ([]Approval
 		where = append(where, "requested_by = "+arg(*f.RequestedBy))
 	}
 	if f.DecidableBy != nil {
-		where = append(where, "status = 'pending' AND expires_at > now() AND requested_by <> "+arg(*f.DecidableBy))
+		where = append(where, "status = 'pending' AND expires_at > now() AND (requested_by <> "+arg(*f.DecidableBy)+" OR kind = 'agent_send')")
 	}
 	if f.BrandIDs != nil {
 		where = append(where, "brand_id = ANY("+arg(f.BrandIDs)+")")
@@ -371,4 +372,12 @@ func (s *Store) ListAlerts(ctx context.Context, openOnly bool, limit int) ([]Ale
 
 func (s *Store) AcknowledgeAlert(ctx context.Context, id, by uuid.UUID) error {
 	return expectOne(s.db.Exec(ctx, `UPDATE alerts SET acknowledged_by = $2, acknowledged_at = now() WHERE id = $1 AND acknowledged_at IS NULL`, id, by))
+}
+
+// PendingAgentSend: is an agent's send request for this campaign waiting?
+func (s *Store) PendingAgentSend(ctx context.Context, campaignID uuid.UUID) (bool, error) {
+	var ok bool
+	err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM approvals WHERE kind = 'agent_send' AND status = 'pending'
+		AND expires_at > now() AND payload->>'campaign_id' = $1::text)`, campaignID).Scan(&ok)
+	return ok, err
 }

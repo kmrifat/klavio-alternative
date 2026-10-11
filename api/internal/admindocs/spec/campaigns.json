@@ -965,6 +965,147 @@
           }
         }
       }
+    },
+    "/brands/{slug}/campaigns/{id}/agent-send": {
+      "post": {
+        "operationId": "agentSendCampaign",
+        "summary": "Ask for a draft to be sent (AI agents)",
+        "description": "How an AI agent (MCP `request_send`) asks for a send: runs the review, then files an `agent_send` approval tied to this version of the draft and its audience. A person approves it with their passkey; the person whose agent it is may approve it themselves. Approving schedules the campaign as if the approver had confirmed it, so large or risky sends then also need a second admin. Rejected at approval time if the draft or its audience changed. People get `agents_only`: they send with `schedule`. Recorded in the audit log (`approval.requested`, via the agent).",
+        "x-role": "brand:sender",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "forbidden",
+          "agents_only",
+          "not_found",
+          "bad_json",
+          "not_ready",
+          "not_editable",
+          "already_requested"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Slug"
+          },
+          {
+            "$ref": "#/components/parameters/ID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "scheduled_at": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time",
+                    "description": "When to send; empty = as soon as it's approved."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The approval request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "approval",
+                    "audience",
+                    "approval_reasons"
+                  ],
+                  "properties": {
+                    "approval": {
+                      "type": "object",
+                      "required": [
+                        "id",
+                        "status",
+                        "summary",
+                        "expires_at"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "status": {
+                          "type": "string"
+                        },
+                        "summary": {
+                          "type": "string"
+                        },
+                        "expires_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    },
+                    "audience": {
+                      "type": "string",
+                      "description": "The number of people it would go to now."
+                    },
+                    "approval_reasons": {
+                      "type": [
+                        "array",
+                        "null"
+                      ],
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Reasons a second admin will also have to approve it."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "description": "`forbidden`: not a sender on this brand. `agents_only`: a person called it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "`not_editable`: not a draft. `already_requested`: a request for this campaign is waiting.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`not_ready`: problems block sending; listed in `problems`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {

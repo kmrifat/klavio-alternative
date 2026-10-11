@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -38,6 +39,7 @@ func (s *Service) Routes(mux *http.ServeMux, az authorizer) {
 	mux.HandleFunc("PUT "+base+"/campaigns/{id}", h(s.update))
 	mux.HandleFunc("GET "+base+"/campaigns/{id}/review", h(s.review))
 	mux.HandleFunc("POST "+base+"/campaigns/{id}/schedule", withAZ(s.schedule))
+	mux.HandleFunc("POST "+base+"/campaigns/{id}/agent-send", h(s.agentSend))
 	mux.HandleFunc("POST "+base+"/campaigns/{id}/cancel", h(s.cancel))
 	mux.HandleFunc("POST "+base+"/campaigns/{id}/pause", h(s.pause))
 	mux.HandleFunc("POST "+base+"/campaigns/{id}/resume", withAZ(s.resume))
@@ -356,6 +358,36 @@ func (s *Service) schedule(w http.ResponseWriter, r *http.Request, az authorizer
 		return campaignError(w, err, &rv)
 	}
 	return s.writeCampaign(w, r, http.StatusOK, b, out)
+}
+
+// agentSend: an AI agent asks for a draft to be sent; a person approves it
+// with their passkey (see agent.go). People send from the campaign page.
+func (s *Service) agentSend(w http.ResponseWriter, r *http.Request) error {
+	b, p, c, err := s.campaign(r, store.RoleSender)
+	if err != nil {
+		return err
+	}
+	if p.Agent == nil {
+		return httpx.Errorf(http.StatusForbidden, "agents_only", "this is how AI agents ask for a send; people send from the campaign page")
+	}
+	var in struct {
+		ScheduledAt *time.Time `json:"scheduled_at"`
+	}
+	if err := httpx.ReadJSON(r, &in); err != nil {
+		return err
+	}
+	a, rv, err := s.RequestAgentSend(r.Context(), b, c, in.ScheduledAt, p, auth.AuditEntry(r, "", "", "", &b.ID))
+	if errors.Is(err, ErrAlreadyRequested) {
+		return conflict("already_requested", "%s", ErrAlreadyRequested.Error())
+	}
+	if err != nil {
+		return campaignError(w, err, &rv)
+	}
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
+		"approval": map[string]any{"id": a.ID, "status": a.Status, "summary": a.Summary, "expires_at": a.ExpiresAt},
+		"audience": rv.ConfirmText, "approval_reasons": rv.ApprovalReasons,
+	})
+	return nil
 }
 
 func (s *Service) cancel(w http.ResponseWriter, r *http.Request) error {

@@ -1,0 +1,249 @@
+{
+  "tag": {
+    "name": "Agents",
+    "description": "Tokens for AI agents (Claude Code, Codex, OpenCode…) that use the console through MCP at `/mcp`. A token acts as the person who made it, with at most their role and never a passkey confirmation."
+  },
+  "x-todo": [],
+  "paths": {
+    "/agent-tokens": {
+      "get": {
+        "operationId": "listAgentTokens",
+        "summary": "Your agent tokens",
+        "description": "The signed-in person's agent tokens, newest first, with their state. Secrets are never shown again.",
+        "x-role": "signed_in",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated"
+        ],
+        "responses": {
+          "200": {
+            "description": "Your tokens.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "tokens"
+                  ],
+                  "properties": {
+                    "tokens": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AgentToken"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createAgentToken",
+        "summary": "Create an agent token",
+        "description": "Makes a token for your own agent. It lasts 1–90 days. The secret (`kag_…`) is in this answer only; give it to the agent as a bearer token for `/mcp`. Recorded in the audit log (`agent_token.created`). Agents can't create tokens (it needs a passkey confirmation).",
+        "x-role": "signed_in",
+        "x-step-up": true,
+        "x-error-codes": [
+          "unauthenticated",
+          "step_up_required",
+          "agent_not_allowed",
+          "bad_json",
+          "name_required",
+          "name_too_long",
+          "invalid_expiry"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "expires_in_days"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "maxLength": 60,
+                    "examples": [
+                      "Claude Code on my laptop"
+                    ]
+                  },
+                  "expires_in_days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 90
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The token, and its secret (shown once).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "token",
+                    "secret"
+                  ],
+                  "properties": {
+                    "token": {
+                      "$ref": "#/components/schemas/AgentToken"
+                    },
+                    "secret": {
+                      "type": "string",
+                      "examples": [
+                        "kag_k5qw3ra_…"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_json`, `name_required`, `name_too_long` or `invalid_expiry`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "description": "`step_up_required`: confirm with a passkey first. `agent_not_allowed`: an agent tried.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agent-tokens/{id}/revoke": {
+      "post": {
+        "operationId": "revokeAgentToken",
+        "summary": "Revoke an agent token",
+        "description": "Stops one of your tokens at once. No passkey needed to switch one off; an agent may revoke its own person's tokens too. Revoking twice is harmless. Recorded in the audit log (`agent_token.revoked`).",
+        "x-role": "signed_in",
+        "x-step-up": false,
+        "x-error-codes": [
+          "unauthenticated",
+          "not_found"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The token, now revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "token"
+                  ],
+                  "properties": {
+                    "token": {
+                      "$ref": "#/components/schemas/AgentToken"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AgentToken": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "prefix",
+          "created_at",
+          "expires_at",
+          "revoked_at",
+          "last_used_at",
+          "state"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prefix": {
+            "type": "string",
+            "description": "The token's public start, also shown in the audit log.",
+            "examples": [
+              "kag_k5qw3ra"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "revoked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Updated at most once a minute."
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "active",
+              "expired",
+              "revoked"
+            ]
+          }
+        }
+      }
+    }
+  }
+}
