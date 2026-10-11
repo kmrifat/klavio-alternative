@@ -13,6 +13,7 @@ export type AgentToken = {
   revoked_at: string | null;
   last_used_at: string | null;
   state: "active" | "expired" | "revoked";
+  oauth_client_id: string | null; // made by an AI client's sign-in (claude.ai, Claude Desktop)
 };
 
 // mcpURL is where agents connect: the API server's /mcp.

@@ -18,6 +18,8 @@ type AgentToken struct {
 	ExpiresAt  time.Time  `db:"expires_at" json:"expires_at"`
 	RevokedAt  *time.Time `db:"revoked_at" json:"revoked_at"`
 	LastUsedAt *time.Time `db:"last_used_at" json:"last_used_at"`
+	// OAuthClientID: the AI client a sign-in made this token for (nil = made by hand).
+	OAuthClientID *string `db:"oauth_client_id" json:"oauth_client_id"`
 }
 
 // Label is how the audit log names the token: "Claude Code (kag_3f2a9c1d)".
@@ -26,14 +28,14 @@ func (t AgentToken) Label() string { return t.Name + " (" + t.Prefix + ")" }
 // Usable: not revoked and not expired.
 func (t AgentToken) Usable(now time.Time) bool { return t.RevokedAt == nil && now.Before(t.ExpiresAt) }
 
-const agentTokenCols = `id, user_id, name, prefix, token_hash, created_at, expires_at, revoked_at, last_used_at`
+const agentTokenCols = `id, user_id, name, prefix, token_hash, created_at, expires_at, revoked_at, last_used_at, oauth_client_id`
 
 func (s *Store) CreateAgentToken(ctx context.Context, t AgentToken) (AgentToken, error) {
 	// Capped by the database's clock: a full 90 days from the app's clock
 	// can land a few milliseconds past the table's limit.
-	return one[AgentToken](s.db.Query(ctx, `INSERT INTO agent_tokens (user_id, name, prefix, token_hash, expires_at)
-		VALUES ($1, $2, $3, $4, LEAST($5::timestamptz, now() + interval '90 days')) RETURNING `+agentTokenCols,
-		t.UserID, t.Name, t.Prefix, t.TokenHash, t.ExpiresAt))
+	return one[AgentToken](s.db.Query(ctx, `INSERT INTO agent_tokens (user_id, name, prefix, token_hash, expires_at, oauth_client_id)
+		VALUES ($1, $2, $3, $4, LEAST($5::timestamptz, now() + interval '90 days'), $6) RETURNING `+agentTokenCols,
+		t.UserID, t.Name, t.Prefix, t.TokenHash, t.ExpiresAt, t.OAuthClientID))
 }
 
 func (s *Store) AgentTokenByHash(ctx context.Context, hash []byte) (AgentToken, error) {

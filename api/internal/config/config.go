@@ -34,6 +34,10 @@ type Config struct {
 	WebAuthnRPID   string // passkey scope: the registrable domain, e.g. yourco.com
 	WebAuthnRPName string
 
+	// PublicAPIURL is this API's public address (for MCP sign-in: the
+	// resource and issuer AI clients see). "" = Claude connectors can't sign in.
+	PublicAPIURL string
+
 	// Cloudflare Access. Both set = every admin request must carry a valid Access token.
 	AccessTeamDomain string // e.g. acme.cloudflareaccess.com
 	AccessAUD        string
@@ -141,6 +145,7 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 
 	cfg.AppURL = get("APP_URL", "http://localhost:5173")
+	cfg.PublicAPIURL = strings.TrimSuffix(get("PUBLIC_API_URL", map[Env]string{EnvDevelopment: "http://localhost:8080"}[cfg.Env]), "/")
 	cfg.WebAuthnRPID = get("WEBAUTHN_RP_ID", "localhost")
 	cfg.WebAuthnRPName = get("WEBAUTHN_RP_NAME", "Mail Console")
 	cfg.AccessTeamDomain = get("CF_ACCESS_TEAM_DOMAIN", "")

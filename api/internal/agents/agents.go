@@ -168,27 +168,40 @@ func (s *Service) create(w http.ResponseWriter, r *http.Request) error {
 	case in.Days < 1 || in.Days > MaxDays:
 		return httpx.Errorf(http.StatusBadRequest, "invalid_expiry", "a token lasts 1 to %d days", MaxDays)
 	}
-	secret, prefix, err := newToken()
-	if err != nil {
-		return err
-	}
 	ctx := r.Context()
 	var t store.AgentToken
+	var secret string
 	err = s.Store.InTx(ctx, func(tx *store.Store) error {
 		var err error
-		t, err = tx.CreateAgentToken(ctx, store.AgentToken{UserID: p.User.ID, Name: name, Prefix: prefix, TokenHash: hash(secret),
-			ExpiresAt: s.now().Add(time.Duration(in.Days) * 24 * time.Hour)})
-		if err != nil {
-			return err
-		}
-		return tx.Audit(ctx, auth.AuditEntry(r, "agent_token.created", "agent_token", prefix, nil), nil,
-			map[string]any{"name": name, "expires_at": t.ExpiresAt})
+		t, secret, err = s.Mint(ctx, tx, p.User.ID, name, in.Days, nil, auth.AuditEntry(r, "", "", "", nil))
+		return err
 	})
 	if err != nil {
 		return err
 	}
 	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"token": s.view(t), "secret": secret})
 	return nil
+}
+
+// Mint makes a token for a user, inside tx, and audits it. clientID is set
+// for tokens a sign-in (OAuth) made for an AI client. The secret is
+// returned once and never stored.
+func (s *Service) Mint(ctx context.Context, tx *store.Store, userID uuid.UUID, name string, days int, clientID *string, audit store.AuditEntry) (store.AgentToken, string, error) {
+	secret, prefix, err := newToken()
+	if err != nil {
+		return store.AgentToken{}, "", err
+	}
+	t, err := tx.CreateAgentToken(ctx, store.AgentToken{UserID: userID, Name: name, Prefix: prefix, TokenHash: hash(secret),
+		ExpiresAt: s.now().Add(time.Duration(days) * 24 * time.Hour), OAuthClientID: clientID})
+	if err != nil {
+		return t, "", err
+	}
+	audit.Action, audit.TargetType, audit.TargetID = "agent_token.created", "agent_token", prefix
+	after := map[string]any{"name": name, "expires_at": t.ExpiresAt}
+	if clientID != nil {
+		after["oauth_client_id"] = *clientID
+	}
+	return t, secret, tx.Audit(ctx, audit, nil, after)
 }
 
 // revoke: any of your tokens, at once. No passkey needed to switch one off,

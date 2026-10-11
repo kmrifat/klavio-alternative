@@ -71,7 +71,14 @@ setup for each agent. Tokens last at most 90 days and can be revoked there.
 - In production, `/mcp` must be reachable on the public API address, not behind Cloudflare
   Access: agents can't do the Access login. The token is the lock.
 
-Connecting Claude (claude.ai and Desktop) needs an OAuth sign-in, which is the next step.
+**Claude (claude.ai and Desktop)** needs no token. In Claude, add a custom connector with the
+`/mcp` address. Claude signs in with OAuth, as MCP specifies: discovery at
+`/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server`,
+self-registration at `/oauth/register`, PKCE, and a one-time code valid 5 minutes. Claude then
+sends you to the console's **Connect** page, where you approve with your passkey. That makes
+the same kind of agent token, for 90 days, listed in Settings → AI agents. This needs
+`PUBLIC_API_URL` set to the API's public address, and the console online: Claude connects
+from the internet.
 
 ## Tests
 
@@ -145,6 +152,7 @@ per IP and per token; logs show `/u/[token]`.
 | `LOG_FORMAT` | `text` (dev), `json` (prod) | |
 | `ALLOWED_ORIGINS` | `http://localhost:5173` | comma-separated web app origins (CORS + passkeys) |
 | `APP_URL` | `http://localhost:5173` | base URL for invite links |
+| `PUBLIC_API_URL` | `http://localhost:8080` in development, unset in production | this API's public address; Claude (claude.ai, Desktop) connectors sign in against it. Unset: only token-based agents |
 | `WEBAUTHN_RP_ID` | `localhost` | required in production: your domain, e.g. `yourco.com` |
 | `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD` | — | required in production |
 | `SES_MODE` | `fake` (dev), `aws` (prod) | `aws` also needs `SES_REGION`, `SES_EVENT_BUS_ARN` |
