@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kmrifat/klavio-alternative/api/internal/redact"
 )
 
 type Env string
@@ -293,8 +295,9 @@ func defaultLogFormat(env Env) string {
 // Logger builds the process-wide logger for this config.
 func (c Config) Logger() *slog.Logger {
 	opts := &slog.HandlerOptions{Level: c.LogLevel}
+	var h slog.Handler = slog.NewTextHandler(os.Stdout, opts)
 	if c.LogJSON {
-		return slog.New(slog.NewJSONHandler(os.Stdout, opts))
+		h = slog.NewJSONHandler(os.Stdout, opts)
 	}
-	return slog.New(slog.NewTextHandler(os.Stdout, opts))
+	return slog.New(redact.NewHandler(h)) // no full email addresses in the logs
 }

@@ -61,7 +61,7 @@ type Engagement struct {
 	DeliveryDelay int            `json:"delivery_delays"`
 }
 
-func (s *Store) CampaignEngagement(ctx context.Context, campaignID uuid.UUID) (Engagement, error) {
+func (s *Store) campaignEngagementLive(ctx context.Context, campaignID uuid.UUID) (Engagement, error) {
 	out := Engagement{BotReasons: map[string]int{}}
 	err := s.db.QueryRow(ctx, `
 		SELECT count(*) FILTER (WHERE NOT k.is_bot), count(DISTINCT k.contact_id) FILTER (WHERE NOT k.is_bot), count(*) FILTER (WHERE k.is_bot)
@@ -137,7 +137,7 @@ const providerExpr = `CASE
 	WHEN d IN ('gmx.de', 'gmx.net', 'web.de', 'gmx.com') THEN 'GMX / Web.de'
 	ELSE 'Other' END`
 
-func (s *Store) CampaignProviders(ctx context.Context, campaignID uuid.UUID) ([]ProviderStat, error) {
+func (s *Store) campaignProvidersLive(ctx context.Context, campaignID uuid.UUID) ([]ProviderStat, error) {
 	rows, err := s.db.Query(ctx, `
 		WITH r AS (
 			SELECT s.id, s.contact_id, s.status, lower(split_part(c.email::text, '@', 2)) AS d
