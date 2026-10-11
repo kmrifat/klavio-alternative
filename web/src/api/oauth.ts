@@ -16,7 +16,7 @@ export type OAuthGrant = {
 export function useOAuthGrant(id: string) {
   return useQuery({
     queryKey: ["oauth-grant", id],
-    queryFn: () => apiFetch<OAuthGrant>(`/admin/v1/oauth/grants/${id}`),
+    queryFn: () => apiFetch<OAuthGrant>(`/admin/v1/oauth/grants/${encodeURIComponent(id)}`),
   });
 }
 
@@ -26,7 +26,7 @@ export function useDecideOAuthGrant(id: string) {
     mutationFn: (approve: boolean) => {
       const call = () =>
         apiFetch<{ redirect_to: string }>(
-          `/admin/v1/oauth/grants/${id}/${approve ? "approve" : "deny"}`,
+          `/admin/v1/oauth/grants/${encodeURIComponent(id)}/${approve ? "approve" : "deny"}`,
           { method: "POST" },
         );
       return approve ? withStepUp(call) : call();

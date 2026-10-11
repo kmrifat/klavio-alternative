@@ -58,6 +58,11 @@ func add[In any](h *handler, s *mcp.Server, t *mcp.Tool, readOnly bool, build fu
 		if err != nil {
 			return result(nil, err)
 		}
+		if personalData[t.Name] {
+			if err := h.contactQuota(ctx, c); err != nil {
+				return result(nil, err)
+			}
+		}
 		return result(h.call(ctx, c, r.method, r.path, r.body))
 	})
 }
@@ -148,7 +153,7 @@ type contactsIn struct {
 	Status string `json:"status,omitempty" jsonschema:"subscribed, pending_confirmation, quarantined or unsubscribed"`
 	Tier   string `json:"tier,omitempty" jsonschema:"engagement tiers, comma-separated: active, warm, at_risk, sunset"`
 	Tag    string `json:"tag,omitempty" jsonschema:"only contacts with this tag"`
-	Limit  int    `json:"limit,omitempty" jsonschema:"at most this many (1-200, default 50)"`
+	Limit  int    `json:"limit,omitempty" jsonschema:"at most this many (1-50, default 50)"`
 	After  string `json:"after,omitempty" jsonschema:"the 'next' cursor from the previous page"`
 }
 
@@ -293,7 +298,7 @@ func (h *handler) register(s *mcp.Server) {
 			p, err := brandPath(in.Brand, "/contacts/stats")
 			return route{"GET", p, nil}, err
 		})
-	add(h, s, &mcp.Tool{Name: "search_contacts", Description: "Find a brand's contacts (personal data: needs the editor role). Pages with 'after'."}, true,
+	add(h, s, &mcp.Tool{Name: "search_contacts", Description: "Find a brand's contacts (personal data: needs the editor role). At most 50 a page, pages with 'after'; contact reads are limited to 60 an hour, so search narrowly."}, true,
 		func(in contactsIn) (route, error) {
 			p, err := brandPath(in.Brand, "/contacts")
 			q := url.Values{}
@@ -302,7 +307,8 @@ func (h *handler) register(s *mcp.Server) {
 					q.Set(k, v)
 				}
 			}
-			if in.Limit > 0 {
+			q.Set("limit", strconv.Itoa(MaxContactsPerPage))
+			if in.Limit > 0 && in.Limit < MaxContactsPerPage {
 				q.Set("limit", strconv.Itoa(in.Limit))
 			}
 			if len(q) > 0 {

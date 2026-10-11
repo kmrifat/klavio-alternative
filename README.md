@@ -146,13 +146,14 @@ per IP and per token; logs show `/u/[token]`.
 |---|---|---|
 | `DATABASE_URL` | — | required |
 | `REDIS_URL` | — | required |
-| `APP_ENV` | `development` | `development` or `production` |
+| `APP_ENV` | `development` | `development` or `production`. Development turns off Cloudflare Access and secure cookies, so it refuses a real domain in `WEBAUTHN_RP_ID` |
 | `HTTP_ADDR` | `:8080` | |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `LOG_FORMAT` | `text` (dev), `json` (prod) | |
-| `ALLOWED_ORIGINS` | `http://localhost:5173` | comma-separated web app origins (CORS + passkeys) |
-| `APP_URL` | `http://localhost:5173` | base URL for invite links |
+| `ALLOWED_ORIGINS` | `http://localhost:5173` | comma-separated web app origins (CORS + passkeys); required in production, https |
+| `APP_URL` | `http://localhost:5173` | base URL for invite links; required in production, https |
 | `PUBLIC_API_URL` | `http://localhost:8080` in development, unset in production | this API's public address; Claude (claude.ai, Desktop) connectors sign in against it. Unset: only token-based agents |
+| `OAUTH_REDIRECT_HOSTS` | `claude.ai,claude.com` | sites AI clients signing in may send people back to (localhost is always allowed); add one only for an AI app you use |
 | `WEBAUTHN_RP_ID` | `localhost` | required in production: your domain, e.g. `yourco.com` |
 | `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD` | — | required in production |
 | `SES_MODE` | `fake` (dev), `aws` (prod) | `aws` also needs `SES_REGION`, `SES_EVENT_BUS_ARN` |

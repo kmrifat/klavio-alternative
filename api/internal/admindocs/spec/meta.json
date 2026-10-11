@@ -215,7 +215,7 @@
         "required": ["id", "kind", "severity", "user_id", "brand_id", "message", "details", "created_at", "acknowledged_by", "acknowledged_at"],
         "properties": {
           "id": { "type": "string", "format": "uuid" },
-          "kind": { "type": "string", "description": "What was noticed: `new_device`, `unknown_country`, `import_spike`, `account_brake`, `brand_…` (a brand brake), and others.", "examples": ["new_device"] },
+          "kind": { "type": "string", "description": "What was noticed: `new_device`, `unknown_country`, `import_spike`, `signup_flood` (a brand hit its daily confirmation-email budget), `account_brake`, `brand_…` (a brand brake), and others.", "examples": ["new_device"] },
           "severity": { "type": "string", "enum": ["info", "warning", "critical"] },
           "user_id": { "type": ["string", "null"], "format": "uuid" },
           "brand_id": { "type": ["string", "null"], "format": "uuid" },

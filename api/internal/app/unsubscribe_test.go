@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -201,6 +202,20 @@ func TestUnsubscribePageAndPreferences(t *testing.T) {
 	history, _ := f.a.Store.ConsentHistory(context.Background(), f.contactID)
 	if history[0].Kind != "resubscribed" || history[0].Method != "link" {
 		t.Fatalf("latest record: %+v", history[0])
+	}
+
+	// Months later, the old email's link (or someone it was forwarded to)
+	// can't sign them up again: that takes a new, confirmed sign-up.
+	f.pub.form(f.path("/p/", c), url.Values{"action": {"unsubscribe_all"}})
+	if err := f.a.Store.BackdateConsentForTest(context.Background(), f.contactID, 31*24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, prefs := f.pub.get(f.path("/p/", c)); !strings.Contains(prefs, "unsubscribed from Brightside a while ago") {
+		t.Fatalf("preferences long after unsubscribing:\n%s", prefs)
+	}
+	code, _ = f.pub.form(f.path("/p/", c), url.Values{"action": {"save"}, "topic": {f.newsletter.String()}})
+	if status, _, _ := f.state(t); code != 409 || status != store.ContactUnsubscribed {
+		t.Fatalf("resubscribed from an old link: %d %s", code, status)
 	}
 }
 

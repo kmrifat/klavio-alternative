@@ -23,6 +23,7 @@ func TestDebugDefaults(t *testing.T) {
 		"SES_EVENT_BUS_ARN":    "arn:aws:events:us-east-1:123:event-bus/default",
 		"SES_EVENTS_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/123/mail-ses-events",
 		"WEBAUTHN_RP_ID":       "example.com", "UNSUBSCRIBE_SECRET": "prod-secret-0123456789abcdef0123456789",
+		"APP_URL": "https://app.example.com", "ALLOWED_ORIGINS": "https://app.example.com",
 	}
 	cfg, err := Load(envFrom(prod))
 	if err != nil || cfg.Debug {
@@ -72,6 +73,7 @@ func TestLoadProductionUsesJSONLogs(t *testing.T) {
 		"SES_EVENTS_QUEUE_URL":  "https://sqs.us-east-1.amazonaws.com/123/mail-ses-events",
 		"WEBAUTHN_RP_ID":        "example.com",
 		"UNSUBSCRIBE_SECRET":    "prod-secret-0123456789abcdef0123456789",
+		"APP_URL":               "https://app.example.com",
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -118,7 +120,7 @@ func TestLoadProductionRequiresSafetySettings(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected errors")
 	}
-	for _, want := range []string{"CF_ACCESS_TEAM_DOMAIN", "SES_MODE must be aws", "WEBAUTHN_RP_ID", "UNSUBSCRIBE_SECRET"} {
+	for _, want := range []string{"CF_ACCESS_TEAM_DOMAIN", "SES_MODE must be aws", "WEBAUTHN_RP_ID", "UNSUBSCRIBE_SECRET", "ALLOWED_ORIGINS and APP_URL are required"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %s", err, want)
 		}
@@ -173,6 +175,7 @@ func TestProxyTrustDefaults(t *testing.T) {
 		"CF_ACCESS_TEAM_DOMAIN": "a.cloudflareaccess.com", "CF_ACCESS_AUD": "x", "WEBAUTHN_RP_ID": "example.com",
 		"SES_EVENT_BUS_ARN": "arn:x", "UNSUBSCRIBE_SECRET": "prod-secret-0123456789abcdef0123456789",
 		"SES_EVENTS_QUEUE_URL": "https://sqs.example/q",
+		"APP_URL":              "https://app.example.com", "ALLOWED_ORIGINS": "https://app.example.com",
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -234,5 +237,27 @@ func TestProductionNeedsTheEventsQueue(t *testing.T) {
 	}
 	if _, err := Load(envFrom(map[string]string{"DATABASE_URL": "postgres://x", "REDIS_URL": "redis://x", "TRACKING_SCANNER_CIDRS": "nope"})); err == nil {
 		t.Fatal("bad CIDR accepted")
+	}
+}
+
+// Development switches off Access, secure cookies and the secret check, so
+// it refuses a real domain; production needs the console's https address.
+func TestDevelopmentStaysLocal(t *testing.T) {
+	_, err := Load(envFrom(map[string]string{"DATABASE_URL": "postgres://x", "REDIS_URL": "redis://x", "WEBAUTHN_RP_ID": "yourco.com"}))
+	if err == nil || !strings.Contains(err.Error(), "APP_ENV is development") {
+		t.Fatalf("development on a real domain: %v", err)
+	}
+	if _, err := Load(envFrom(map[string]string{"DATABASE_URL": "postgres://x", "REDIS_URL": "redis://x", "WEBAUTHN_RP_ID": "mail.test"})); err != nil {
+		t.Fatalf("test domain: %v", err)
+	}
+	_, err = Load(envFrom(map[string]string{
+		"APP_ENV": "production", "DATABASE_URL": "postgres://x", "REDIS_URL": "redis://x",
+		"CF_ACCESS_TEAM_DOMAIN": "a.cloudflareaccess.com", "CF_ACCESS_AUD": "x", "WEBAUTHN_RP_ID": "example.com",
+		"SES_EVENT_BUS_ARN": "arn:x", "UNSUBSCRIBE_SECRET": "prod-secret-0123456789abcdef0123456789",
+		"SES_EVENTS_QUEUE_URL": "https://sqs.example/q",
+		"APP_URL":              "http://app.example.com", "ALLOWED_ORIGINS": "http://app.example.com",
+	}))
+	if err == nil || !strings.Contains(err.Error(), "must be https") {
+		t.Fatalf("plain http console in production: %v", err)
 	}
 }

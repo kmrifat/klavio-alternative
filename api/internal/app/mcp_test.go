@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/kmrifat/klavio-alternative/api/internal/mcpserver"
 	"github.com/kmrifat/klavio-alternative/api/internal/store"
 )
 
@@ -175,11 +176,33 @@ func TestMCPAgent(t *testing.T) {
 	if a := stale.body; a["status"] != "rejected" || !strings.Contains(a["decision_note"].(string), "changed") {
 		t.Fatalf("stale approval: %s", stale.raw)
 	}
+	// So does a template edit: the agent can't swap the content after its person looked.
+	c3 := mustTool(t, agent, "create_campaign_draft", map[string]any{"brand": "brightside", "name": "Third note",
+		"topic_id": w.topic, "template_id": w.tpl, "subject": "Once more"})["campaign"].(map[string]any)
+	ap3 := mustTool(t, agent, "request_send", map[string]any{"brand": "brightside", "campaign_id": c3["id"]})["approval"].(map[string]any)
+	tpl := mustTool(t, agent, "get_template", map[string]any{"brand": "brightside", "template_id": w.tpl})["template"].(map[string]any)
+	mustTool(t, agent, "update_template", map[string]any{"brand": "brightside", "template_id": w.tpl, "version": tpl["version"],
+		"name": tpl["name"], "mjml": strings.Replace(tpl["mjml"].(string), "</mj-text>", " Swapped.</mj-text>", 1)})
+	if d := w.owner.must(200, w.owner.do("GET", "/admin/v1/approvals?view=decide", nil)).raw; !strings.Contains(string(d), "template was edited") {
+		t.Fatalf("approvals page doesn't warn: %s", d)
+	}
+	swapped := w.owner.must(200, w.owner.do("POST", "/admin/v1/approvals/"+ap3["id"].(string)+"/approve", map[string]any{}))
+	if a := swapped.body; a["status"] != "rejected" || !strings.Contains(a["decision_note"].(string), "template changed") {
+		t.Fatalf("approved after a template swap: %s", swapped.raw)
+	}
 
 	// The audit log says which agent did what.
 	var n int
-	if err := w.a.Store.QueryRowForTest(ctx, `SELECT count(*) FROM audit_log WHERE via_agent = $1 AND action IN ('campaign.created', 'approval.requested')`, &n, label); err != nil || n != 4 {
+	if err := w.a.Store.QueryRowForTest(ctx, `SELECT count(*) FROM audit_log WHERE via_agent = $1 AND action IN ('campaign.created', 'approval.requested')`, &n, label); err != nil || n != 6 {
 		t.Fatalf("audit via agent: %d %v", n, err)
+	}
+
+	// Contacts come in small amounts (a whole list is an export, which needs a second admin).
+	for i := 0; i < mcpserver.ContactReadsPerHour; i++ {
+		mustTool(t, agent, "search_contacts", map[string]any{"brand": "brightside", "limit": 500})
+	}
+	if text, failed := callTool(t, agent, "search_contacts", map[string]any{"brand": "brightside"}); !failed || !strings.Contains(text, "contact_quota") {
+		t.Fatalf("contact reads past the quota: %s", text)
 	}
 
 	// A viewer's agent can read but not prepare.
@@ -202,6 +225,25 @@ func TestMCPAgent(t *testing.T) {
 	// Vic's own tokens only; Olivia's (2) aren't visible to Vic.
 	if ts := vic.must(200, vic.do("GET", "/admin/v1/agent-tokens", nil)).body["tokens"].([]any); len(ts) != 1 {
 		t.Fatalf("vic sees %d tokens", len(ts))
+	}
+
+	// Owners see everyone's working tokens and can switch off someone else's
+	// (offboarding: Cloudflare Access isn't in front of /mcp). Others can't.
+	vic.must(403, vic.do("GET", "/admin/v1/agent-tokens?everyone=true", nil))
+	everyone := w.owner.must(200, w.owner.do("GET", "/admin/v1/agent-tokens?everyone=true", nil)).body["tokens"].([]any)
+	var vicTok map[string]any
+	for _, x := range everyone {
+		if m := x.(map[string]any); m["user_email"] == "vic@acme.test" {
+			vicTok = m
+		}
+	}
+	if len(everyone) != 3 || vicTok == nil || vicTok["name"] != "Codex" {
+		t.Fatalf("everyone's tokens: %v", everyone)
+	}
+	vic.must(404, vic.do("POST", "/admin/v1/agent-tokens/"+tok["id"].(string)+"/revoke", nil))
+	w.owner.must(200, w.owner.do("POST", "/admin/v1/agent-tokens/"+vicTok["id"].(string)+"/revoke", nil))
+	if _, err := vicAgent.CallTool(ctx, &mcp.CallToolParams{Name: "list_brands"}); err == nil {
+		t.Fatal("token revoked by an owner still works")
 	}
 
 	// Revoked: the agent is locked out at once.

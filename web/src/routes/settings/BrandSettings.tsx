@@ -14,6 +14,7 @@ export function BrandSettings() {
   const slug = useParams().slug!;
   const detail = useBrand(slug);
   const check = useCheckDNS(slug);
+  const me = useMe().data;
 
   if (detail.isPending) return <Spinner />;
   if (detail.isError) {
@@ -21,6 +22,9 @@ export function BrandSettings() {
   }
   const { brand, dns_records } = detail.data;
   const st = brandStatus[brand.status];
+  // A check calls DNS and Amazon: editors and up.
+  const myRole = me?.brand_roles[brand.id];
+  const canCheck = me?.user.company_role === "owner" || myRole === "editor" || myRole === "sender" || myRole === "brand_admin";
 
   return (
     <div className="space-y-5">
@@ -56,10 +60,12 @@ export function BrandSettings() {
         title="DNS records"
         description={`Checked ${timeAgo(brand.dns_checked_at)} · re-checked daily · a failing record pauses sending for this brand`}
         action={
-          <Button size="sm" onClick={() => check.mutate()} disabled={check.isPending}>
-            <RefreshCw className={`size-3.5 ${check.isPending ? "animate-spin" : ""}`} />
-            {check.isPending ? "Checking…" : "Re-check now"}
-          </Button>
+          canCheck && (
+            <Button size="sm" onClick={() => check.mutate()} disabled={check.isPending}>
+              <RefreshCw className={`size-3.5 ${check.isPending ? "animate-spin" : ""}`} />
+              {check.isPending ? "Checking…" : "Re-check now"}
+            </Button>
+          )
         }
       >
         {check.isError && (

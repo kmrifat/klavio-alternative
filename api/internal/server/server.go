@@ -184,13 +184,25 @@ func requestLog(log *slog.Logger, next http.Handler) http.Handler {
 
 // redactPath hides what mustn't reach the logs: the signed token in public
 // link paths (/u/, /p/, /confirm/; click /c/ and open /o/ tokens name the
-// person too), which works like a password for that
-// person's subscription, and the email address in Contacts API paths.
+// person too), which works like a password for that person's
+// subscription; invite tokens, which let someone join; and the email
+// address in Contacts API paths. Extra slashes ("//u/…", which the router
+// redirects) don't get past it.
 func redactPath(p string) string {
+	if len(p) > 1 && p[1] == '/' {
+		p = "/" + strings.TrimLeft(p, "/")
+	}
 	for _, prefix := range []string{"/u/", "/p/", "/confirm/", "/c/", "/o/"} {
 		if strings.HasPrefix(p, prefix) && len(p) > len(prefix) {
 			return prefix + "[token]"
 		}
+	}
+	const invites = "/admin/v1/invites/"
+	if rest, ok := strings.CutPrefix(p, invites); ok && rest != "" {
+		if _, action, found := strings.Cut(rest, "/"); found {
+			return invites + "[token]/" + action
+		}
+		return invites + "[token]"
 	}
 	const contacts = "/api/v1/contacts/"
 	if rest, ok := strings.CutPrefix(p, contacts); ok && rest != "" {
@@ -209,7 +221,7 @@ func recoverer(log *slog.Logger, next http.Handler) http.Handler {
 				if v == http.ErrAbortHandler {
 					panic(v)
 				}
-				log.ErrorContext(r.Context(), "panic in handler", "panic", v, "path", r.URL.Path)
+				log.ErrorContext(r.Context(), "panic in handler", "panic", v, "path", redactPath(r.URL.Path))
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 			}
 		}()

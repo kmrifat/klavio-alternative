@@ -41,9 +41,13 @@ type PriorClick struct {
 	UserAgent string    `db:"user_agent"`
 }
 
-// ClicksSince: the email's clicks from `since` on.
-func (s *Store) ClicksSince(ctx context.Context, sendID int64, since time.Time) ([]PriorClick, error) {
-	rows, err := s.db.Query(ctx, `SELECT id, at, link_no, is_bot, ip, user_agent FROM clicks WHERE send_id = $1 AND at >= $2 ORDER BY at`, sendID, since)
+// ClicksSince: the email's clicks from `since` on, the newest `limit` of
+// them, oldest first.
+func (s *Store) ClicksSince(ctx context.Context, sendID int64, since time.Time, limit int) ([]PriorClick, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT * FROM (SELECT id, at, link_no, is_bot, ip, user_agent FROM clicks
+			WHERE send_id = $1 AND at >= $2 ORDER BY at DESC LIMIT $3) recent
+		ORDER BY at`, sendID, since, limit)
 	return all[PriorClick](rows, err)
 }
 

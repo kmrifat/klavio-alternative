@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/kmrifat/klavio-alternative/api/internal/httpx"
@@ -27,6 +28,8 @@ type Recorder struct {
 	Classifier Classifier
 	Log        *slog.Logger
 	queue      chan func(context.Context)
+
+	lastFullLog atomic.Int64 // unix seconds of the last "queue full" warning
 }
 
 // Start runs the background writer until ctx ends. Without Start, hits are
@@ -53,7 +56,10 @@ func (r *Recorder) enqueue(ctx context.Context, job func(context.Context)) {
 	select {
 	case r.queue <- job:
 	default:
-		r.Log.WarnContext(ctx, "tracking queue full; a hit was not recorded")
+		// Once a minute at most: a flood would otherwise flood the log too.
+		if now := time.Now().Unix(); r.lastFullLog.Swap(now) < now-60 {
+			r.Log.WarnContext(ctx, "tracking queue full; hits are not being recorded")
+		}
 	}
 }
 
@@ -76,9 +82,14 @@ func (r *Recorder) Click(ctx context.Context, l Link, h Hit) error {
 		if h.DeliveredAt, err = tx.DeliveredAt(ctx, l.SendID); err != nil {
 			return err
 		}
-		prior, err := tx.ClicksSince(ctx, l.SendID, h.At.Add(-max(BurstWindow, TaintWindow)))
+		prior, err := tx.ClicksSince(ctx, l.SendID, h.At.Add(-max(BurstWindow, TaintWindow)), MaxRecentClicks+1)
 		if err != nil {
 			return err
+		}
+		// No person clicks one email this often: someone is replaying the
+		// link. Stop storing (and reading) more of it until things calm down.
+		if len(prior) > MaxRecentClicks {
+			return nil
 		}
 		pc := make([]PriorClick, len(prior))
 		for i, p := range prior {
@@ -173,7 +184,9 @@ func noStore(w http.ResponseWriter) {
 
 func (h *Handlers) hit(r *http.Request) Hit {
 	ip, _ := netip.ParseAddr(httpx.ClientIP(r))
-	return Hit{At: h.clock(), Method: r.Method, UserAgent: r.UserAgent(), IP: ip}
+	// Cut the User-Agent now: the hit waits in the recorder's queue, and a
+	// huge header times a full queue is a lot of memory.
+	return Hit{At: h.clock(), Method: r.Method, UserAgent: truncate(r.UserAgent(), 500), IP: ip}
 }
 
 func (h *Handlers) click(w http.ResponseWriter, r *http.Request) {

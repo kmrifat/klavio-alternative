@@ -25,6 +25,19 @@ func (s *Store) TryEditAuditForTest(ctx context.Context) (int64, error) {
 	return tag.RowsAffected(), err
 }
 
+// BackdateConsentForTest moves a contact's consent records into the past.
+// The records are append-only, so this switches triggers off for its own
+// transaction (the test database runs as a superuser).
+func (s *Store) BackdateConsentForTest(ctx context.Context, contactID uuid.UUID, by time.Duration) error {
+	return s.InTx(ctx, func(tx *Store) error {
+		if _, err := tx.db.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+			return err
+		}
+		_, err := tx.db.Exec(ctx, `UPDATE consent_records SET occurred_at = occurred_at - make_interval(secs => $2) WHERE contact_id = $1`, contactID, by.Seconds())
+		return err
+	})
+}
+
 // BackdateImportForTest makes an import look untouched for the given time.
 func (s *Store) BackdateImportForTest(ctx context.Context, id uuid.UUID, by time.Duration) error {
 	_, err := s.db.Exec(ctx, `UPDATE imports SET updated_at = now() - make_interval(secs => $2) WHERE id = $1`, id, by.Seconds())

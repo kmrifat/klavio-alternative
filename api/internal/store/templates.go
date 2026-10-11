@@ -211,6 +211,14 @@ func (s *Store) TemplateByID(ctx context.Context, brandID, id uuid.UUID) (Templa
 	return one[Template](rows, err)
 }
 
+// TemplateVersionForShare: the template's version, held (FOR SHARE) until
+// the transaction ends so nobody can edit it meanwhile.
+func (s *Store) TemplateVersionForShare(ctx context.Context, brandID, id uuid.UUID) (int, error) {
+	var v int
+	err := s.db.QueryRow(ctx, `SELECT version FROM templates WHERE brand_id = $1 AND id = $2 AND archived_at IS NULL FOR SHARE`, brandID, id).Scan(&v)
+	return v, translate(err)
+}
+
 func (s *Store) ListTemplates(ctx context.Context, brandID uuid.UUID) ([]TemplateSummary, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT t.id, t.name, t.error_count, t.warning_count, t.updated_at, u.name AS updated_by_name,

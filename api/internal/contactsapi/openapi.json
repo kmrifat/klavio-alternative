@@ -348,7 +348,7 @@
           },
           "ip": {
             "type": "string",
-            "description": "The person's IP address (not your server's)"
+            "description": "The person's IP address (not your server's): at most 20 confirmation emails an hour go to sign-ups from one address"
           },
           "click_tracking": {
             "type": "boolean",
@@ -387,7 +387,7 @@
               "limit_reached",
               "not_sent"
             ],
-            "description": "sent; delayed (sending is paused for now: it goes out once it resumes, within 48 hours); limit_reached (3 a day per address already went out); not_sent (temporary problem, retry later)"
+            "description": "sent; delayed (sending is paused for now: it goes out once it resumes, within 48 hours); limit_reached (3 a day per address already went out, or the hourly limit for this sign-up IP or the brand's 1,000 a day was reached); not_sent (temporary problem, retry later)"
           }
         }
       },

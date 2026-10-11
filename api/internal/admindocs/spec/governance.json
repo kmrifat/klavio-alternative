@@ -243,10 +243,10 @@
       "get": {
         "operationId": "downloadExport",
         "summary": "Download an export",
-        "description": "The approved export as CSV. Only the person who requested it, while they still have export rights for the brand (its admin, or an owner, and not frozen), and only within 24 hours of approval; after that the file is deleted. It can be downloaded more than once in that window: each download is counted (`download_count`) and recorded in the audit log (`export.downloaded`). The first line is a `# CONFIDENTIAL` watermark naming the brand, filter, export ID, requester and approval time; then a header row (`email`, `first_name`, `last_name`, `status`, `tier`, `consent`, `consent_source`, `consented_at`, `tags`, `export_id`) and one row per contact. Tags are joined with `;`; cells that start with `=`, `+`, `-` or `@` are prefixed with `'` so spreadsheets don't run them.",
+        "description": "The approved export as CSV. Only the person who requested it, while they still have export rights for the brand (its admin, or an owner, and not frozen), and only within 24 hours of approval; after that the file is deleted. It can be downloaded more than once in that window: each download is counted (`download_count`) and recorded in the audit log (`export.downloaded`). The first line is a `# CONFIDENTIAL` watermark naming the brand, filter, export ID, requester and approval time; then a header row (`email`, `first_name`, `last_name`, `status`, `tier`, `consent`, `consent_source`, `consented_at`, `tags`, `export_id`) and one row per contact. Tags are joined with `;`; a cell, or a part of one after `;`, `,` or `|`, that starts with `=`, `+`, `-` or `@` is prefixed with `'` so spreadsheets don't run it. Needs a passkey confirmation: a session alone isn't enough to take personal data away.",
         "x-role": "signed_in",
-        "x-step-up": false,
-        "x-error-codes": ["unauthenticated", "not_found", "export_forbidden", "export_unavailable"],
+        "x-step-up": true,
+        "x-error-codes": ["unauthenticated", "step_up_required", "agent_not_allowed", "not_found", "export_forbidden", "export_unavailable"],
         "parameters": [{ "$ref": "#/components/parameters/ID" }],
         "responses": {
           "200": {
@@ -259,7 +259,7 @@
           },
           "401": { "$ref": "#/components/responses/Unauthenticated" },
           "403": {
-            "description": "`export_forbidden`: the caller no longer has export rights for this brand.",
+            "description": "`step_up_required`: confirm with a passkey first (`agent_not_allowed` for AI agents); `export_forbidden`: the caller no longer has export rights for this brand.",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
           },
           "404": { "$ref": "#/components/responses/NotFound" },

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -36,6 +37,14 @@ const (
 	ConfirmEmailsPerDay  = 3 // per address: stops the API being used to mail-bomb someone
 	maxBody              = 64 << 10
 	maxIdempotencyKeyLen = 100
+)
+
+// Confirmation emails per brand and per sign-up IP (the consent's ip): a
+// bot filling a brand's form with strangers' addresses gets the brand's
+// domain reported as spam. Sign-ups past these are saved, just not emailed.
+const (
+	BrandConfirmEmailsPerDay = 1000
+	IPConfirmEmailsPerHour   = 20
 )
 
 // ConfirmationQueue sends the double opt-in email in the background.
@@ -484,25 +493,57 @@ func (a *API) subscribe(c *call) (result, error) {
 		body["pending_topics"] = newTopics
 	}
 	if queue != uuid.Nil {
-		body["confirmation_email"] = a.queueConfirmation(ctx, b.ID, queue, request, in.Email)
+		body["confirmation_email"] = a.queueConfirmation(ctx, b, queue, request, in.Email, in.Consent.IP)
 	}
 	return result{code, body}, nil
 }
 
 // queueConfirmation sends the double opt-in email, at most a few a day per
-// address and brand however often the API is called for it. It reports
-// "sent", "delayed" (the brakes hold email back for now; it goes once they
-// let it, within 48 hours), "limit_reached", or "not_sent" (the limiter or
-// queue failed: no email rather than an unlimited one).
-func (a *API) queueConfirmation(ctx context.Context, brandID, contactID, requestID uuid.UUID, email string) string {
-	key := "api:confirm:" + brandID.String() + ":" + hex.EncodeToString(store.EmailHash(email))
-	ok, err := a.Limiter.Allow(ctx, key, ConfirmEmailsPerDay, 24*time.Hour)
-	switch {
-	case err != nil:
-		a.Log.ErrorContext(ctx, "confirmation rate limiter", "err", err)
-		return "not_sent"
-	case !ok:
-		return "limit_reached"
+// address and brand however often the API is called for it, and within the
+// brand's and the sign-up IP's budgets. It reports "sent", "delayed" (the
+// brakes hold email back for now; it goes once they let it, within 48
+// hours), "limit_reached", or "not_sent" (the limiter or queue failed: no
+// email rather than an unlimited one).
+// brandBudgetSpent tells the admins, once a day, that a brand's sign-ups
+// stopped getting confirmation emails.
+func (a *API) brandBudgetSpent(ctx context.Context, b store.Brand) {
+	if ok, err := a.Limiter.Allow(ctx, "api:confirm-brand-alert:"+b.ID.String(), 1, 24*time.Hour); err != nil || !ok {
+		return
+	}
+	a.Log.WarnContext(ctx, "confirmation emails: brand's daily budget spent", "brand", b.Slug)
+	if err := a.Store.CreateAlert(ctx, store.Alert{Kind: "signup_flood", Severity: "warning", BrandID: &b.ID,
+		Message: fmt.Sprintf("%s sent %d confirmation emails in 24 hours, the most allowed. New sign-ups are saved but not emailed until the count drops. If you didn't expect this many, a bot may be using your sign-up form.", b.Name, BrandConfirmEmailsPerDay),
+	}, map[string]any{"limit": BrandConfirmEmailsPerDay}); err != nil {
+		a.Log.ErrorContext(ctx, "signup flood alert", "err", err)
+	}
+}
+
+func (a *API) queueConfirmation(ctx context.Context, b store.Brand, contactID, requestID uuid.UUID, email, ip string) string {
+	brandID := b.ID
+	budgets := []struct {
+		key    string
+		limit  int
+		window time.Duration
+	}{
+		{"api:confirm:" + brandID.String() + ":" + hex.EncodeToString(store.EmailHash(email)), ConfirmEmailsPerDay, 24 * time.Hour},
+		{"api:confirm-ip:" + brandID.String() + ":" + ip, IPConfirmEmailsPerHour, time.Hour},
+		{"api:confirm-brand:" + brandID.String(), BrandConfirmEmailsPerDay, 24 * time.Hour},
+	}
+	for i, bu := range budgets {
+		if i == 1 && ip == "" {
+			continue
+		}
+		ok, err := a.Limiter.Allow(ctx, bu.key, bu.limit, bu.window)
+		if err != nil {
+			a.Log.ErrorContext(ctx, "confirmation rate limiter", "err", err)
+			return "not_sent"
+		}
+		if !ok {
+			if i == 2 {
+				a.brandBudgetSpent(ctx, b)
+			}
+			return "limit_reached"
+		}
 	}
 	outcome := "sent"
 	if a.Gate != nil {

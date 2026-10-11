@@ -239,10 +239,10 @@
       "put": {
         "operationId": "setRepermission",
         "summary": "Turn re-permission emails on or off",
-        "description": "Turning them on needs a configured email sender. Recorded in the audit log (`repermission.on` or `repermission.off`).",
+        "description": "Turning them on needs a configured email sender and, since it starts email, a passkey confirmation; turning them off needs neither. Recorded in the audit log (`repermission.on` or `repermission.off`).",
         "x-role": "brand:brand_admin",
-        "x-step-up": false,
-        "x-error-codes": ["unauthenticated", "forbidden", "not_found", "bad_json", "sending_not_configured"],
+        "x-step-up": true,
+        "x-error-codes": ["unauthenticated", "forbidden", "step_up_required", "agent_not_allowed", "not_found", "bad_json", "sending_not_configured"],
         "parameters": [{ "$ref": "#/components/parameters/Slug" }],
         "requestBody": {
           "required": true,
@@ -263,7 +263,7 @@
           },
           "400": { "$ref": "#/components/responses/BadJSON" },
           "401": { "$ref": "#/components/responses/Unauthenticated" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
+          "403": { "$ref": "#/components/responses/ForbiddenOrStepUp" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "409": {
             "description": "`sending_not_configured`: email sending isn't set up yet, so re-permission emails can't go out.",

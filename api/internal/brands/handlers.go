@@ -44,8 +44,9 @@ func (s *Service) Routes(mux *http.ServeMux, az authorizer) {
 		return s.writeDetail(w, r, http.StatusOK, b)
 	}))
 	mux.HandleFunc("PATCH /admin/v1/brands/{slug}", h(s.update))
+	// A check calls DNS and SES: editors and up, like the health re-check.
 	mux.HandleFunc("POST /admin/v1/brands/{slug}/dns-check", h(func(w http.ResponseWriter, r *http.Request) error {
-		b, _, err := s.visibleBrand(r)
+		b, _, err := WithRole(r, s.store, store.RoleEditor)
 		if err != nil {
 			return err
 		}

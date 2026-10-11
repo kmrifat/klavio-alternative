@@ -8,12 +8,13 @@
     "/agent-tokens": {
       "get": {
         "operationId": "listAgentTokens",
-        "summary": "Your agent tokens",
-        "description": "The signed-in person's agent tokens, newest first, with their state. Secrets are never shown again.",
+        "summary": "Your agent tokens (or everyone's, for owners)",
+        "description": "The signed-in person's agent tokens, newest first, with their state. Secrets are never shown again. With `everyone=true` (owners only, not their agents): every token that still works, with `user_email` and `user_name`, so an owner can switch off the agents of someone who left. Cloudflare Access doesn't stand in front of `/mcp`, so removing a person there doesn't stop their agents.",
         "x-role": "signed_in",
         "x-step-up": false,
         "x-error-codes": [
-          "unauthenticated"
+          "unauthenticated",
+          "forbidden"
         ],
         "responses": {
           "200": {
@@ -39,8 +40,25 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "everyone",
+            "in": "query",
+            "required": false,
+            "description": "`true`: everyone's working tokens (owners only).",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true"
+              ]
+            }
+          }
+        ]
       },
       "post": {
         "operationId": "createAgentToken",
@@ -141,7 +159,7 @@
       "post": {
         "operationId": "revokeAgentToken",
         "summary": "Revoke an agent token",
-        "description": "Stops one of your tokens at once. No passkey needed to switch one off; an agent may revoke its own person's tokens too. Revoking twice is harmless. Recorded in the audit log (`agent_token.revoked`).",
+        "description": "Stops one of your tokens at once. No passkey needed to switch one off; an agent may revoke its own person's tokens too. Revoking twice is harmless. Recorded in the audit log (`agent_token.revoked`). Owners may revoke anyone's token (the audit entry's `after.of` names whose it was).",
         "x-role": "signed_in",
         "x-step-up": false,
         "x-error-codes": [

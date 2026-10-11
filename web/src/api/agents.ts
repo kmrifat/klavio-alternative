@@ -26,6 +26,18 @@ export function useAgentTokens() {
   });
 }
 
+// Owners: everyone's working tokens, to switch off a leaver's agents.
+export type SomeonesAgentToken = AgentToken & { user_email: string; user_name: string };
+
+export function useEveryonesAgentTokens(enabled: boolean) {
+  return useQuery({
+    queryKey: ["agent-tokens", "everyone"],
+    queryFn: () =>
+      apiFetch<{ tokens: SomeonesAgentToken[] }>("/admin/v1/agent-tokens?everyone=true").then((d) => d.tokens),
+    enabled,
+  });
+}
+
 export function useCreateAgentToken() {
   const qc = useQueryClient();
   return useMutation({

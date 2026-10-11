@@ -1,6 +1,15 @@
 import { useState, type FormEvent } from "react";
 import { Bot, Info, ShieldCheck, TriangleAlert } from "lucide-react";
-import { mcpURL, useAgentTokens, useCreateAgentToken, useRevokeAgentToken, type AgentToken } from "../../api/agents";
+import {
+  mcpURL,
+  useAgentTokens,
+  useCreateAgentToken,
+  useEveryonesAgentTokens,
+  useRevokeAgentToken,
+  type AgentToken,
+  type SomeonesAgentToken,
+} from "../../api/agents";
+import { useMe } from "../../api/hooks";
 import { Badge, Button, Card, CopyButton, ErrorNote, Field, Spinner, inputClass } from "../../components/ui";
 import { shortDate, timeAgo } from "../../lib/format";
 
@@ -43,6 +52,7 @@ export function AiAgents() {
           <TokenTable tokens={tokens.data} />
         )}
       </Card>
+      <EveryonesTokens />
       <Card title="What an agent can and can't do" description="The same rules as you, minus anything that needs your passkey">
         <div className="grid gap-4 border-t border-zinc-200 px-5 py-4 text-sm sm:grid-cols-2">
           <div>
@@ -191,6 +201,57 @@ function NewToken({ created, onDone }: { created: { token: AgentToken; secret: s
           <Button onClick={onDone}>I've copied it</Button>
         </div>
       </div>
+    </Card>
+  );
+}
+
+// Owners: every agent that can still get in, whoever's it is. Someone who
+// leaves keeps their agents until these are revoked: Cloudflare Access
+// doesn't stand in front of the agents' address.
+function EveryonesTokens() {
+  const isOwner = useMe().data?.user.company_role === "owner";
+  const tokens = useEveryonesAgentTokens(isOwner);
+  const revoke = useRevokeAgentToken();
+  if (!isOwner) return null;
+  return (
+    <Card
+      title="Everyone's agents"
+      description="Every agent token that still works. When someone leaves, revoke theirs here: removing them from Cloudflare Access doesn't stop their agents."
+    >
+      {tokens.isPending ? (
+        <div className="border-t border-zinc-200 px-5 py-4">
+          <Spinner />
+        </div>
+      ) : tokens.isError ? (
+        <div className="border-t border-zinc-200 px-5 py-4">
+          <ErrorNote error={tokens.error} />
+        </div>
+      ) : tokens.data.length === 0 ? (
+        <p className="border-t border-zinc-200 px-5 py-4 text-sm text-zinc-600">No working agent tokens.</p>
+      ) : (
+        <ul className="divide-y divide-zinc-100 border-t border-zinc-200">
+          {tokens.data.map((t: SomeonesAgentToken) => (
+            <li key={t.id} className="flex flex-wrap items-center justify-between gap-2 px-5 py-2.5 text-sm">
+              <div className="min-w-0">
+                <p className="font-medium">
+                  {t.name} <span className="font-mono text-xs font-normal text-zinc-500">{t.prefix}…</span>
+                </p>
+                <p className="text-xs text-zinc-600 [overflow-wrap:anywhere]">
+                  {t.user_name} · {t.user_email} · last used {t.last_used_at ? timeAgo(t.last_used_at) : "never"}
+                </p>
+              </div>
+              <Button size="sm" variant="ghost" disabled={revoke.isPending} onClick={() => revoke.mutate(t.id)} aria-label={`Revoke ${t.name} of ${t.user_email}`}>
+                Revoke
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {revoke.error ? (
+        <div className="px-5 py-3">
+          <ErrorNote error={revoke.error} />
+        </div>
+      ) : null}
     </Card>
   );
 }

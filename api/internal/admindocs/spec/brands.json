@@ -214,10 +214,11 @@
         "operationId": "checkBrandDNS",
         "summary": "Check a brand's DNS",
         "description": "Looks up each of the brand's DNS records and asks SES for the domain's verification status, stores the results, and moves the brand between `setup` and `ready`: `ready` when no record is `failing` and SES reports `SUCCESS`, `setup` otherwise. A `paused` brand stays paused (only brake recovery resumes it). If SES can't be reached, the last known SES status is kept. A daily job runs the same check for every brand. No request body. Approvers count as viewers.",
-        "x-role": "brand:viewer",
+        "x-role": "brand:editor",
         "x-step-up": false,
         "x-error-codes": [
           "unauthenticated",
+          "forbidden",
           "not_found"
         ],
         "parameters": [
@@ -238,6 +239,9 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
