@@ -165,6 +165,9 @@ func sourceAdminRoutes(t *testing.T) []adminRoute {
 					if x, ok := sel.X.(*ast.Ident); ok && (imports[x.Name] != "" || x.Name == "http") {
 						return true // a package function (httpx.Handle), not a mux
 					}
+					if a, ok := call.Args[0].(*ast.Ident); ok && a.Name == "ctx" {
+						return true // slog.Handler.Handle(ctx, record), not a mux
+					}
 					rel, _ := filepath.Rel(root, fset.Position(call.Pos()).Filename)
 					pat, ok := eval(call.Args[0])
 					if !ok {

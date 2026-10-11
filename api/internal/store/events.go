@@ -72,8 +72,8 @@ func (s *Store) SendByID(ctx context.Context, id int64) (SendRef, error) {
 	return one[SendRef](rows, err)
 }
 
-// CampaignFeedback: what happened to a campaign's emails so far.
-func (s *Store) CampaignFeedback(ctx context.Context, campaignID uuid.UUID) (FeedbackCounts, error) {
+// campaignFeedbackLive counts from the raw events (see CampaignFeedback).
+func (s *Store) campaignFeedbackLive(ctx context.Context, campaignID uuid.UUID) (FeedbackCounts, error) {
 	var c FeedbackCounts
 	err := s.db.QueryRow(ctx, `
 		SELECT count(*) FILTER (WHERE e.type = 'delivery'),

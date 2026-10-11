@@ -14,6 +14,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
 	"github.com/kmrifat/klavio-alternative/api/internal/confirm"
+	"github.com/kmrifat/klavio-alternative/api/internal/store"
 )
 
 type Client = river.Client[pgx.Tx]
@@ -29,6 +30,9 @@ type Deps struct {
 	}
 	Sessions interface {
 		DeleteExpiredSessions(ctx context.Context) (int64, error)
+	}
+	Retention interface {
+		ApplyEventRetention(ctx context.Context, now time.Time) (store.RetentionResult, error)
 	}
 	ImportFiles interface {
 		PurgeAbandonedImports(ctx context.Context) (int64, error)
@@ -93,6 +97,26 @@ type DNSCheckWorker struct {
 
 func (w *DNSCheckWorker) Work(ctx context.Context, _ *river.Job[DNSCheckArgs]) error {
 	return w.Deps.Brands.CheckAll(ctx)
+}
+
+// RetentionArgs deletes SES events past their retention, saving finished
+// campaigns' totals first.
+type RetentionArgs struct{}
+
+func (RetentionArgs) Kind() string { return "events.retention" }
+
+type RetentionWorker struct {
+	river.WorkerDefaults[RetentionArgs]
+	Deps Deps
+	Log  *slog.Logger
+}
+
+func (w *RetentionWorker) Work(ctx context.Context, _ *river.Job[RetentionArgs]) error {
+	res, err := w.Deps.Retention.ApplyEventRetention(ctx, time.Now())
+	if err == nil && (res.CampaignsSaved > 0 || res.EventsDeleted > 0) {
+		w.Log.InfoContext(ctx, "event retention", "campaign_totals_saved", res.CampaignsSaved, "events_deleted", res.EventsDeleted)
+	}
+	return err
 }
 
 // SessionCleanupArgs deletes expired sessions.
@@ -530,6 +554,10 @@ func NewWorker(pool *pgxpool.Pool, log *slog.Logger, deps Deps) (*Client, error)
 		river.AddWorker(workers, &RepermissionWorker{Deps: deps})
 		river.AddWorker(workers, &APIHousekeepingWorker{Deps: deps, Log: log})
 		jobs = append(jobs, periodic(time.Hour, RepermissionArgs{}, true), periodic(time.Hour, APIHousekeepingArgs{}, true))
+	}
+	if deps.Retention != nil {
+		river.AddWorker(workers, &RetentionWorker{Deps: deps, Log: log})
+		jobs = append(jobs, periodic(24*time.Hour, RetentionArgs{}, true))
 	}
 	if deps.Sessions != nil {
 		river.AddWorker(workers, &SessionCleanupWorker{Deps: deps, Log: log})
