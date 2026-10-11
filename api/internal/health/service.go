@@ -40,6 +40,7 @@ type Config struct {
 	Postmaster     *postmaster.Client // nil = not connected
 	// AccessOn: Cloudflare Access protects the admin app (a protection on S1).
 	AccessOn bool
+	Sending  SendingConfig
 }
 
 type Service struct {

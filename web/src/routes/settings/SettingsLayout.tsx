@@ -7,7 +7,7 @@ import { PageHeader } from "../../components/ui";
 export const settingsTabs = [
   { path: "general", label: "General", icon: Settings, milestone: "M5" },
   { path: "brands", label: "Brands & domains", icon: Globe, milestone: "M1" },
-  { path: "providers", label: "Sending providers", icon: Server, milestone: "M6" },
+  { path: "providers", label: "Sending providers", icon: Server, milestone: "M6" }, // built
   { path: "limits", label: "Safety limits", icon: Gauge, milestone: "M5" }, // built
   { path: "api-keys", label: "API keys", icon: KeyRound, milestone: "M7" },
   { path: "privacy", label: "Data & privacy", icon: Lock, milestone: "M5" },

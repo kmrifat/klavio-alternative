@@ -33,6 +33,7 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/v1/safety-center", f(h.safetyCenter))
 	mux.HandleFunc("GET /admin/v1/brands/{slug}/health", f(h.brandHealth))
 	mux.HandleFunc("POST /admin/v1/brands/{slug}/health/recheck", f(h.recheck))
+	mux.HandleFunc("GET /admin/v1/sending-provider", f(h.sendingProvider))
 }
 
 // --- S1 Safety center ---
@@ -89,6 +90,20 @@ type safetyCenter struct {
 	Protections    []protection  `json:"protections"`
 }
 
+// accountMeters reads the shared SES account (cached for a minute) and what
+// this app sent today across all brands. An unreadable account isn't an
+// error: it comes back with Available false.
+func (h *Handlers) accountMeters(r *http.Request) (accountMeters, error) {
+	s := h.Service
+	acc, err := s.Account(r.Context())
+	out := accountMeters{Available: err == nil, Region: s.ses.Region(), Account: acc}
+	if err != nil {
+		out.Error = "Couldn't read the SES account"
+	}
+	out.MarketingSentToday, err = h.Store.SentAllBrandsOn(r.Context(), s.now().UTC())
+	return out, err
+}
+
 // safetyCenter is company-level: account quota, all-brand volume and the
 // suppression count are for owners and approvers, not brand members.
 func (h *Handlers) safetyCenter(w http.ResponseWriter, r *http.Request) error {
@@ -134,12 +149,7 @@ func (h *Handlers) safetyCenter(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	// Shared SES account.
-	acc, err := s.Account(ctx)
-	out.Account = accountMeters{Available: err == nil, Region: s.ses.Region(), Account: acc}
-	if err != nil {
-		out.Account.Error = "Couldn't read the SES account"
-	}
-	if out.Account.MarketingSentToday, err = h.Store.SentAllBrandsOn(ctx, today); err != nil {
+	if out.Account, err = h.accountMeters(r); err != nil {
 		return err
 	}
 	out.NeedsAttention = append(out.NeedsAttention, accountAttention(out.Account)...)

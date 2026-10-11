@@ -157,7 +157,7 @@ function BrandHealthCard({ b }: { b: BrandCard }) {
   );
 }
 
-function Meter({ label, used, total, help }: { label: string; used: number; total: number; help: string }) {
+export function Meter({ label, used, total, help }: { label: string; used: number; total: number; help: string }) {
   const pct = total > 0 ? Math.min(100, (used / total) * 100) : 0;
   const bar = pct >= 80 ? "bg-red-500" : pct >= 60 ? "bg-amber-500" : "bg-accent";
   return (
