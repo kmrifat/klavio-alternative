@@ -84,7 +84,7 @@ export type AuditEntry = {
   user_agent?: string;
 };
 
-export type Meta = { version: string; env: string; debug?: boolean };
+export type Meta = { version: string; env: string; debug?: boolean; company_name?: string };
 
 // --- M2: contacts & imports ---
 

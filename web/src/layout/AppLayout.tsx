@@ -3,7 +3,7 @@ import { NavLink, Outlet, useLocation, useNavigate, useParams } from "react-rout
 import { LogOut, Mail, Search } from "lucide-react";
 import { useApprovals } from "../api/governance";
 import { AlertsBell } from "./AlertsBell";
-import { useBrands, useMe, useSignOut } from "../api/hooks";
+import { useBrands, useCompanyName, useMe, useSignOut } from "../api/hooks";
 import type { BrandListItem } from "../api/types";
 import { brandScreens, companyScreens, settingsScreen, type Screen } from "../lib/screens";
 import { lastBrand, rememberBrand } from "../lib/brands";
@@ -16,6 +16,7 @@ import { HealthPill } from "./HealthPill";
 export function AppLayout() {
   const params = useParams();
   const brands = useBrands().data ?? [];
+  const companyName = useCompanyName();
   const brand = brands.find((b) => b.slug === params.brand);
   const linkBrand = brand ?? lastBrand(brands);
   const waitingCount = useApprovals("decide").data?.length;
@@ -32,7 +33,7 @@ export function AppLayout() {
           <span className="grid size-6 place-items-center rounded-md bg-zinc-900 text-white">
             <Mail className="size-3.5" />
           </span>
-          <span className="text-sm font-medium">Acme Group</span>
+          <span className="truncate text-sm font-medium">{companyName}</span>
         </div>
 
         <BrandSwitcher brands={brands} current={brand} />
@@ -61,7 +62,7 @@ export function AppLayout() {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="h-1 shrink-0" style={{ background: brand?.color ?? "#18181b" }} />
-        <TopBar brandName={brand?.name ?? "Acme Group"} brandSlug={brand?.slug} />
+        <TopBar brandName={brand?.name ?? companyName} brandSlug={brand?.slug} />
         <main className="min-h-0 flex-1 overflow-y-auto px-8 py-7">
           <Outlet />
         </main>

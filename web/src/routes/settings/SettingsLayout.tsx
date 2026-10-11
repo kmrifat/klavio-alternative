@@ -5,12 +5,12 @@ import { useMeta } from "../../api/hooks";
 import { PageHeader } from "../../components/ui";
 
 export const settingsTabs = [
-  { path: "general", label: "General", icon: Settings, milestone: "M5" },
-  { path: "brands", label: "Brands & domains", icon: Globe, milestone: "M1" },
-  { path: "providers", label: "Sending providers", icon: Server, milestone: "M6" }, // built
-  { path: "limits", label: "Safety limits", icon: Gauge, milestone: "M5" }, // built
-  { path: "api-keys", label: "API keys", icon: KeyRound, milestone: "M7" },
-  { path: "privacy", label: "Data & privacy", icon: Lock, milestone: "M5" }, // built
+  { path: "general", label: "General", icon: Settings },
+  { path: "brands", label: "Brands & domains", icon: Globe },
+  { path: "providers", label: "Sending providers", icon: Server },
+  { path: "limits", label: "Safety limits", icon: Gauge },
+  { path: "api-keys", label: "API keys", icon: KeyRound },
+  { path: "privacy", label: "Data & privacy", icon: Lock },
 ];
 
 export function SettingsLayout() {
@@ -55,15 +55,6 @@ export function SettingsLayout() {
           <Outlet />
         </div>
       </div>
-    </div>
-  );
-}
-
-export function SettingsPlaceholder({ tab }: { tab: (typeof settingsTabs)[number] }) {
-  return (
-    <div className="rounded-xl border border-dashed border-zinc-300 bg-zinc-50 p-5 text-sm">
-      <p className="font-medium">{tab.label}</p>
-      <p className="mt-0.5 text-zinc-600">Built in milestone {tab.milestone}. See PLAN.md §7.</p>
     </div>
   );
 }

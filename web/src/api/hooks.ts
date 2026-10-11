@@ -21,6 +21,11 @@ export function useMeta() {
   });
 }
 
+// useCompanyName: the name for the sidebar and sign-in page (Settings → General).
+export function useCompanyName() {
+  return useMeta().data?.company_name || "Mail Console";
+}
+
 // useMe resolves to null when nobody is signed in.
 export function useMe() {
   return useQuery({

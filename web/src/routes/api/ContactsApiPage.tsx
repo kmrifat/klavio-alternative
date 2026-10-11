@@ -19,7 +19,7 @@ import { useBrands, useMe } from "../../api/hooks";
 import { Badge, Button, Card, CopyButton, Dialog, ErrorNote, Field, PageHeader, Spinner, inputClass } from "../../components/ui";
 import { shortDate, timeAgo } from "../../lib/format";
 
-const stateBadge: Record<ApiKeyState, { label: string; tone: "green" | "amber" | "zinc" | "red" }> = {
+export const stateBadge: Record<ApiKeyState, { label: string; tone: "green" | "amber" | "zinc" | "red" }> = {
   active: { label: "Active", tone: "green" },
   pending_approval: { label: "Waiting for approval", tone: "amber" },
   expired: { label: "Expired", tone: "zinc" },

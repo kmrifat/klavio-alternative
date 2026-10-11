@@ -22,6 +22,7 @@ import (
 	"github.com/kmrifat/klavio-alternative/api/internal/brands"
 	"github.com/kmrifat/klavio-alternative/api/internal/cache"
 	"github.com/kmrifat/klavio-alternative/api/internal/campaigns"
+	"github.com/kmrifat/klavio-alternative/api/internal/company"
 	"github.com/kmrifat/klavio-alternative/api/internal/config"
 	"github.com/kmrifat/klavio-alternative/api/internal/confirm"
 	"github.com/kmrifat/klavio-alternative/api/internal/contacts"
@@ -321,6 +322,10 @@ func (a *App) AdminMux() *http.ServeMux { return server.AdminMux(a.serverOptions
 
 func (a *App) serverOptions() server.Options {
 	contactsH := &contacts.Handlers{Store: a.Store, Log: a.deps.Log}
+	cfg := a.deps.Config
+	companyH := &company.Handlers{Store: a.Store, Auth: a.Auth, Log: a.deps.Log, DefaultName: cfg.WebAuthnRPName,
+		Installation: company.Installation{Version: a.deps.Version, Env: string(cfg.Env), Debug: cfg.Debug,
+			AppURL: cfg.AppURL, PasskeyDomain: cfg.WebAuthnRPID, CloudflareAccess: a.deps.Access != nil}}
 	return server.Options{
 		Log:             a.deps.Log,
 		DB:              a.deps.Pool,
@@ -328,6 +333,7 @@ func (a *App) serverOptions() server.Options {
 		Version:         a.deps.Version,
 		Env:             string(a.deps.Config.Env),
 		Debug:           a.deps.Config.Debug,
+		CompanyName:     companyH.DisplayName,
 		AllowedOrigins:  a.deps.Config.AllowedOrigins,
 		Proxy:           httpx.ProxyTrust{Cloudflare: a.deps.Config.TrustCloudflareHeaders, Proxies: a.deps.Config.TrustedProxies},
 		AdminMiddleware: a.Auth.Middleware,
@@ -346,6 +352,7 @@ func (a *App) serverOptions() server.Options {
 			(&segments.Handlers{Store: a.Store, Limiter: a.deps.Limiter, Log: a.deps.Log}).Routes(mux)
 			a.contactsAdm.Routes(mux)
 			(&privacy.Handlers{Store: a.Store, Auth: a.Auth, Log: a.deps.Log}).Routes(mux)
+			companyH.Routes(mux)
 			a.recovery.Routes(mux)
 			if a.adminDocs != nil {
 				admindocs.Routes(mux, *a.adminDocs, a.deps.Log)
