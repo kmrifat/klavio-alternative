@@ -32,6 +32,13 @@ const viewer: Me = {
   stepped_up_until: null,
 } as Me;
 
+// A company approver has no brand role but sees every brand read-only.
+const approver: Me = {
+  user: { id: "u-a", email: "ap@acme.test", name: "Ada", company_role: "approver" },
+  brand_roles: {},
+  stepped_up_until: null,
+} as Me;
+
 const base = "/admin/v1/brands/brightside";
 
 const draft: Campaign = {
@@ -135,6 +142,19 @@ describe("campaigns (S10)", () => {
     expect(await screen.findByLabelText("Campaign name")).toHaveAttribute("readonly");
     expect(screen.queryByRole("button", { name: /review and schedule/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Send test" })).not.toBeInTheDocument();
+  });
+
+  it("shows campaigns read-only to company approvers", async () => {
+    api(approver);
+    renderAt("/b/brightside/campaigns");
+    expect(await screen.findByRole("link", { name: "Spring sale" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /new campaign/i })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("link", { name: "Autumn launch" }));
+    expect(await screen.findByText("2,431")).toBeInTheDocument();
+    expect(screen.getByLabelText("Campaign name")).toHaveAttribute("readonly");
+    expect(screen.queryByRole("button", { name: /review and schedule/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });
 

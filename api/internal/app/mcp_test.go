@@ -204,6 +204,30 @@ func TestMCPAgent(t *testing.T) {
 		t.Fatalf("vic sees %d tokens", len(ts))
 	}
 
+	// A company approver's agent reads campaigns (approvers see every brand)
+	// but can't draft or ask to send.
+	apInv := w.owner.must(201, w.owner.do("POST", "/admin/v1/team/invites", map[string]any{
+		"email": "ada@acme.test", "name": "Ada Approver", "company_role": "approver",
+	}))
+	ada := newBrowser(t, base)
+	ada.must(200, ada.acceptInvite(apInv.body["invite_url"].(string)))
+	adaSecret := ada.must(201, ada.do("POST", "/admin/v1/agent-tokens", map[string]any{"name": "Claude", "expires_in_days": 7})).body["secret"].(string)
+	adaAgent, err := agentSession(t, base, adaSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustTool(t, adaAgent, "list_campaigns", map[string]any{"brand": "brightside"})
+	mustTool(t, adaAgent, "get_campaign", map[string]any{"brand": "brightside", "campaign_id": id})
+	mustTool(t, adaAgent, "get_campaign_report", map[string]any{"brand": "brightside", "campaign_id": id})
+	mustTool(t, adaAgent, "check_campaign", map[string]any{"brand": "brightside", "campaign_id": id})
+	if text, failed := callTool(t, adaAgent, "create_campaign_draft", map[string]any{"brand": "brightside", "name": "x",
+		"topic_id": w.topic, "subject": "x"}); !failed || !strings.Contains(text, "forbidden") {
+		t.Fatalf("approver's agent drafted: %s", text)
+	}
+	if text, failed := callTool(t, adaAgent, "request_send", map[string]any{"brand": "brightside", "campaign_id": id}); !failed || !strings.Contains(text, "forbidden") {
+		t.Fatalf("approver's agent requested a send: %s", text)
+	}
+
 	// Revoked: the agent is locked out at once.
 	w.owner.must(200, w.owner.do("POST", "/admin/v1/agent-tokens/"+tok["id"].(string)+"/revoke", nil))
 	if _, err := agent.CallTool(ctx, &mcp.CallToolParams{Name: "list_brands"}); err == nil {
